@@ -1,0 +1,11 @@
+{
+  "name": "ap-solver",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Chrome Extension for solving 3-section fullstack, backend, and API coding challenges (Question + VS Code Web + HTTP Request)",
+  "scripts": {
+    "test": "node test_extension.js"
+  },
+  "author": "Ajay Yadav",
+  "license": "MIT"
+}

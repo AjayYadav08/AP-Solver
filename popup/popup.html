@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AP-Solver Copilot</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <div class="popup-header">
+      <div class="header-brand">
+        <span class="brand-icon">⚡</span>
+        <div>
+          <div class="brand-title">AP-Solver</div>
+          <div class="brand-sub">3-Section Challenge Copilot</div>
+        </div>
+      </div>
+      <button id="openOptionsBtn" class="icon-btn" title="Open Full Settings">⚙️</button>
+    </div>
+
+    <div class="popup-body">
+      <!-- Status Box -->
+      <div class="status-card">
+        <div class="status-title">Active AI Provider</div>
+        <select id="providerSelect" class="provider-dropdown">
+          <option value="gemini">Google Gemini (Recommended)</option>
+          <option value="groq">Groq (Ultra-Fast LLaMA 3.3)</option>
+          <option value="openai">OpenAI / OpenRouter / Custom</option>
+        </select>
+        <div id="keyStatus" class="key-status-badge">Checking API key...</div>
+      </div>
+
+      <!-- Quick Toggles -->
+      <div class="toggles-card">
+        <label class="toggle-row">
+          <span>Auto-Submit after code injection</span>
+          <input type="checkbox" id="autoSubmitCheck">
+        </label>
+        <label class="toggle-row">
+          <span>Auto-Retry on failed test cases</span>
+          <input type="checkbox" id="autoRetryCheck">
+        </label>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="actions-card">
+        <button id="testApiBtn" class="btn btn-secondary">⚡ Test API Connection</button>
+        <div id="testResult" class="test-result-box" style="display: none;"></div>
+      </div>
+    </div>
+
+    <div class="popup-footer">
+      <a href="#" id="docsLink">How to use & Get Free API Keys ↗</a>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
