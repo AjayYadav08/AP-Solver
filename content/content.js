@@ -374,68 +374,128 @@
   }
 
   function readSubmissionResults() {
-    const subPanels = [...document.querySelectorAll('div, section')].filter((el) => {
-      const text = el.innerText || '';
-      return isVisible(el) && /ALL SUBMISSIONS|LATEST SUBMISSION|TEST CASE NAME/i.test(text);
+    // 1. Check if submission is in progress or evaluation is running
+    const isRunning = /Running Test Cases|Checking Submission|evaluat(ing|e)|several minutes/i.test(document.body.innerText);
+
+    // 2. Scan for all test case name elements in the left panel (x < window.innerWidth * 0.55)
+    const leftElements = [...document.querySelectorAll('*')].filter((el) => {
+      if (!isVisible(el)) return false;
+      const r = el.getBoundingClientRect();
+      return r.left >= 0 && r.left < window.innerWidth * 0.55 && r.top > 40 && !el.closest('#ap-solver-host');
     });
 
-    if (!subPanels.length) return null;
-
-    const panel = subPanels.sort((a, b) => a.innerText.length - b.innerText.length)[0];
-    const text = panel.innerText;
-
-    // Is it still running?
-    const isRunning = /Running Test Cases|Checking Submission|evaluat(ing|e)|several minutes/i.test(text);
-
-    // Extract test statuses from Tab 2 rows
-    const rows = [...panel.querySelectorAll('div, tr, li')].filter((r) => {
-      const t = r.innerText.trim();
-      return /^\d+\.\s+/.test(t) && t.length > 5 && isVisible(r);
+    // Find leaf elements matching "^1. should ...", "^2. should ...", etc.
+    const testNameElements = leftElements.filter((el) => {
+      const text = el.innerText?.trim() || '';
+      if (!/^\d+[\.\)]\s+[A-Za-z]/.test(text)) return false;
+      if (text.length < 5 || text.length > 250) return false;
+      // Exclude instructions or parent containers that hold multiple lines
+      if (text.includes('\n') && (text.match(/\n/g) || []).length > 2) return false;
+      // Leaf check: no child element should have the same starting number pattern
+      const hasChildWithSame = [...el.children].some((c) => /^\d+[\.\)]\s+[A-Za-z]/.test(c.innerText?.trim() || ''));
+      return !hasChildWithSame;
     });
 
-    const tests = rows.map((row) => {
-      const name = row.innerText.trim().replace(/\s+(pass|fail|pending)$/i, '');
-      // Check for green tick SVG or pass classes/colors
-      const svgs = [...row.querySelectorAll('svg')];
-      const paths = [...row.querySelectorAll('path, circle')];
+    // Deduplicate by test number and clean name
+    const uniqueTestElements = [];
+    const seenKeys = new Set();
+    for (const el of testNameElements) {
+      const cleanName = el.innerText.trim().replace(/\s+(pass|fail|pending)$/i, '');
+      const match = cleanName.match(/^(\d+)[\.\)]\s+(.+)$/);
+      if (match) {
+        const key = match[1] + '_' + match[2].slice(0, 30);
+        if (!seenKeys.has(key)) {
+          seenKeys.add(key);
+          uniqueTestElements.push({ el, num: parseInt(match[1], 10), name: cleanName });
+        }
+      }
+    }
 
-      const hasGreenTick = svgs.some(svg => {
-        const fill = (svg.getAttribute('fill') || '').toLowerCase();
-        const stroke = (svg.getAttribute('stroke') || '').toLowerCase();
-        const cls = (svg.getAttribute('class') || '').toLowerCase();
-        return fill.includes('#009965') || fill.includes('#10b981') || fill.includes('#22c55e') ||
-               fill.includes('green') || stroke.includes('green') || cls.includes('green') || cls.includes('pass');
-      }) || paths.some(p => {
-        const fill = (p.getAttribute('fill') || '').toLowerCase();
-        return fill === '#009965' || fill.includes('green');
-      }) || !!row.querySelector('.text-green-500, [class*="green" i]');
+    uniqueTestElements.sort((a, b) => a.num - b.num);
 
-      const hasRedCross = svgs.some(svg => {
-        const fill = (svg.getAttribute('fill') || '').toLowerCase();
-        const stroke = (svg.getAttribute('stroke') || '').toLowerCase();
-        const cls = (svg.getAttribute('class') || '').toLowerCase();
-        return fill.includes('#ef4444') || fill.includes('#dc2626') || fill.includes('#e11d48') ||
-               fill.includes('red') || stroke.includes('red') || cls.includes('red') || cls.includes('fail');
-      }) || paths.some(p => {
-        const fill = (p.getAttribute('fill') || '').toLowerCase();
-        return fill === '#ef4444' || fill.includes('red');
-      }) || !!row.querySelector('.text-red-500, [class*="red" i]');
+    // 3. For each test element, inspect its row container for Pass (Green) vs Fail (Red) status
+    const tests = uniqueTestElements.map(({ el, num, name }) => {
+      // Find row container: closest tr, li, role=row, or parent flex container
+      const row = el.closest('tr, li, [role="row"], [class*="row" i], [class*="item" i]') || el.parentElement || el;
+      const searchElements = [
+        ...row.querySelectorAll('svg, path, circle, span, div, i'),
+        ...(el.nextElementSibling ? [el.nextElementSibling, ...el.nextElementSibling.querySelectorAll('*')] : [])
+      ];
 
+      let isGreen = false;
+      let isRed = false;
+
+      for (const node of searchElements) {
+        const fill = (node.getAttribute?.('fill') || '').toLowerCase();
+        const stroke = (node.getAttribute?.('stroke') || '').toLowerCase();
+        const cls = (node.getAttribute?.('class') || '').toLowerCase();
+        const style = (node.getAttribute?.('style') || '').toLowerCase();
+
+        // Check green
+        if (
+          fill === '#009965' || fill.includes('green') || fill.includes('#10b981') || fill.includes('#22c55e') ||
+          stroke === '#009965' || stroke.includes('green') ||
+          cls.includes('green') || cls.includes('pass') || cls.includes('success') ||
+          style.includes('green') || style.includes('#009965') || style.includes('rgb(0, 153')
+        ) {
+          isGreen = true;
+        }
+
+        // Check red
+        if (
+          fill === '#ef4444' || fill.includes('red') || fill.includes('#dc2626') || fill.includes('#e11d48') ||
+          stroke === '#ef4444' || stroke.includes('red') ||
+          cls.includes('red') || cls.includes('fail') || cls.includes('error') ||
+          style.includes('red') || style.includes('#ef4444') || style.includes('rgb(239,')
+        ) {
+          isRed = true;
+        }
+      }
+
+      // Computed style check as fallback
+      if (!isGreen && !isRed) {
+        const svgs = row.querySelectorAll('svg');
+        for (const svg of svgs) {
+          try {
+            const cs = window.getComputedStyle(svg);
+            const col = cs.color || '';
+            const fill = cs.fill || '';
+            if (col.includes('239,') || col.includes('220,') || fill.includes('239,') || fill.includes('220,')) isRed = true;
+            if (col.includes('0, 153') || col.includes('16, 185') || fill.includes('0, 153') || fill.includes('16, 185')) isGreen = true;
+          } catch (e) {}
+        }
+      }
+
+      const status = isRed ? 'FAIL' : (isGreen ? 'PASS' : 'PENDING');
       return {
+        num,
         name,
-        pass: hasGreenTick && !hasRedCross,
-        fail: hasRedCross,
-        pending: !hasGreenTick && !hasRedCross
+        status,
+        pass: status === 'PASS',
+        fail: status === 'FAIL',
+        pending: status === 'PENDING'
       };
     });
 
+    // 4. Extract timestamp / submission metadata ("kaab")
+    let timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const timeElements = leftElements.filter((el) => {
+      const t = el.innerText?.trim() || '';
+      return /(?:ago|\b\d{1,2}:\d{2}(?::\d{2})?\b|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\b)/i.test(t) && t.length < 50;
+    });
+    if (timeElements.length > 0) {
+      timestamp = timeElements[0].innerText.trim();
+    }
+
     return {
-      text,
+      timestamp,
       isRunning,
       tests,
       passedCount: tests.filter((t) => t.pass).length,
       failedCount: tests.filter((t) => t.fail).length,
-      totalCount: tests.length
+      totalCount: tests.length,
+      failedTests: tests.filter((t) => !t.pass).map((t) => t.name),
+      passedTests: tests.filter((t) => t.pass).map((t) => t.name)
     };
   }
 
@@ -476,12 +536,15 @@
         }
 
         if (sawRunning && !results.isRunning && results.totalCount > 0) {
-          const allPassed = results.passedCount === results.totalCount;
+          const allPassed = results.passedCount === results.totalCount && results.failedCount === 0;
           return {
             ok: allPassed,
             passed: results.passedCount,
             total: results.totalCount,
-            failedTests: results.tests.filter((t) => !t.pass).map((t) => t.name)
+            tests: results.tests,
+            timestamp: results.timestamp,
+            failedTests: results.failedTests,
+            passedTests: results.passedTests
           };
         }
       }
@@ -499,13 +562,22 @@
           failedCount = failMatch ? parseInt(failMatch[1], 10) : 0;
 
           if (passedCount > 0 && failedCount === 0) {
-            return { ok: true, passed: passedCount, total: passedCount, summary: 'All test cases passed!' };
+            return {
+              ok: true,
+              passed: passedCount,
+              total: passedCount,
+              tests: [],
+              timestamp: new Date().toLocaleTimeString(),
+              failedTests: [],
+              passedTests: [],
+              summary: 'All test cases passed!'
+            };
           }
         }
 
         // Return combined results from Tab 2 and Tab 3
         const finalSub = readSubmissionResults();
-        const tab2Failed = finalSub?.tests?.filter(t => !t.pass).map(t => t.name) || [];
+        const tab2Failed = finalSub?.failedTests || [];
         const total = finalSub?.totalCount || (passedCount + failedCount);
         const passed = finalSub?.passedCount ?? passedCount;
         const failed = finalSub?.failedCount ?? failedCount;
@@ -514,7 +586,10 @@
           ok: total > 0 && passed === total && failed === 0,
           passed,
           total,
+          tests: finalSub?.tests || [],
+          timestamp: finalSub?.timestamp || new Date().toLocaleTimeString(),
           failedTests: tab2Failed.length > 0 ? tab2Failed : (failedCount > 0 ? [`${failedCount} test case(s) failed in Mocha runner`] : []),
+          passedTests: finalSub?.passedTests || [],
           terminalLog: terminalLog || ''
         };
       }
@@ -528,16 +603,21 @@
     return { ok: false, error: 'Submission evaluation timed out after 45s.' };
   }
 
-    return { ok: false, error: 'Grading timed out. Please check Terminal (Tab 3) for details.' };
-  }
-
   // --- High-Level User Actions ---
   async function handleReadContext() {
     ui.setStatus('Reading Question & Editor...', '', 'running', true);
     
     // 1. Read Question
     cachedQuestion = extractQuestion();
-    ui.addLog(`Extracted Question: "${cachedQuestion.title}" (${cachedQuestion.testCases.length} test cases)`, 'ok');
+
+    // Check if Tab 2 (Submissions) already has test cases
+    const subData = readSubmissionResults();
+    if (subData && subData.tests && subData.tests.length > 0) {
+      cachedQuestion.testCases = subData.tests.map(t => t.name);
+      ui.addLog(`✓ Loaded ${subData.tests.length} exact test cases from Submissions tab (${subData.timestamp})!`, 'ok');
+    } else {
+      ui.addLog(`Extracted Question: "${cachedQuestion.title}" (${cachedQuestion.testCases.length} test cases)`, 'ok');
+    }
 
     // 2. Read Editor
     cachedEditor = await queryActiveEditor();
@@ -554,6 +634,9 @@
       testCasesCount: cachedQuestion.testCases.length,
       activeFile: cachedEditor?.activeFile || 'None'
     });
+
+    ui.setStatus('Context Loaded', `${cachedQuestion.testCases.length} test cases detected. Ready to generate.`, 'normal');
+  }
 
     ui.setStatus('Context Loaded', `${cachedQuestion.testCases.length} test cases detected. Ready to generate.`, 'normal');
   }
@@ -870,22 +953,35 @@
         await sleep(1500);
         const subRes = await handleSubmit();
 
+        const timeStr = subRes?.timestamp || new Date().toLocaleTimeString();
+        ui.addLog(`📊 [${timeStr}] Submission Results (Attempt ${attempt}): ${subRes?.passed || 0}/${subRes?.total || 0} passed`, subRes?.ok ? 'ok' : 'warn');
+
+        if (subRes?.tests && subRes.tests.length > 0) {
+          for (const t of subRes.tests) {
+            if (t.fail) {
+              ui.addLog(`   ❌ ${t.name}`, 'bad');
+            } else if (t.pass) {
+              ui.addLog(`   ✅ ${t.name}`, 'ok');
+            }
+          }
+        }
+
         if (subRes && subRes.ok) {
-          ui.addLog(`🎉 CHALLENGE SOLVED! All ${subRes.passed || 'all'} test cases passed on Attempt ${attempt}!`, 'ok');
-          ui.setStatus('Accepted 🎉', `All ${subRes.passed || 'all'} test cases passed!`, 'success');
+          ui.addLog(`🎉 CHALLENGE SOLVED! All ${subRes.passed || 'all'} test cases passed on Attempt ${attempt} (${timeStr})!`, 'ok');
+          ui.setStatus('Accepted 🎉', `All ${subRes.passed || 'all'} test cases passed at ${timeStr}!`, 'success');
           break;
         } else if (attempt < maxAttempts) {
-          ui.addLog(`⚠️ Attempt ${attempt} finished: ${subRes?.passed || 0}/${subRes?.total || 0} test cases passed.`, 'warn');
+          ui.addLog(`⚠️ Attempt ${attempt} finished at ${timeStr}: ${subRes?.passed || 0}/${subRes?.total || 0} test cases passed.`, 'warn');
           ui.addLog('Switching to Terminal (Tab 3) to scrape exact runtime & Mocha failure logs...', 'warn');
 
           const terminalOutput = await readTerminalOutput(5500);
 
           // Build rich combined feedback from BOTH Tab 2 (Failed tests) and Tab 3 (Terminal logs)
           const feedbackBlocks = [];
-          feedbackBlocks.push(`=== PREVIOUS ATTEMPT ${attempt} FAILED (${subRes?.passed || 0}/${subRes?.total || 0} PASSED) ===`);
+          feedbackBlocks.push(`=== PREVIOUS ATTEMPT ${attempt} FAILED (${subRes?.passed || 0}/${subRes?.total || 0} PASSED AT ${timeStr}) ===`);
 
           if (subRes?.failedTests && subRes.failedTests.length > 0) {
-            feedbackBlocks.push(`FAILED TEST CASES (FROM TAB 2 - ALL SUBMISSIONS TABLE):\n` + subRes.failedTests.map((t) => `- ❌ ${t}`).join('\n'));
+            feedbackBlocks.push(`FAILED TEST CASES (FROM TAB 2 - ALL SUBMISSIONS TABLE AT ${timeStr}):\n` + subRes.failedTests.map((t) => `- ❌ ${t}`).join('\n'));
           }
 
           if (terminalOutput && terminalOutput.length > 50) {
