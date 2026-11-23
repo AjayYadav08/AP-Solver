@@ -194,17 +194,10 @@
           textarea.dispatchEvent(ctrlSelectAll);
           document.execCommand('selectAll', false, null);
 
-          // 4. Backspace & delete to wipe
-          const backspaceEvt = new KeyboardEvent('keydown', {
-            key: 'Backspace',
-            code: 'Backspace',
-            keyCode: 8,
-            which: 8,
-            bubbles: true,
-            cancelable: true
-          });
-          textarea.dispatchEvent(backspaceEvt);
-          textarea.value = '';
+          // 4. Insert clean code replacing selection
+          try {
+            document.execCommand('insertText', false, newCode);
+          } catch (e) {}
 
           // 5. Paste clean code
           const dt = new DataTransfer();
@@ -216,10 +209,6 @@
           });
           textarea.dispatchEvent(pasteEvt);
           if (editorDom) editorDom.dispatchEvent(pasteEvt);
-
-          try {
-            document.execCommand('insertText', false, newCode);
-          } catch (e) {}
 
           triggerSave();
           window.postMessage({ action: 'AP_WRITE_CODE_RESULT', id, ok: true, method: 'dom.wipeAndPaste' }, '*');

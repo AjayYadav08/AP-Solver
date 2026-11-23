@@ -125,8 +125,10 @@ async function writeEditorInTab(tabId, newCode) {
       target: { tabId, allFrames: true },
       world: 'MAIN',
       args: [newCode],
-      func: (codeToWrite) => {
+      func: async (codeToWrite) => {
         try {
+          const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
           // Helper: Navigate explorer to ensure src/index.js is open
           function navigateToTargetFile() {
             try {
@@ -175,6 +177,7 @@ async function writeEditorInTab(tabId, newCode) {
           }
 
           navigateToTargetFile();
+          await sleep(100);
 
           // Helper: trigger Ctrl+S / Cmd+S to save file on disk
           function triggerFileSave() {
@@ -229,6 +232,7 @@ async function writeEditorInTab(tabId, newCode) {
             if (indexModel) {
               indexModel.setValue(codeToWrite);
               triggerFileSave();
+              await sleep(150);
               return { success: true, verified: true, method: 'monaco.model.setValue' };
             }
 
@@ -243,20 +247,23 @@ async function writeEditorInTab(tabId, newCode) {
               activeEd.focus();
               activeEd.getModel().setValue(codeToWrite);
               triggerFileSave();
+              await sleep(150);
               return { success: true, verified: true, method: 'monaco.activeEd.setValue' };
             }
           }
 
-          // Strategy 2: DOM event dispatching with multi-tier Select All & Wipe
+          // Strategy 2: Timed Multi-Tier DOM Injection into Monaco Editor
           const editorDom = document.querySelector('.monaco-editor');
-          const input = editorDom?.querySelector('textarea.inputarea') || document.querySelector('.monaco-editor textarea.inputarea');
+          const input = editorDom?.querySelector('textarea.inputarea') || document.querySelector('.monaco-editor textarea.inputarea') || document.querySelector('textarea.inputarea');
           if (input) {
             input.focus();
+            window.focus();
+            await sleep(80);
 
             const isMac = /mac/i.test(navigator.platform);
 
-            // 1. Move cursor to start of file: Cmd+Up / Ctrl+Home
-            const topEvt = new KeyboardEvent('keydown', {
+            // Step 1: Move cursor to start of document
+            const homeEvt = new KeyboardEvent('keydown', {
               key: isMac ? 'ArrowUp' : 'Home',
               code: isMac ? 'ArrowUp' : 'Home',
               keyCode: isMac ? 38 : 36,
@@ -266,23 +273,10 @@ async function writeEditorInTab(tabId, newCode) {
               bubbles: true,
               cancelable: true
             });
-            input.dispatchEvent(topEvt);
+            input.dispatchEvent(homeEvt);
+            await sleep(50);
 
-            // 2. Select down to end of file: Cmd+Shift+Down / Ctrl+Shift+End
-            const selectDownEvt = new KeyboardEvent('keydown', {
-              key: isMac ? 'ArrowDown' : 'End',
-              code: isMac ? 'ArrowDown' : 'End',
-              keyCode: isMac ? 40 : 35,
-              which: isMac ? 40 : 35,
-              ctrlKey: !isMac,
-              metaKey: isMac,
-              shiftKey: true,
-              bubbles: true,
-              cancelable: true
-            });
-            input.dispatchEvent(selectDownEvt);
-
-            // 3. Dispatch Select All shortcuts (both Cmd+A and Ctrl+A)
+            // Step 2: Select All with Cmd+A and Ctrl+A
             const metaSelectAll = new KeyboardEvent('keydown', {
               key: 'a',
               code: 'KeyA',
@@ -314,19 +308,15 @@ async function writeEditorInTab(tabId, newCode) {
             window.dispatchEvent(ctrlSelectAll);
             document.execCommand('selectAll', false, null);
 
-            // 4. Send Backspace & Delete to wipe selected text completely
-            const backspaceEvt = new KeyboardEvent('keydown', {
-              key: 'Backspace',
-              code: 'Backspace',
-              keyCode: 8,
-              which: 8,
-              bubbles: true,
-              cancelable: true
-            });
-            input.dispatchEvent(backspaceEvt);
-            input.value = '';
+            // Wait 120ms for Monaco to update its selection model to full document range
+            await sleep(120);
 
-            // 5. Dispatch paste event with DataTransfer containing clean code
+            // Step 3: Insert new code replacing the selection!
+            try {
+              document.execCommand('insertText', false, codeToWrite);
+            } catch(e) {}
+
+            // Also dispatch ClipboardEvent paste with DataTransfer
             const dt = new DataTransfer();
             dt.setData('text/plain', codeToWrite);
             const pasteEvt = new ClipboardEvent('paste', {
@@ -337,26 +327,18 @@ async function writeEditorInTab(tabId, newCode) {
             input.dispatchEvent(pasteEvt);
             if (editorDom) editorDom.dispatchEvent(pasteEvt);
 
-            // 6. Dispatch beforeinput
-            try {
-              const inputEvt = new InputEvent('beforeinput', {
-                inputType: 'insertFromPaste',
-                data: codeToWrite,
-                dataTransfer: dt,
-                bubbles: true,
-                cancelable: true
-              });
-              input.dispatchEvent(inputEvt);
-            } catch(e) {}
-
+            // Step 4: Save file
+            await sleep(150);
             triggerFileSave();
+            await sleep(250);
 
             const check = checkEditorDomVerified();
-            if (check.verified) {
-              return { success: true, verified: true, method: 'dom.wipeAndPaste' };
-            }
-
-            return { success: true, verified: false, method: 'dom.dispatched' };
+            return {
+              success: true,
+              verified: check.verified,
+              method: 'dom.insertTextAndPaste',
+              details: check
+            };
           }
         } catch (e) {
           return { error: e.message };
@@ -367,7 +349,7 @@ async function writeEditorInTab(tabId, newCode) {
 
     const successResult = results?.find(r => r.result && r.result.success);
     if (successResult) {
-      return { ok: true, verified: !!successResult.result.verified, method: successResult.result.method };
+      return { ok: true, verified: !!successResult.result.verified, method: successResult.result.method, details: successResult.result.details };
     }
   } catch (err) {
     console.warn('[AP-Solver] Error writing to editor in tab:', err);

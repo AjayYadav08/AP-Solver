@@ -294,17 +294,10 @@
       }
       document.execCommand('selectAll', false, null);
 
-      // 4. Wipe selected text
-      const backspaceEvt = new KeyboardEvent('keydown', {
-        key: 'Backspace',
-        code: 'Backspace',
-        keyCode: 8,
-        which: 8,
-        bubbles: true,
-        cancelable: true
-      });
-      textarea.dispatchEvent(backspaceEvt);
-      textarea.value = '';
+      // 4. Insert clean code replacing selection
+      try {
+        document.execCommand('insertText', false, newCode);
+      } catch(e) {}
 
       // 5. Paste clean code
       const dt = new DataTransfer();
@@ -316,10 +309,6 @@
       });
       textarea.dispatchEvent(pasteEvt);
       if (editorDom) editorDom.dispatchEvent(pasteEvt);
-
-      try {
-        document.execCommand('insertText', false, newCode);
-      } catch(e) {}
 
       // Trigger Ctrl+S / Cmd+S
       const saveEvt = new KeyboardEvent('keydown', {
@@ -636,18 +625,29 @@
 
     const res = await writeCodeToEditor(cachedGeneratedCode);
 
-    // Wait a brief moment for editor to render
-    await sleep(800);
+    // Wait for editor to render DOM view-lines
+    await sleep(1000);
 
     // Verification check: ensure starter code is 100% GONE
-    const verifyResp = await sendMsg({ op: 'AP_QUERY_EDITOR' }, 5000);
-    const editorText = verifyResp?.code || '';
+    let verifyResp = await sendMsg({ op: 'AP_QUERY_EDITOR' }, 5000);
+    let editorText = verifyResp?.code || '';
     const topLines = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')].map(l => l.textContent).join('\n');
-    const effectiveText = editorText.length > 50 ? editorText : topLines;
+    let effectiveText = editorText.length > 50 ? editorText : topLines;
 
-    const hasOld501 = /res\.statusCode\s*=\s*501/i.test(effectiveText);
-    const countHttp = (effectiveText.match(/require\(['"](?:node:)?http['"]\)/g) || []).length;
-    const isCleanReplacement = effectiveText.length > 80 && !hasOld501 && countHttp <= 1;
+    let hasOld501 = /res\.statusCode\s*=\s*501/i.test(effectiveText);
+    let countHttp = (effectiveText.match(/require\(['"](?:node:)?http['"]\)/g) || []).length;
+    let isCleanReplacement = effectiveText.length > 80 && !hasOld501 && countHttp <= 1;
+
+    // Retry check after 600ms if not verified immediately
+    if (!isCleanReplacement && !res?.verified) {
+      await sleep(600);
+      verifyResp = await sendMsg({ op: 'AP_QUERY_EDITOR' }, 5000);
+      editorText = verifyResp?.code || '';
+      effectiveText = editorText.length > 50 ? editorText : topLines;
+      hasOld501 = /res\.statusCode\s*=\s*501/i.test(effectiveText);
+      countHttp = (effectiveText.match(/require\(['"](?:node:)?http['"]\)/g) || []).length;
+      isCleanReplacement = effectiveText.length > 80 && !hasOld501 && countHttp <= 1;
+    }
 
     if (isCleanReplacement || res?.verified) {
       ui.addLog(`✓ Editor completely wiped & clean solution injected (${res?.method || 'verified'})!`, 'ok');

@@ -205,17 +205,12 @@
           }
           document.execCommand('selectAll', false, null);
 
-          // 4. Backspace & delete to wipe
-          const backspaceEvt = new KeyboardEvent('keydown', {
-            key: 'Backspace',
-            code: 'Backspace',
-            keyCode: 8,
-            which: 8,
-            bubbles: true,
-            cancelable: true
-          });
-          textarea.dispatchEvent(backspaceEvt);
-          textarea.value = '';
+          await new Promise(r => setTimeout(r, 120));
+
+          // 4. Insert text replacing selection
+          try {
+            document.execCommand('insertText', false, code);
+          } catch(e) {}
 
           // 5. Paste clean code
           const dt = new DataTransfer();
@@ -228,9 +223,7 @@
           textarea.dispatchEvent(pasteEvt);
           if (editorDom) editorDom.dispatchEvent(pasteEvt);
 
-          try {
-            document.execCommand('insertText', false, code);
-          } catch(e) {}
+          await new Promise(r => setTimeout(r, 150));
 
           // Trigger Ctrl+S to save
           const saveEvt = new KeyboardEvent('keydown', {

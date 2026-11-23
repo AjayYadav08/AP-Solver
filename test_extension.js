@@ -136,7 +136,7 @@ if (!contentJs.includes('readTerminalOutput') || !contentJs.includes('switchToTe
 if (!contentJs.includes('countHttp <= 1') || !contentJs.includes('top-dom-wipeAndPaste')) {
   throw new Error('Duplicate starter code guard or wipe logic missing from content.js');
 }
-if (!backgroundJs.includes('dom.wipeAndPaste') || !backgroundJs.includes('monaco.model.setValue')) {
+if (!backgroundJs.includes('dom.insertTextAndPaste') || !backgroundJs.includes('monaco.model.setValue')) {
   throw new Error('Multi-tier wipe and replace missing from background.js');
 }
 console.log('   ✓ Terminal scraper & complete wipe logic verified across scripts');
