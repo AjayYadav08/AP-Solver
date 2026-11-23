@@ -125,4 +125,43 @@ if (effectiveProvider !== 'gemini') {
 }
 console.log('   ✓ Settings merge preserves stored keys and auto-switches to available provider');
 
+// 6. Test Terminal Scraper and Clean Wipe Logic in scripts
+console.log('6. Testing Terminal Scraper & Wipe Logic in content scripts...');
+const contentJs = fs.readFileSync(path.join(__dirname, 'content/content.js'), 'utf8');
+const backgroundJs = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
+
+if (!contentJs.includes('readTerminalOutput') || !contentJs.includes('switchToTerminalTab')) {
+  throw new Error('Terminal scraper functions missing from content.js');
+}
+if (!contentJs.includes('countHttp <= 1') || !contentJs.includes('top-dom-wipeAndPaste')) {
+  throw new Error('Duplicate starter code guard or wipe logic missing from content.js');
+}
+if (!backgroundJs.includes('dom.wipeAndPaste') || !backgroundJs.includes('monaco.model.setValue')) {
+  throw new Error('Multi-tier wipe and replace missing from background.js');
+}
+console.log('   ✓ Terminal scraper & complete wipe logic verified across scripts');
+
+// 7. Test Terminal Error Feedback in Prompt Builder
+console.log('7. Testing Terminal Error Feedback in Prompt Builder...');
+const sampleTerminalTrace = `
+> mocha '__tests__/*.js'
+1) GET /tasks returns predefined tasks:
+   AssertionError: expected 501 to equal 200
+2) POST /tasks creates distinct tasks:
+   AssertionError: expected 501 to equal 201
+`;
+const feedbackPrompt = buildPrompt({
+  questionTitle: 'Build a Task Management API',
+  questionDetails: 'Implement GET /tasks, POST /tasks',
+  testCases: ['GET /tasks', 'POST /tasks'],
+  currentCode: 'res.statusCode = 501;',
+  language: 'javascript',
+  feedback: `CRITICAL TEST FAILURE TRACE FROM TERMINAL:\n${sampleTerminalTrace}`
+});
+
+if (!feedbackPrompt.includes('CRITICAL: PREVIOUS SUBMISSION FAILED') || !feedbackPrompt.includes('expected 501 to equal 200')) {
+  throw new Error('Feedback prompt failed to incorporate terminal traces properly');
+}
+console.log('   ✓ Terminal failure feedback properly incorporated into AI prompt');
+
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');

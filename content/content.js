@@ -230,13 +230,83 @@
       return { ok: true, verified: true, method: resp.method };
     }
 
-    // Fallback in top document if editor is in top frame
+    // Fallback in top document if editor is in top frame with multi-tier Select All & Wipe
     const editorDom = document.querySelector('.monaco-editor');
     const textarea = editorDom?.querySelector('textarea.inputarea');
     if (textarea) {
       textarea.focus();
+
+      const isMac = /mac/i.test(navigator.platform);
+
+      // 1. Move cursor to start of file: Cmd+Up / Ctrl+Home
+      const topEvt = new KeyboardEvent('keydown', {
+        key: isMac ? 'ArrowUp' : 'Home',
+        code: isMac ? 'ArrowUp' : 'Home',
+        keyCode: isMac ? 38 : 36,
+        which: isMac ? 38 : 36,
+        ctrlKey: !isMac,
+        metaKey: isMac,
+        bubbles: true,
+        cancelable: true
+      });
+      textarea.dispatchEvent(topEvt);
+
+      // 2. Select down to end: Cmd+Shift+Down / Ctrl+Shift+End
+      const selectDownEvt = new KeyboardEvent('keydown', {
+        key: isMac ? 'ArrowDown' : 'End',
+        code: isMac ? 'ArrowDown' : 'End',
+        keyCode: isMac ? 40 : 35,
+        which: isMac ? 40 : 35,
+        ctrlKey: !isMac,
+        metaKey: isMac,
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true
+      });
+      textarea.dispatchEvent(selectDownEvt);
+
+      // 3. Select all shortcuts
+      const metaSelectAll = new KeyboardEvent('keydown', {
+        key: 'a',
+        code: 'KeyA',
+        keyCode: 65,
+        which: 65,
+        ctrlKey: false,
+        metaKey: true,
+        bubbles: true,
+        cancelable: true
+      });
+      const ctrlSelectAll = new KeyboardEvent('keydown', {
+        key: 'a',
+        code: 'KeyA',
+        keyCode: 65,
+        which: 65,
+        ctrlKey: true,
+        metaKey: false,
+        bubbles: true,
+        cancelable: true
+      });
+      textarea.dispatchEvent(metaSelectAll);
+      textarea.dispatchEvent(ctrlSelectAll);
+      if (editorDom) {
+        editorDom.dispatchEvent(metaSelectAll);
+        editorDom.dispatchEvent(ctrlSelectAll);
+      }
       document.execCommand('selectAll', false, null);
-      
+
+      // 4. Wipe selected text
+      const backspaceEvt = new KeyboardEvent('keydown', {
+        key: 'Backspace',
+        code: 'Backspace',
+        keyCode: 8,
+        which: 8,
+        bubbles: true,
+        cancelable: true
+      });
+      textarea.dispatchEvent(backspaceEvt);
+      textarea.value = '';
+
+      // 5. Paste clean code
       const dt = new DataTransfer();
       dt.setData('text/plain', newCode);
       const pasteEvt = new ClipboardEvent('paste', {
@@ -252,7 +322,6 @@
       } catch(e) {}
 
       // Trigger Ctrl+S / Cmd+S
-      const isMac = /mac/i.test(navigator.platform);
       const saveEvt = new KeyboardEvent('keydown', {
         key: 's',
         code: 'KeyS',
@@ -269,8 +338,10 @@
 
       // Verify DOM
       const lines = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')].map(l => l.textContent).join('\n');
-      const verified = lines.length > 50 && !/res\.statusCode\s*=\s*501/i.test(lines);
-      return { ok: true, verified, method: 'top-dom-paste' };
+      const hasOld501 = /res\.statusCode\s*=\s*501/i.test(lines);
+      const countHttp = (lines.match(/require\(['"](?:node:)?http['"]\)/g) || []).length;
+      const verified = lines.length > 50 && !hasOld501 && countHttp <= 1;
+      return { ok: true, verified, method: 'top-dom-wipeAndPaste' };
     }
 
     return { ok: !!resp?.ok, verified: !!resp?.verified, method: resp?.method || 'unknown' };
@@ -443,13 +514,120 @@
     return cachedGeneratedCode;
   }
 
+  // --- Section 4: Left Rail Tabs & Terminal Execution Log Scraper ---
+  function getLeftRailTabs() {
+    // Find clickable tab items on the vertical left bar (x < 80px)
+    const elements = [...document.querySelectorAll('button, [role="tab"], div, a, li')].filter((el) => {
+      const r = el.getBoundingClientRect();
+      return (
+        isVisible(el) &&
+        r.left >= 0 &&
+        r.left < 80 &&
+        r.top > 30 &&
+        r.top < 400 &&
+        r.width >= 16 &&
+        r.height >= 16 &&
+        !el.closest('#ap-solver-host') &&
+        (el.querySelector('svg') || el.innerText.trim() === 'Q' || /tab/i.test(el.getAttribute('role') || ''))
+      );
+    });
+
+    // Deduplicate elements located at similar vertical Y positions
+    const uniqueTabs = [];
+    for (const el of elements) {
+      const r = el.getBoundingClientRect();
+      const existing = uniqueTabs.find((u) => Math.abs(u.getBoundingClientRect().top - r.top) < 10);
+      if (!existing) {
+        uniqueTabs.push(el);
+      }
+    }
+
+    uniqueTabs.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+    return uniqueTabs;
+  }
+
+  function switchToQuestionTab() {
+    const tabs = getLeftRailTabs();
+    if (tabs.length >= 1) {
+      tabs[0].click();
+      return true;
+    }
+    return false;
+  }
+
+  function switchToSubmissionsTab() {
+    const tabs = getLeftRailTabs();
+    if (tabs.length >= 2) {
+      tabs[1].click();
+      return true;
+    }
+    return false;
+  }
+
+  function switchToTerminalTab() {
+    // 1. Look for explicit button/tab with aria-label or title matching terminal/log
+    const explicit = [...document.querySelectorAll('button, [role="tab"], div')].find((el) => {
+      const r = el.getBoundingClientRect();
+      const text = (el.getAttribute('aria-label') || el.getAttribute('title') || el.innerText || '').toLowerCase();
+      return isVisible(el) && r.left < 90 && /terminal|log|output|console|execution/i.test(text);
+    });
+    if (explicit) {
+      explicit.click();
+      return true;
+    }
+
+    // 2. 3rd tab on the left rail (Tab index 2: Question -> Submissions -> Terminal)
+    const tabs = getLeftRailTabs();
+    if (tabs.length >= 3) {
+      tabs[2].click();
+      return true;
+    }
+    return false;
+  }
+
+  async function readTerminalOutput(maxWaitMs = 6000) {
+    switchToTerminalTab();
+    await sleep(800);
+
+    const start = Date.now();
+    while (Date.now() - start < maxWaitMs) {
+      // Find terminal output container in the left section (x < window.innerWidth * 0.55)
+      const candidates = [...document.querySelectorAll('pre, code, .xterm-rows, [class*="terminal" i], [class*="console" i], div')].filter((el) => {
+        const r = el.getBoundingClientRect();
+        const text = el.innerText || '';
+        return (
+          isVisible(el) &&
+          r.left < window.innerWidth * 0.55 &&
+          r.width > 200 &&
+          r.height > 80 &&
+          !el.closest('#ap-solver-host') &&
+          (/mocha|npm test|git clone|AssertionError|failing|passing/i.test(text) ||
+           /Build a Task Management API|node-20|timeout/i.test(text))
+        );
+      });
+
+      if (candidates.length > 0) {
+        // Sort by text length to find the root terminal container
+        const longest = candidates.sort((a, b) => b.innerText.length - a.innerText.length)[0];
+        const logText = longest.innerText.trim();
+        if (logText.length > 80) {
+          return logText;
+        }
+      }
+
+      await sleep(500);
+    }
+
+    return '';
+  }
+
   async function handleWriteCode() {
     if (!cachedGeneratedCode) {
       alert('No code generated yet. Please click "Solve".');
       return false;
     }
 
-    ui.setStatus('Injecting code into Monaco editor...', '', 'running', true);
+    ui.setStatus('Wiping old code and injecting solution into editor...', '', 'running', true);
 
     // Guaranteed: copy generated code to system clipboard
     try {
@@ -461,24 +639,27 @@
     // Wait a brief moment for editor to render
     await sleep(800);
 
-    // Verification check
+    // Verification check: ensure starter code is 100% GONE
     const verifyResp = await sendMsg({ op: 'AP_QUERY_EDITOR' }, 5000);
     const editorText = verifyResp?.code || '';
     const topLines = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')].map(l => l.textContent).join('\n');
     const effectiveText = editorText.length > 50 ? editorText : topLines;
 
     const hasOld501 = /res\.statusCode\s*=\s*501/i.test(effectiveText);
-    const codeChanged = effectiveText.length > 80 && !hasOld501;
+    const countHttp = (effectiveText.match(/require\(['"](?:node:)?http['"]\)/g) || []).length;
+    const isCleanReplacement = effectiveText.length > 80 && !hasOld501 && countHttp <= 1;
 
-    if (codeChanged || res?.verified) {
-      ui.addLog(`✓ Code successfully injected & verified in editor (${res?.method || 'verified'})!`, 'ok');
-      ui.setStatus('Code Injected & Verified', 'Editor updated and saved to disk.', 'success');
+    if (isCleanReplacement || res?.verified) {
+      ui.addLog(`✓ Editor completely wiped & clean solution injected (${res?.method || 'verified'})!`, 'ok');
+      ui.setStatus('Code Injected & Verified', 'Starter code cleared. Solution saved to disk.', 'success');
       return true;
     }
 
     // If verification failed:
-    ui.addLog('⚠️ Code copied to clipboard! Please click into index.js and press Cmd+V (or Ctrl+V) to paste, then Cmd+S to save.', 'warn');
-    ui.setStatus('Paste Required', 'Code is copied to your clipboard. Press Cmd+V in index.js to paste.', 'warn');
+    ui.addLog('⚠️ Could not automatically wipe existing starter code in iframe.', 'bad');
+    ui.addLog('📋 Clean solution code has been copied to your clipboard!', 'ok');
+    ui.addLog('👉 Please click inside index.js, press Cmd+A (or Ctrl+A), then Cmd+V to replace all, and Cmd+S to save.', 'warn');
+    ui.setStatus('Manual Replace Required', 'Press Cmd+A then Cmd+V in index.js to replace starter code.', 'warn');
     return false;
   }
 
@@ -554,13 +735,13 @@
           ui.addLog(`🔁 Auto-Retry Attempt ${attempt}/${maxAttempts}...`, 'warn');
         }
 
-        // 3. Generate
+        // 3. Generate clean complete replacement
         const code = await handleGenerate(feedback);
 
-        // 4. Write
+        // 4. Wipe editor completely and inject code
         const writeOk = await handleWriteCode();
         if (!writeOk) {
-          ui.addLog('🛑 Automated submission paused because editor text was not yet replaced. Please click editor, press Cmd+V to paste and Cmd+S to save, then click Solve again to submit!', 'bad');
+          ui.addLog('🛑 Automated submission paused because editor text was not yet replaced cleanly. Please paste the clean code into index.js and click Solve again to submit!', 'bad');
           break; // NEVER SUBMIT 501 PLACEHOLDER CODE!
         }
 
@@ -570,15 +751,29 @@
         const subRes = await handleSubmit();
 
         if (subRes && subRes.ok) {
-          ui.addLog(`🎉 Challenge completed on attempt ${attempt}!`, 'ok');
+          ui.addLog(`🎉 Challenge completed successfully on attempt ${attempt}!`, 'ok');
           break;
-        } else if (attempt < maxAttempts && subRes?.failedTests?.length) {
-          feedback = `The following test cases failed on this attempt:\n` +
-            subRes.failedTests.map((t) => `- ${t}`).join('\n') +
-            `\nPlease re-analyze the logic and fix every failing requirement.`;
+        } else if (attempt < maxAttempts) {
+          ui.addLog('Checking Test Execution Terminal (Tab 3) for failure logs...', 'warn');
+          const terminalOutput = await readTerminalOutput(5000);
+
+          if (terminalOutput && terminalOutput.length > 100) {
+            ui.addLog(`✓ Captured failure logs from Terminal (${terminalOutput.split('\n').length} lines). Passing to AI...`, 'ok');
+            feedback = `CRITICAL TEST FAILURE TRACE FROM TERMINAL:\n` +
+              `\`\`\`\n${terminalOutput.slice(-3500)}\n\`\`\`\n` +
+              `The Mocha test runner failed on the above tests. Fix every assertion error, status code, and response format. Ensure complete code replacement.`;
+          } else if (subRes?.failedTests?.length) {
+            feedback = `The following test cases failed on this attempt:\n` +
+              subRes.failedTests.map((t) => `- ${t}`).join('\n') +
+              `\nPlease re-analyze the logic and fix every failing requirement.`;
+          }
+
+          // Switch back to question tab for next round
+          switchToQuestionTab();
           await sleep(2000);
           continue;
         } else {
+          ui.addLog(`Reached max attempts (${maxAttempts}). You can click "Solve" to try again with updated feedback.`, 'warn');
           break;
         }
       }

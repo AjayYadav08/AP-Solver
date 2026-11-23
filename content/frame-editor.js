@@ -1,6 +1,6 @@
 // content/frame-editor.js - Injected into all frames (including VS Code Web / Monaco)
 (() => {
-  if (!/(^|\.)newtonschool\.co$/i.test(location.hostname)) return; // Strictly Newton School portal only
+  if (!/(^|\.)newtonschool\.co$/i.test(location.hostname) && location.hostname && !/localhost|127\.0\.0\.1|vscode/i.test(location.hostname)) return; // Newton School portal & embedded frames
   if (window.__apFrameEditorLoaded) return;
   window.__apFrameEditorLoaded = true;
 
@@ -141,13 +141,83 @@
           return;
         }
 
-        // Fallback: DOM events on textarea
+        // Fallback: DOM events on textarea with multi-tier Select All & Wipe
         const editorDom = document.querySelector('.monaco-editor');
         const textarea = editorDom?.querySelector('textarea.inputarea') || document.querySelector('textarea.inputarea');
         if (textarea) {
           textarea.focus();
+
+          const isMac = /mac/i.test(navigator.platform);
+
+          // 1. Cursor to top: Cmd+Up / Ctrl+Home
+          const topEvt = new KeyboardEvent('keydown', {
+            key: isMac ? 'ArrowUp' : 'Home',
+            code: isMac ? 'ArrowUp' : 'Home',
+            keyCode: isMac ? 38 : 36,
+            which: isMac ? 38 : 36,
+            ctrlKey: !isMac,
+            metaKey: isMac,
+            bubbles: true,
+            cancelable: true
+          });
+          textarea.dispatchEvent(topEvt);
+
+          // 2. Select down to end: Cmd+Shift+Down / Ctrl+Shift+End
+          const selectDownEvt = new KeyboardEvent('keydown', {
+            key: isMac ? 'ArrowDown' : 'End',
+            code: isMac ? 'ArrowDown' : 'End',
+            keyCode: isMac ? 40 : 35,
+            which: isMac ? 40 : 35,
+            ctrlKey: !isMac,
+            metaKey: isMac,
+            shiftKey: true,
+            bubbles: true,
+            cancelable: true
+          });
+          textarea.dispatchEvent(selectDownEvt);
+
+          // 3. Select all shortcuts
+          const metaSelectAll = new KeyboardEvent('keydown', {
+            key: 'a',
+            code: 'KeyA',
+            keyCode: 65,
+            which: 65,
+            ctrlKey: false,
+            metaKey: true,
+            bubbles: true,
+            cancelable: true
+          });
+          const ctrlSelectAll = new KeyboardEvent('keydown', {
+            key: 'a',
+            code: 'KeyA',
+            keyCode: 65,
+            which: 65,
+            ctrlKey: true,
+            metaKey: false,
+            bubbles: true,
+            cancelable: true
+          });
+          textarea.dispatchEvent(metaSelectAll);
+          textarea.dispatchEvent(ctrlSelectAll);
+          if (editorDom) {
+            editorDom.dispatchEvent(metaSelectAll);
+            editorDom.dispatchEvent(ctrlSelectAll);
+          }
           document.execCommand('selectAll', false, null);
 
+          // 4. Backspace & delete to wipe
+          const backspaceEvt = new KeyboardEvent('keydown', {
+            key: 'Backspace',
+            code: 'Backspace',
+            keyCode: 8,
+            which: 8,
+            bubbles: true,
+            cancelable: true
+          });
+          textarea.dispatchEvent(backspaceEvt);
+          textarea.value = '';
+
+          // 5. Paste clean code
           const dt = new DataTransfer();
           dt.setData('text/plain', code);
           const pasteEvt = new ClipboardEvent('paste', {
@@ -163,7 +233,6 @@
           } catch(e) {}
 
           // Trigger Ctrl+S to save
-          const isMac = /mac/i.test(navigator.platform);
           const saveEvt = new KeyboardEvent('keydown', {
             key: 's',
             code: 'KeyS',
@@ -179,9 +248,11 @@
           textarea.dispatchEvent(saveEvt);
 
           const lines = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')].map(l => l.textContent).join('\n');
-          const verified = lines.length > 50 && !/res\.statusCode\s*=\s*501/i.test(lines);
+          const hasOld501 = /res\.statusCode\s*=\s*501/i.test(lines);
+          const countHttp = (lines.match(/require\(['"](?:node:)?http['"]\)/g) || []).length;
+          const verified = lines.length > 50 && !hasOld501 && countHttp <= 1;
 
-          sendResponse({ ok: true, verified, method: 'frame-dom-paste' });
+          sendResponse({ ok: true, verified, method: 'frame-dom-wipeAndPaste' });
           return;
         }
 

@@ -9,14 +9,18 @@
     if (window.monaco && window.monaco.editor) {
       return window.monaco;
     }
-    if (window.require && typeof window.require === 'function') {
+    if (typeof window.require === 'function') {
       try {
-        if (window.require.defined && window.require.defined('vs/editor/editor.main')) {
-          return window.require('vs/editor/editor.main');
+        const m = window.require('vs/editor/editor.main');
+        if (m && m.editor) return m;
+      } catch (e) {}
+    }
+    for (const k of Object.keys(window)) {
+      try {
+        if (window[k]?.editor?.getModels) {
+          return window[k];
         }
-      } catch (e) {
-        // Continue
-      }
+      } catch (e) {}
     }
     return null;
   }
@@ -130,13 +134,79 @@
           }
         }
 
-        // DOM Fallback
+        // DOM Fallback: Multi-tier Select All, Wipe and Paste
         const editorDom = document.querySelector('.monaco-editor');
-        const textarea = editorDom?.querySelector('textarea.inputarea');
+        const textarea = editorDom?.querySelector('textarea.inputarea') || document.querySelector('textarea.inputarea');
         if (textarea) {
           textarea.focus();
+
+          const isMac = /mac/i.test(navigator.platform);
+
+          // 1. Cursor to top: Cmd+Up / Ctrl+Home
+          const topEvt = new KeyboardEvent('keydown', {
+            key: isMac ? 'ArrowUp' : 'Home',
+            code: isMac ? 'ArrowUp' : 'Home',
+            keyCode: isMac ? 38 : 36,
+            which: isMac ? 38 : 36,
+            ctrlKey: !isMac,
+            metaKey: isMac,
+            bubbles: true,
+            cancelable: true
+          });
+          textarea.dispatchEvent(topEvt);
+
+          // 2. Select down to end: Cmd+Shift+Down / Ctrl+Shift+End
+          const selectDownEvt = new KeyboardEvent('keydown', {
+            key: isMac ? 'ArrowDown' : 'End',
+            code: isMac ? 'ArrowDown' : 'End',
+            keyCode: isMac ? 40 : 35,
+            which: isMac ? 40 : 35,
+            ctrlKey: !isMac,
+            metaKey: isMac,
+            shiftKey: true,
+            bubbles: true,
+            cancelable: true
+          });
+          textarea.dispatchEvent(selectDownEvt);
+
+          // 3. Select all shortcuts
+          const metaSelectAll = new KeyboardEvent('keydown', {
+            key: 'a',
+            code: 'KeyA',
+            keyCode: 65,
+            which: 65,
+            ctrlKey: false,
+            metaKey: true,
+            bubbles: true,
+            cancelable: true
+          });
+          const ctrlSelectAll = new KeyboardEvent('keydown', {
+            key: 'a',
+            code: 'KeyA',
+            keyCode: 65,
+            which: 65,
+            ctrlKey: true,
+            metaKey: false,
+            bubbles: true,
+            cancelable: true
+          });
+          textarea.dispatchEvent(metaSelectAll);
+          textarea.dispatchEvent(ctrlSelectAll);
           document.execCommand('selectAll', false, null);
 
+          // 4. Backspace & delete to wipe
+          const backspaceEvt = new KeyboardEvent('keydown', {
+            key: 'Backspace',
+            code: 'Backspace',
+            keyCode: 8,
+            which: 8,
+            bubbles: true,
+            cancelable: true
+          });
+          textarea.dispatchEvent(backspaceEvt);
+          textarea.value = '';
+
+          // 5. Paste clean code
           const dt = new DataTransfer();
           dt.setData('text/plain', newCode);
           const pasteEvt = new ClipboardEvent('paste', {
@@ -152,7 +222,7 @@
           } catch (e) {}
 
           triggerSave();
-          window.postMessage({ action: 'AP_WRITE_CODE_RESULT', id, ok: true, method: 'dom.paste' }, '*');
+          window.postMessage({ action: 'AP_WRITE_CODE_RESULT', id, ok: true, method: 'dom.wipeAndPaste' }, '*');
           return;
         }
 

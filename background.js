@@ -40,7 +40,20 @@ async function queryEditorInTab(tabId) {
           }
 
           // Check monaco in window or AMD loader
-          const m = window.monaco || (window.require && typeof window.require === 'function' ? (window.require.defined && window.require.defined('vs/editor/editor.main') ? window.require('vs/editor/editor.main') : null) : null);
+          let m = window.monaco;
+          if (!m && typeof window.require === 'function') {
+            try { m = window.require('vs/editor/editor.main'); } catch(e) {}
+          }
+          if (!m) {
+            for (const k of Object.keys(window)) {
+              try {
+                if (window[k]?.editor?.getModels) {
+                  m = window[k];
+                  break;
+                }
+              } catch(e) {}
+            }
+          }
           if (m && m.editor) {
             const models = m.editor.getModels ? m.editor.getModels() : [];
             const indexModel = models.find(mod => /index\.(js|ts)/i.test(mod.uri?.path || mod.uri?.toString() || ''));
@@ -186,20 +199,37 @@ async function writeEditorInTab(tabId, newCode) {
           function checkEditorDomVerified() {
             const lines = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')].map(l => l.textContent).join('\n');
             const hasOld501 = /res\.statusCode\s*=\s*501/i.test(lines);
-            const hasNewCode = lines.length > 50 && !hasOld501;
-            return { verified: hasNewCode, linesLength: lines.length, hasOld501 };
+            const countHttp = (lines.match(/require\(['"](?:node:)?http['"]\)/g) || []).length;
+            const hasNewCode = lines.length > 50 && !hasOld501 && countHttp <= 1;
+            return { verified: hasNewCode, linesLength: lines.length, hasOld501, countHttp };
           }
 
-          // Strategy 1: Monaco instance or AMD loader
-          const m = window.monaco || (window.require && typeof window.require === 'function' ? (window.require.defined && window.require.defined('vs/editor/editor.main') ? window.require('vs/editor/editor.main') : null) : null);
+          // Strategy 1: Monaco instance or AMD loader search (Wipe & Replace with setValue)
+          let m = window.monaco;
+          if (!m && typeof window.require === 'function') {
+            try {
+              m = window.require('vs/editor/editor.main');
+            } catch(e) {}
+          }
+          if (!m) {
+            for (const k of Object.keys(window)) {
+              try {
+                if (window[k]?.editor?.getModels) {
+                  m = window[k];
+                  break;
+                }
+              } catch(e) {}
+            }
+          }
+
           if (m && m.editor) {
-            // Check all models
+            // Find index.js model or first text model
             const models = m.editor.getModels ? m.editor.getModels() : [];
-            const indexModel = models.find(mod => /index\.(js|ts)/i.test(mod.uri?.path || mod.uri?.toString() || ''));
+            const indexModel = models.find(mod => /index\.(js|ts)/i.test(mod.uri?.path || mod.uri?.toString() || '')) || models[0];
             if (indexModel) {
               indexModel.setValue(codeToWrite);
               triggerFileSave();
-              return { success: true, verified: true, method: 'monaco.indexModel.setValue' };
+              return { success: true, verified: true, method: 'monaco.model.setValue' };
             }
 
             // Check active editor
@@ -210,36 +240,93 @@ async function writeEditorInTab(tabId, newCode) {
             }) || editors[0];
 
             if (activeEd && activeEd.getModel()) {
-              const model = activeEd.getModel();
               activeEd.focus();
-              model.setValue(codeToWrite);
+              activeEd.getModel().setValue(codeToWrite);
               triggerFileSave();
               return { success: true, verified: true, method: 'monaco.activeEd.setValue' };
             }
           }
 
-          // Strategy 2: DOM event dispatching onto textarea.inputarea
+          // Strategy 2: DOM event dispatching with multi-tier Select All & Wipe
           const editorDom = document.querySelector('.monaco-editor');
           const input = editorDom?.querySelector('textarea.inputarea') || document.querySelector('.monaco-editor textarea.inputarea');
           if (input) {
             input.focus();
 
-            // Select all via Cmd+A
             const isMac = /mac/i.test(navigator.platform);
-            const selectAllEvt = new KeyboardEvent('keydown', {
-              key: 'a',
-              code: 'KeyA',
-              keyCode: 65,
-              which: 65,
+
+            // 1. Move cursor to start of file: Cmd+Up / Ctrl+Home
+            const topEvt = new KeyboardEvent('keydown', {
+              key: isMac ? 'ArrowUp' : 'Home',
+              code: isMac ? 'ArrowUp' : 'Home',
+              keyCode: isMac ? 38 : 36,
+              which: isMac ? 38 : 36,
               ctrlKey: !isMac,
               metaKey: isMac,
               bubbles: true,
               cancelable: true
             });
-            input.dispatchEvent(selectAllEvt);
+            input.dispatchEvent(topEvt);
+
+            // 2. Select down to end of file: Cmd+Shift+Down / Ctrl+Shift+End
+            const selectDownEvt = new KeyboardEvent('keydown', {
+              key: isMac ? 'ArrowDown' : 'End',
+              code: isMac ? 'ArrowDown' : 'End',
+              keyCode: isMac ? 40 : 35,
+              which: isMac ? 40 : 35,
+              ctrlKey: !isMac,
+              metaKey: isMac,
+              shiftKey: true,
+              bubbles: true,
+              cancelable: true
+            });
+            input.dispatchEvent(selectDownEvt);
+
+            // 3. Dispatch Select All shortcuts (both Cmd+A and Ctrl+A)
+            const metaSelectAll = new KeyboardEvent('keydown', {
+              key: 'a',
+              code: 'KeyA',
+              keyCode: 65,
+              which: 65,
+              ctrlKey: false,
+              metaKey: true,
+              bubbles: true,
+              cancelable: true
+            });
+            const ctrlSelectAll = new KeyboardEvent('keydown', {
+              key: 'a',
+              code: 'KeyA',
+              keyCode: 65,
+              which: 65,
+              ctrlKey: true,
+              metaKey: false,
+              bubbles: true,
+              cancelable: true
+            });
+
+            input.dispatchEvent(metaSelectAll);
+            input.dispatchEvent(ctrlSelectAll);
+            if (editorDom) {
+              editorDom.dispatchEvent(metaSelectAll);
+              editorDom.dispatchEvent(ctrlSelectAll);
+            }
+            window.dispatchEvent(metaSelectAll);
+            window.dispatchEvent(ctrlSelectAll);
             document.execCommand('selectAll', false, null);
 
-            // Dispatch paste event with DataTransfer
+            // 4. Send Backspace & Delete to wipe selected text completely
+            const backspaceEvt = new KeyboardEvent('keydown', {
+              key: 'Backspace',
+              code: 'Backspace',
+              keyCode: 8,
+              which: 8,
+              bubbles: true,
+              cancelable: true
+            });
+            input.dispatchEvent(backspaceEvt);
+            input.value = '';
+
+            // 5. Dispatch paste event with DataTransfer containing clean code
             const dt = new DataTransfer();
             dt.setData('text/plain', codeToWrite);
             const pasteEvt = new ClipboardEvent('paste', {
@@ -250,7 +337,7 @@ async function writeEditorInTab(tabId, newCode) {
             input.dispatchEvent(pasteEvt);
             if (editorDom) editorDom.dispatchEvent(pasteEvt);
 
-            // Dispatch beforeinput
+            // 6. Dispatch beforeinput
             try {
               const inputEvt = new InputEvent('beforeinput', {
                 inputType: 'insertFromPaste',
@@ -262,16 +349,11 @@ async function writeEditorInTab(tabId, newCode) {
               input.dispatchEvent(inputEvt);
             } catch(e) {}
 
-            // Try execCommand insertText as well
-            try {
-              document.execCommand('insertText', false, codeToWrite);
-            } catch(e) {}
-
             triggerFileSave();
 
             const check = checkEditorDomVerified();
             if (check.verified) {
-              return { success: true, verified: true, method: 'dom.pasteEvent' };
+              return { success: true, verified: true, method: 'dom.wipeAndPaste' };
             }
 
             return { success: true, verified: false, method: 'dom.dispatched' };
