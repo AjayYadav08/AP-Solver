@@ -261,12 +261,53 @@ export async function callOpenAI(prompt, settings) {
 }
 
 export async function generateSolution(promptData, settingsOverride = null) {
-  const settings = settingsOverride || await getSettings();
+  // Always load stored settings containing saved API keys
+  const stored = await getSettings();
+  
+  // Merge any runtime options without losing API keys
+  const settings = { ...stored };
+  if (settingsOverride && typeof settingsOverride === 'object') {
+    for (const [k, v] of Object.entries(settingsOverride)) {
+      if (v !== undefined && v !== null && v !== '') {
+        settings[k] = v;
+      }
+    }
+  }
+
   const prompt = buildPrompt(promptData);
 
-  const provider = settings.provider || 'gemini';
+  // Check which providers have valid keys
+  const hasGemini = !!(settings.geminiKey && settings.geminiKey.trim());
+  const hasGroq = !!(settings.groqKey && settings.groqKey.trim());
+  const hasOpenAI = !!(settings.openaiKey && settings.openaiKey.trim());
 
-  // Attempt main provider
+  let provider = settings.provider || 'gemini';
+
+  // Smart Auto-Switch: If the chosen provider has NO key, auto-switch to whatever provider HAS a key!
+  if (provider === 'gemini' && !hasGemini) {
+    if (hasGroq) {
+      console.log('[AP-Solver] Gemini key missing, auto-switching to configured Groq key');
+      provider = 'groq';
+    } else if (hasOpenAI) {
+      provider = 'openai';
+    }
+  } else if (provider === 'groq' && !hasGroq) {
+    if (hasGemini) {
+      console.log('[AP-Solver] Groq key missing, auto-switching to configured Gemini key');
+      provider = 'gemini';
+    } else if (hasOpenAI) {
+      provider = 'openai';
+    }
+  } else if (provider === 'openai' && !hasOpenAI) {
+    if (hasGemini) provider = 'gemini';
+    else if (hasGroq) provider = 'groq';
+  }
+
+  if (!hasGemini && !hasGroq && !hasOpenAI) {
+    throw new Error('No API key configured. Please enter your Gemini or Groq API key in AP-Solver settings.');
+  }
+
+  // Attempt main provider with automatic fallback
   try {
     if (provider === 'gemini') {
       return await callGemini(prompt, settings);
@@ -276,14 +317,14 @@ export async function generateSolution(promptData, settingsOverride = null) {
       return await callOpenAI(prompt, settings);
     }
   } catch (err) {
-    console.warn(`Primary provider (${provider}) failed:`, err);
+    console.warn(`[AP-Solver] Primary provider (${provider}) failed:`, err);
 
     // Fallbacks if available
-    if (provider !== 'gemini' && settings.geminiKey) {
-      console.log('Falling back to Gemini...');
+    if (provider !== 'gemini' && hasGemini) {
+      console.log('[AP-Solver] Falling back to Gemini...');
       return await callGemini(prompt, settings);
-    } else if (provider !== 'groq' && settings.groqKey) {
-      console.log('Falling back to Groq...');
+    } else if (provider !== 'groq' && hasGroq) {
+      console.log('[AP-Solver] Falling back to Groq...');
       return await callGroq(prompt, settings);
     }
 

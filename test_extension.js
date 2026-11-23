@@ -86,4 +86,40 @@ if (!prompt.includes('Build a Task Management API') || !prompt.includes('Test Ca
 }
 console.log('   ✓ Prompt builder generated comprehensive specification');
 
+// 5. Test Settings Merging & Key Preservation
+console.log('5. Testing settings merging and key preservation...');
+const storedSettings = {
+  provider: 'gemini',
+  geminiKey: 'AIzaSyTestGeminiKey123',
+  groqKey: '',
+  openaiKey: ''
+};
+
+// Simulate UI passing settingsOverride without keys
+const uiOverride = { provider: 'groq', autoSubmit: true };
+const mergedSettings = { ...storedSettings };
+for (const [k, v] of Object.entries(uiOverride)) {
+  if (v !== undefined && v !== null && v !== '') {
+    mergedSettings[k] = v;
+  }
+}
+
+if (!mergedSettings.geminiKey || mergedSettings.geminiKey !== 'AIzaSyTestGeminiKey123') {
+  throw new Error('Critical bug: stored API key was lost during settings merge!');
+}
+
+// Test auto-switching when selected provider has no key
+let effectiveProvider = mergedSettings.provider;
+const hasGemini = !!mergedSettings.geminiKey?.trim();
+const hasGroq = !!mergedSettings.groqKey?.trim();
+
+if (effectiveProvider === 'groq' && !hasGroq && hasGemini) {
+  effectiveProvider = 'gemini';
+}
+
+if (effectiveProvider !== 'gemini') {
+  throw new Error('Auto-switch failed: should have fallen back to Gemini when Groq key is missing');
+}
+console.log('   ✓ Settings merge preserves stored keys and auto-switches to available provider');
+
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');

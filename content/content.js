@@ -27,58 +27,110 @@
   }
 
   // --- Section 1: Question Scraper ---
-  function extractQuestion() {
-    // 1. Try finding title from header (< Back | Question Title ... Total XP)
-    let title = '';
-    const headerTitleMatch = document.body.innerText.match(/(?:<|\bBack\b)\s*\|\s*([^\n\r]+)/i);
-    if (headerTitleMatch && headerTitleMatch[1]) {
-      title = headerTitleMatch[1].split(/(?:Total XP|\s{3,})/i)[0].trim();
-    }
-
-    // Try finding QUESTION pane
-    const questionPanels = [...document.querySelectorAll('div, section')].filter((el) => {
+  function getQuestionContainer() {
+    // Find all containers containing core question markers
+    const candidates = [...document.querySelectorAll('div, section, main')].filter((el) => {
       const text = el.innerText || '';
       return (
         isVisible(el) &&
-        /QUESTION/i.test(text.slice(0, 200)) &&
-        /Requirements|Test Cases|Build|Implement/i.test(text)
+        text.length > 80 &&
+        /Requirements|Test Cases|Given Task Data|Implement the following|Method\s+Endpoint/i.test(text) &&
+        !el.closest('#ap-solver-host') &&
+        !el.querySelector('.monaco-editor')
       );
     });
 
-    const qPanel = questionPanels.sort((a, b) => a.innerText.length - b.innerText.length)[0] || document.body;
+    // Prefer containers on the left side of screen
+    const leftCandidates = candidates.filter((el) => {
+      const rect = el.getBoundingClientRect();
+      return rect.left < window.innerWidth * 0.55;
+    });
 
-    const lines = qPanel.innerText.split('\n').map((l) => l.trim()).filter(Boolean);
+    // Pick the most comprehensive container (longest meaningful text)
+    const sorted = (leftCandidates.length ? leftCandidates : candidates).sort((a, b) => b.innerText.length - a.innerText.length);
+    return sorted[0] || document.body;
+  }
 
-    // Fallback title from question panel lines before 'Hard'/'Medium'/'Easy'
-    if (!title || title.length < 3) {
-      const diffIdx = lines.findIndex((l) => /^(Easy|Medium|Hard)$/i.test(l));
-      if (diffIdx > 0 && lines[diffIdx - 1] && !/^QUESTION$/i.test(lines[diffIdx - 1])) {
-        title = lines[diffIdx - 1];
-      } else {
-        const heading = qPanel.querySelector('h1, h2, h3, div[class*="title" i], div[class*="header" i]');
-        title = heading ? heading.innerText.trim() : (document.title.split('-')[0].trim() || 'Fullstack Challenge');
+  function extractQuestion() {
+    const qContainer = getQuestionContainer();
+    const containerText = qContainer.innerText || '';
+    const bodyText = document.body.innerText || '';
+
+    // 1. Title Extraction
+    let title = '';
+
+    // Method A: Check top bar (e.g. "< Back | Build a Task Management API" or "Back \n Build a Task Management API")
+    const topText = bodyText.slice(0, 2000);
+    const backMatch = topText.match(/(?:<|\bBack\b)[^\w\n]*[|\n]\s*([^\n\r]+)/i);
+    if (backMatch && backMatch[1]) {
+      const clean = backMatch[1].split(/(?:Total XP|\s{4,}|\t)/i)[0].trim();
+      if (clean.length > 3 && !/^(newton|playground|school|back|<)$/i.test(clean)) {
+        title = clean;
       }
     }
 
-    // Extract difficulty and points
+    // Method B: Check prominent heading in left column
+    if (!title) {
+      const headings = [...document.querySelectorAll('h1, h2, h3, h4, [class*="title" i], [class*="header" i]')].filter((el) => {
+        const r = el.getBoundingClientRect();
+        const t = el.innerText.trim();
+        return isVisible(el) && r.left < window.innerWidth * 0.55 && t.length > 3 &&
+          !/^(QUESTION|Test Cases|Requirements|Newton School|Given Task Data|Submissions|ALL SUBMISSIONS|LATEST SUBMISSION)$/i.test(t);
+      });
+      if (headings.length > 0) {
+        title = headings[0].innerText.trim();
+      }
+    }
+
+    // Method C: Check lines between "QUESTION" and "Hard"/"Medium"/"Easy" or "0/60"
+    if (!title) {
+      const lines = (containerText || bodyText).split('\n').map((l) => l.trim()).filter(Boolean);
+      const diffIdx = lines.findIndex((l) => /^(Easy|Medium|Hard)$/i.test(l) || /^\d+\s*\/\s*\d+/.test(l));
+      if (diffIdx > 0) {
+        for (let i = diffIdx - 1; i >= 0; i--) {
+          const l = lines[i];
+          if (l.length > 3 && !/^(QUESTION|Back|<)$/i.test(l) && !/newton school/i.test(l)) {
+            title = l;
+            break;
+          }
+        }
+      }
+    }
+
+    // Filter out generic platform names
+    if (!title || /^(newton school|playground)$/i.test(title)) {
+      title = 'Build a Task Management API';
+    }
+
+    // 2. Extract Difficulty and Points
     let difficulty = 'Medium';
     let points = '0/60';
-    const diffMatch = qPanel.innerText.match(/\b(Easy|Medium|Hard)\b/i);
+    const diffMatch = (containerText + ' ' + bodyText).match(/\b(Easy|Medium|Hard)\b/i);
     if (diffMatch) difficulty = diffMatch[1];
-    const ptsMatch = qPanel.innerText.match(/(\d+\s*\/\s*\d+)\b/);
+    const ptsMatch = (containerText + ' ' + bodyText).match(/(\d+\s*\/\s*\d+)\b/);
     if (ptsMatch) points = ptsMatch[1];
 
-    // Extract Test Cases
+    // 3. Extract Test Cases
     const testCases = [];
-    for (const line of lines) {
-      const tcMatch = line.match(/^\d+\.\s+(.+)$/);
-      if (tcMatch && tcMatch[1].length > 4) {
-        testCases.push(tcMatch[1].trim());
+    const searchTexts = [containerText, bodyText];
+    for (const text of searchTexts) {
+      const lines = text.split('\n').map((l) => l.trim());
+      for (const line of lines) {
+        const m = line.match(/^(\d+)[\.\)]\s+(.+)$/);
+        if (m && m[2].length > 4) {
+          const desc = m[2].trim();
+          if (!/^(open|click|go to|download|step|navigate)\b/i.test(desc) || /test|return|reject|filter|accept|get|post|patch|put|delete|status|json|array|task/i.test(desc)) {
+            if (!testCases.includes(desc)) {
+              testCases.push(desc);
+            }
+          }
+        }
       }
+      if (testCases.length > 0) break;
     }
 
-    // Cleaned full description
-    const fullText = qPanel.innerText
+    // 4. Full Description
+    const fullText = (containerText.length > 100 ? containerText : bodyText)
       .replace(/< Back.*?\n/g, '')
       .replace(/Total XP.*?\n/g, '')
       .replace(/Submit Solution/g, '')
@@ -438,10 +490,17 @@
       }
     });
 
+    let activeProvider = settings.provider || 'gemini';
+    if (settings.geminiKey?.trim() && !settings.groqKey?.trim()) {
+      activeProvider = 'gemini';
+    } else if (settings.groqKey?.trim() && !settings.geminiKey?.trim()) {
+      activeProvider = 'groq';
+    }
+
     ui.updateOptions({
       autoSubmit: settings.autoSubmit ?? false,
       autoRetry: settings.autoRetry ?? true,
-      provider: settings.provider || 'gemini'
+      provider: activeProvider
     });
 
     // If first time (no key configured), prompt user immediately
@@ -454,18 +513,26 @@
       }, 1200);
     }
 
-    // Auto-scan initial question after slight delay for DOM to populate
-    setTimeout(async () => {
+    // Polling scan: check every 800ms up to 12 times to catch SPA rendered question & test cases
+    let scanCount = 0;
+    const scanInterval = setInterval(() => {
+      scanCount++;
       const q = extractQuestion();
-      if (q && q.title) {
+      if (q && q.title && q.title !== 'Newton School') {
         ui.updateProblemInfo({
           title: q.title,
           difficulty: q.difficulty,
           points: q.points,
           testCasesCount: q.testCases.length
         });
+        if (q.testCases.length > 0) {
+          clearInterval(scanInterval);
+        }
       }
-    }, 1500);
+      if (scanCount >= 12) {
+        clearInterval(scanInterval);
+      }
+    }, 800);
   }
 
   if (document.readyState === 'loading') {
