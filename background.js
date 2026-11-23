@@ -207,7 +207,14 @@ async function showVisualTargetBeacon(tabId, x, y, basename, elType) {
 // True Native CDP Click on Tab or Explorer Tree Item Across Frames
 async function cdpClickElementInWorkspace(tabId, targetFilePath) {
   if (!targetFilePath) return false;
-  const basename = targetFilePath.split('/').pop().trim();
+  let cleanPath = targetFilePath.trim();
+  const basename = cleanPath.split('/').pop().trim();
+
+  // Guard: Reject invalid filenames like "1", "one", or names without extension
+  if (!basename || !basename.includes('.') || /^(1|2|3|4|5|one|two)(\.(js|ts))?$/i.test(basename)) {
+    console.warn(`[AP-Solver CDP] Skipped invalid target filename: "${targetFilePath}"`);
+    return false;
+  }
 
   try {
     const attached = await attachCDP(tabId);
@@ -224,7 +231,7 @@ async function cdpClickElementInWorkspace(tabId, targetFilePath) {
     });
     const iframes = iframeRes?.[0]?.result || [];
 
-    // 2. Search all frames for matching tab or explorer row
+    // PASS 1: Check if file ALREADY EXISTS (Tabs, Tree Rows, Collapsed src folder)
     const scanResults = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       args: [basename],
@@ -309,20 +316,49 @@ async function cdpClickElementInWorkspace(tabId, targetFilePath) {
           }
         }
 
-        // D. Check New File button if file does not exist
-        const newFileBtn = document.querySelector('.codicon-new-file, [aria-label*="New File" i], [title*="New File" i]');
-        if (newFileBtn) {
-          const r = newFileBtn.getBoundingClientRect();
-          if (r.width > 0 && r.height > 0) {
-            return { type: 'createNewFile', x: r.left + r.width / 2, y: r.top + r.height / 2 };
-          }
-        }
-
         return null;
       }
     });
 
-    const targetMatch = scanResults?.find(s => s.result && s.result.type);
+    // Prioritize existing file target: tab -> treeItem -> expandSrc
+    const matches = scanResults?.filter(s => s.result && ['tab', 'treeItem', 'expandSrc'].includes(s.result.type));
+    let targetMatch = matches?.find(s => s.result.type === 'tab') ||
+                      matches?.find(s => s.result.type === 'treeItem') ||
+                      matches?.find(s => s.result.type === 'expandSrc');
+
+    // PASS 2: ONLY if file does NOT exist in tabs or explorer tree, look for New File button inside VS Code frame
+    if (!targetMatch) {
+      const newFileScan = await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        func: () => {
+          // Verify we are inside VS Code workbench sidebar, not top frame or response tester
+          const workbench = document.querySelector('.monaco-workbench, .part.sidebar, .explorer-viewlet');
+          if (!workbench) return null;
+
+          // Select src folder row first so new file is created inside src/
+          const rows = [...document.querySelectorAll('.monaco-list-row, [role="treeitem"]')];
+          const srcRow = rows.find(r => {
+            const txt = (r.querySelector('.label-name') || r).textContent.trim().toLowerCase();
+            return txt === 'src';
+          });
+          if (srcRow) {
+            try { srcRow.click(); } catch(e) {}
+          }
+
+          const newFileBtn = document.querySelector('.codicon-new-file, [aria-label*="New File" i], [title*="New File" i]');
+          if (newFileBtn) {
+            const r = newFileBtn.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) {
+              return { type: 'createNewFile', x: r.left + r.width / 2, y: r.top + r.height / 2 };
+            }
+          }
+          return null;
+        }
+      });
+
+      targetMatch = newFileScan?.find(s => s.result && s.result.type === 'createNewFile');
+    }
+
     if (!targetMatch || !targetMatch.result) {
       console.log(`[AP-Solver CDP] Element for "${basename}" not found in frame scans.`);
       return false;
@@ -343,7 +379,7 @@ async function cdpClickElementInWorkspace(tabId, targetFilePath) {
       }
     }
 
-    console.log(`[AP-Solver CDP] Clicking "${basename}" (${type}) at viewport pixel (${Math.round(globalX)}, ${Math.round(globalY)})`);
+    console.log(`[AP-Solver CDP] Targeting "${basename}" (${type}) at viewport pixel (${Math.round(globalX)}, ${Math.round(globalY)})`);
 
     // Show live on-screen visual beacon
     await showVisualTargetBeacon(tabId, globalX, globalY, basename, type);
@@ -375,12 +411,32 @@ async function cdpClickElementInWorkspace(tabId, targetFilePath) {
       }
 
       if (type === 'createNewFile') {
+        // 1. Click New File button
         await cdpNativeClick(tabId, globalX, globalY, 1);
-        await sleep(250);
+        await sleep(350);
+
+        // 2. Direct DOM input injection across frames
+        await chrome.scripting.executeScript({
+          target: { tabId, allFrames: true },
+          args: [basename],
+          func: (name) => {
+            const inp = document.querySelector('.monaco-inputbox input, .inputArea input, input.monaco-inputbox, .monaco-list-row input');
+            if (inp) {
+              inp.focus();
+              inp.value = name;
+              inp.dispatchEvent(new Event('input', { bubbles: true }));
+              inp.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+          }
+        });
+
+        // 3. True Native text typing via CDP to register with VS Code
         await cdpNativeInsertText(tabId, basename);
         await sleep(150);
+
+        // 4. Press Enter key via CDP to confirm creation
         await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
-        await sleep(400);
+        await sleep(500);
         return true;
       }
     }

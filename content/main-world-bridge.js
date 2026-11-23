@@ -338,7 +338,11 @@
 
   // Helper: Create a new file in workspace
   async function createNewFileInWorkspace(filePath, monaco, initialCode = '') {
-    const basename = filePath.split('/').pop();
+    if (!filePath) return false;
+    const basename = filePath.split('/').pop().trim();
+    if (!basename || !basename.includes('.') || /^(1|2|3|4|5|one|two)(\.(js|ts))?$/i.test(basename)) {
+      return false;
+    }
     const isSrc = filePath.includes('src/') || /\.(js|ts|json|txt)$/i.test(filePath);
 
     // 1. If folder row exists (e.g. src), click it to select target directory

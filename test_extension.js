@@ -514,4 +514,28 @@ if (!terminalUiJs.includes('ap-btn-copy-terminal-script') || !terminalCss.includ
 }
 console.log('   ✓ Direct Terminal File Injection Engine & All-In-One Script Generator verified');
 
+// Test 19: Verify Numbered Header Parsing & Existing File Existence Check Priority
+console.log('19. Testing Numbered Header Parsing & Existing File Check Priority...');
+const numberedHeadersSample = `// 1. middleware.js
+function validate(req, res, next) { next(); }
+
+// 2. index.js
+const express = require('express');
+const app = express();
+`;
+const parsedNumbered = parseMultiFileSolution(numberedHeadersSample, 'src/index.js');
+if (parsedNumbered.length !== 2 || parsedNumbered[0].filePath !== 'src/middleware.js' || parsedNumbered[1].filePath !== 'src/index.js') {
+  throw new Error('Numbered file headers (// 1. middleware.js, // 2. index.js) must be accurately resolved to their respective files!');
+}
+
+// Verify that background.js has 2-pass scan: checks existing tabs and tree rows BEFORE createNewFile
+const currentNavBgJs = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
+if (!currentNavBgJs.includes('PASS 1') || !currentNavBgJs.includes('PASS 2') || !currentNavBgJs.includes('targetMatch = matches?.find')) {
+  throw new Error('background.js must prioritize existing tabs/tree items over creating a new file!');
+}
+if (!currentNavBgJs.includes('one|two') || !currentNavBgJs.includes('Skipped invalid target filename')) {
+  throw new Error('background.js must guard against invalid filenames like "1" or "one"!');
+}
+console.log('   ✓ Numbered Header Parsing & Existing File Check Priority verified');
+
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');

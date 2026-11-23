@@ -161,7 +161,14 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
     return 'src/' + fn;
   };
 
-  const fileHeaderPattern = /^(?:\/\/\s*|\/\*\s*|#+\s*)?(?:file:?\s*|---\s*)?(?:src\/)?([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt))(?:\s*---|\s*\*\/)?\s*(?:\n|$)/i;
+  const isValidFilename = (fn) => {
+    if (!fn) return false;
+    fn = fn.trim();
+    if (/^(1|2|3|4|5|one|two|file1|file2)(\.(js|ts))?$/i.test(fn)) return false;
+    return /\.(js|ts|json|txt)$/i.test(fn);
+  };
+
+  const fileHeaderPattern = /^(?:\/\/\s*|\/\*\s*|#+\s*)?(?:file:?\s*|---\s*)?(?:(?:\d+|step\s*\d+|file\s*\d+)[\.:\-\)]\s*)?(?:src\/)?([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt))(?:\s*---|\s*\*\/)?\s*(?:\n|$)/i;
 
   // Strategy 1: Multiple or Single markdown code blocks
   const blockRegex = /```(?:[a-zA-Z0-9_\-]+)?(?::([^\n]+))?([^\n]*)\n([\s\S]*?)```/g;
@@ -181,7 +188,7 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
 
       // 1. Check first line inside code
       const firstLineMatch = code.match(fileHeaderPattern);
-      if (firstLineMatch) {
+      if (firstLineMatch && isValidFilename(firstLineMatch[1])) {
         detectedFilename = firstLineMatch[1];
         code = code.replace(/^[^\n]*\n/, '').trim();
       }
@@ -189,15 +196,15 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
       // 2. Check lang tag / extra
       if (!detectedFilename && langExtra) {
         const m = langExtra.match(/([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt))/i);
-        if (m) detectedFilename = m[1];
+        if (m && isValidFilename(m[1])) detectedFilename = m[1];
       }
 
       // 3. Check preceding text (last 3 lines)
       if (!detectedFilename && precedingText) {
         const lines = precedingText.split('\n').map(l => l.trim()).filter(Boolean);
         const lastFew = lines.slice(-3).join(' ');
-        const m = lastFew.match(/([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt))/i);
-        if (m) detectedFilename = m[1];
+        const m = lastFew.match(/(?:file:?\s*)?(?:(?:\d+|step\s*\d+)[\.:\-\)]\s*)?(?:`|'|\")?(?:src\/)?([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt))/i);
+        if (m && isValidFilename(m[1])) detectedFilename = m[1];
       }
 
       if (detectedFilename && code) {
@@ -214,8 +221,8 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
   }
 
   // Strategy 2: Single block or raw text split by line-based file comment headers
-  const headerRegex = /(?:^|\n)\s*(?:\/\/|\/\*|#+)\s*(?:file:?\s*|---\s*)?(?:src\/)?([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt))(?:\s*---|\s*\*\/)?\s*(?:\n|$)/gi;
-  const headers = [...rawText.matchAll(headerRegex)];
+  const headerRegex = /(?:^|\n)\s*(?:\/\/|\/\*|#+)\s*(?:file:?\s*|---\s*)?(?:(?:\d+|step\s*\d+|file\s*\d+)[\.:\-\)]\s*)?(?:src\/)?([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt))(?:\s*---|\s*\*\/)?\s*(?:\n|$)/gi;
+  const headers = [...rawText.matchAll(headerRegex)].filter(h => isValidFilename(h[1]));
 
   if (headers.length > 0) {
     const inlineFiles = [];
