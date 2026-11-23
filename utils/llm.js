@@ -153,11 +153,21 @@ export function formatCodeIndentation(code) {
 export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.js') {
   if (!rawText) return [];
 
-  // Strategy 1: Multiple ``` markdown code blocks
+  const normPath = (fn) => {
+    if (!fn) return '';
+    fn = fn.trim();
+    if (fn.startsWith('src/')) return fn;
+    if (fn.includes('/') || fn === 'package.json' || fn.startsWith('.')) return fn;
+    return 'src/' + fn;
+  };
+
+  const fileHeaderPattern = /^(?:\/\/\s*|\/\*\s*|#+\s*)?(?:file:?\s*|---\s*)?(?:src\/)?([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt))(?:\s*---|\s*\*\/)?\s*(?:\n|$)/i;
+
+  // Strategy 1: Multiple or Single markdown code blocks
   const blockRegex = /```(?:[a-zA-Z0-9_\-]+)?(?::([^\n]+))?([^\n]*)\n([\s\S]*?)```/g;
   const blocks = [...rawText.matchAll(blockRegex)];
 
-  if (blocks.length > 1) {
+  if (blocks.length > 0) {
     const parsedBlocks = [];
     for (let i = 0; i < blocks.length; i++) {
       const b = blocks[i];
@@ -170,7 +180,7 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
       let detectedFilename = '';
 
       // 1. Check first line inside code
-      const firstLineMatch = code.match(/^(?:\/\/\s*|\/\*\s*|#+\s*)?(?:file:?\s*|---\s*)?(?:src\/)?([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt))(?:\s*---|\s*\*\/)?\s*(?:\n|$)/i);
+      const firstLineMatch = code.match(fileHeaderPattern);
       if (firstLineMatch) {
         detectedFilename = firstLineMatch[1];
         code = code.replace(/^[^\n]*\n/, '').trim();
@@ -182,7 +192,7 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
         if (m) detectedFilename = m[1];
       }
 
-      // 3. Check preceding text
+      // 3. Check preceding text (last 3 lines)
       if (!detectedFilename && precedingText) {
         const lines = precedingText.split('\n').map(l => l.trim()).filter(Boolean);
         const lastFew = lines.slice(-3).join(' ');
@@ -191,12 +201,14 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
       }
 
       if (detectedFilename && code) {
-        let p = detectedFilename.startsWith('src/') ? detectedFilename : (detectedFilename.includes('/') ? detectedFilename : 'src/' + detectedFilename);
-        parsedBlocks.push({ filePath: p, code: formatCodeIndentation(code) });
+        parsedBlocks.push({ filePath: normPath(detectedFilename), code: formatCodeIndentation(code) });
+      } else if (blocks.length === 1 && code) {
+        // Single block without explicit filename in header/preceding
+        parsedBlocks.push({ filePath: normPath(defaultActiveFile), code: formatCodeIndentation(code) });
       }
     }
 
-    if (parsedBlocks.length > 1) {
+    if (parsedBlocks.length > 0 && (blocks.length > 1 || parsedBlocks[0].filePath !== normPath(defaultActiveFile))) {
       return parsedBlocks;
     }
   }
@@ -205,31 +217,35 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
   const headerRegex = /(?:^|\n)\s*(?:\/\/|\/\*|#+)\s*(?:file:?\s*|---\s*)?(?:src\/)?([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt))(?:\s*---|\s*\*\/)?\s*(?:\n|$)/gi;
   const headers = [...rawText.matchAll(headerRegex)];
 
-  if (headers.length > 1) {
+  if (headers.length > 0) {
     const inlineFiles = [];
     for (let i = 0; i < headers.length; i++) {
       const fn = headers[i][1];
-      let p = fn.startsWith('src/') ? fn : (fn.includes('/') ? fn : 'src/' + fn);
       const start = headers[i].index + headers[i][0].length;
       const end = (i + 1 < headers.length) ? headers[i + 1].index : rawText.length;
       let rawCode = rawText.substring(start, end).trim();
       rawCode = rawCode.replace(/^```[a-z]*\s*\n?/i, '').replace(/```+$/g, '').trim();
       if (rawCode.length > 5) {
-        inlineFiles.push({ filePath: p, code: formatCodeIndentation(rawCode) });
+        inlineFiles.push({ filePath: normPath(fn), code: formatCodeIndentation(rawCode) });
       }
     }
-    if (inlineFiles.length > 1) {
+    if (inlineFiles.length > 0) {
       return inlineFiles;
     }
   }
 
-  const singleCode = extractCodeBlock(rawText);
-  let defPath = defaultActiveFile || 'src/index.js';
-  if (!defPath.startsWith('src/') && !defPath.includes('/') && defPath !== 'package.json' && !defPath.startsWith('.')) {
-    defPath = 'src/' + defPath;
+  // Strategy 3: Check if raw text starts with a file header line
+  let cleaned = rawText.replace(/^```[a-z]*\s*\n?/i, '').replace(/```+$/g, '').trim();
+  const topMatch = cleaned.match(fileHeaderPattern);
+  if (topMatch) {
+    const fn = topMatch[1];
+    cleaned = cleaned.replace(/^[^\n]*\n/, '').trim();
+    return [{ filePath: normPath(fn), code: formatCodeIndentation(cleaned) }];
   }
+
+  const singleCode = extractCodeBlock(rawText);
   return [{
-    filePath: defPath,
+    filePath: normPath(defaultActiveFile),
     code: formatCodeIndentation(singleCode)
   }];
 }
@@ -250,8 +266,8 @@ export function extractCodeBlock(rawText) {
     }
   }
 
-  // Strip leading // FILE: ... header if present in extracted block
-  extracted = extracted.replace(/^(?:\/\/\s*FILE:?.*|\/\*\s*FILE:?.*?\*\/)\s*\n?/i, '').trim();
+  // Strip leading file comment/header if present (e.g. // validateMiddleware.js or // FILE: ...)
+  extracted = extracted.replace(/^(?:\/\/\s*|\/\*\s*|#+\s*)?(?:FILE:?\s*|---\s*)?(?:src\/)?[a-zA-Z0-9_\-]+\.(?:js|ts|json|txt)(?:\s*---|\s*\*\/)?\s*\n?/i, '').trim();
 
   return formatCodeIndentation(extracted);
 }
@@ -305,18 +321,14 @@ Carefully re-read requirements and ensure all edge cases, files, and status code
   }
 
   parts.push(`## Instructions:
-1. Implement the complete solution for the target file(s).
-2. If only one file is modified, output the code inside a \`\`\`${language} block.
-3. If multiple files must be created or edited, prefix each with a comment header like:
+1. Implement the complete, bug-free solution for the question.
+2. ALWAYS place a comment header on line 1 of every code block naming the exact target file, for example:
    \`\`\`${language}
-   // FILE: ${activeFile || 'src/index.js'}
+   // src/validateMiddleware.js
    ...code...
    \`\`\`
-   \`\`\`${language}
-   // FILE: src/anotherFile.js
-   ...code...
-   \`\`\`
-4. Return ONLY the code blocks.`);
+3. If multiple files must be created or edited (e.g. middleware file and index.js), provide EACH file in its own distinct code block with its file header line.
+4. Return ONLY the code blocks. No conversational explanation or markdown outside the code blocks.`);
 
   return parts.join('\n\n');
 }

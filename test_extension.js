@@ -436,6 +436,21 @@ if (parsedUserFiles[2].filePath !== 'src/index.js' || !parsedUserFiles[2].code.i
   throw new Error('User snippet file 2 mismatch: ' + JSON.stringify(parsedUserFiles[2]));
 }
 
+// Single-file header detection test (e.g. validateMiddleware.js when index.js is active)
+const singleHeaderSample = `// validateMiddleware.js
+function validateUser(req, res, next) {
+  return next();
+}
+module.exports = { validateUser };
+`;
+const parsedSingleHeader = parseMultiFileSolution(singleHeaderSample, 'src/index.js');
+if (parsedSingleHeader.length !== 1 || parsedSingleHeader[0].filePath !== 'src/validateMiddleware.js') {
+  throw new Error('Single-file with header must resolve to header filename (src/validateMiddleware.js), got: ' + JSON.stringify(parsedSingleHeader));
+}
+if (parsedSingleHeader[0].code.includes('// validateMiddleware.js')) {
+  throw new Error('Single-file header line must be cleanly stripped from code body!');
+}
+
 // Safety guard verification: verify that main-world-bridge and background do NOT fall back to active editor when target is specified
 const currentBridgeJs = fs.readFileSync(path.join(__dirname, 'content/main-world-bridge.js'), 'utf8');
 const currentBgJs = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
