@@ -146,12 +146,46 @@
     };
   }
 
+  // Helper: safe extension message dispatcher with timeout and error handling
+  function sendMsg(msg, timeoutMs = 25000) {
+    return new Promise((resolve) => {
+      let done = false;
+      const timer = setTimeout(() => {
+        if (!done) {
+          done = true;
+          resolve({ ok: false, error: `Request timed out after ${Math.round(timeoutMs / 1000)}s` });
+        }
+      }, timeoutMs);
+
+      try {
+        if (!chrome.runtime?.id) {
+          clearTimeout(timer);
+          resolve({ ok: false, error: 'Extension was reloaded. Please refresh the page.' });
+          return;
+        }
+
+        chrome.runtime.sendMessage(msg, (resp) => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          if (chrome.runtime.lastError) {
+            resolve({ ok: false, error: chrome.runtime.lastError.message });
+          } else {
+            resolve(resp || { ok: false, error: 'No response from background service worker' });
+          }
+        });
+      } catch (err) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve({ ok: false, error: err.message || 'Extension error' });
+      }
+    });
+  }
+
   // --- Section 2: Editor Interaction ---
   async function queryActiveEditor() {
-    // Ask background to query all frames in this tab
-    const resp = await new Promise((resolve) => {
-      chrome.runtime.sendMessage({ op: 'AP_QUERY_EDITOR' }, (r) => resolve(r));
-    });
+    const resp = await sendMsg({ op: 'AP_QUERY_EDITOR' }, 8000);
 
     if (resp && resp.ok && resp.code) {
       let activeFile = 'index.js';
@@ -183,9 +217,7 @@
   }
 
   async function writeCodeToEditor(newCode) {
-    const resp = await new Promise((resolve) => {
-      chrome.runtime.sendMessage({ op: 'AP_WRITE_EDITOR', data: { code: newCode } }, (r) => resolve(r));
-    });
+    const resp = await sendMsg({ op: 'AP_WRITE_EDITOR', data: { code: newCode } }, 10000);
 
     if (resp && resp.ok) {
       return { ok: true, method: resp.method };
@@ -350,9 +382,10 @@
       feedback
     };
 
-    const resp = await new Promise((resolve) => {
-      chrome.runtime.sendMessage({ op: 'AP_GENERATE', data: { promptData, settingsOverride: ui.options } }, (r) => resolve(r));
-    });
+    const resp = await sendMsg({
+      op: 'AP_GENERATE',
+      data: { promptData, settingsOverride: ui.options }
+    }, 60000);
 
     if (!resp || !resp.ok) {
       const err = resp?.error || 'Unknown generation failure';
@@ -408,24 +441,48 @@
   }
 
   async function handleOneClickSolve() {
-    // Check if API key is configured
-    const settingsResp = await new Promise((resolve) => {
-      chrome.runtime.sendMessage({ op: 'AP_GET_SETTINGS' }, (r) => resolve(r));
-    });
-    const s = settingsResp?.settings || {};
-    const hasKey = !!(s.geminiKey?.trim() || s.groqKey?.trim() || s.openaiKey?.trim());
-
-    if (!hasKey) {
-      ui.showSettings = true;
-      ui.render();
-      ui.setStatus('API Key Required', 'Please enter your Gemini or Groq key above and click "Save Keys".', 'warn');
-      ui.addLog('Please enter your Gemini or Groq key in the settings above.', 'warn');
-      return;
-    }
-
-    ui.setRunning(true);
+    console.log('[AP-Solver] handleOneClickSolve triggered');
     try {
-      // 1. Read context
+      ui.setRunning(true);
+      ui.setStatus('Checking Configuration...', '', 'running', true);
+
+      // 1. Read keys directly from local storage
+      let s = {};
+      try {
+        s = await chrome.storage.local.get(null);
+      } catch (e) {
+        const resp = await sendMsg({ op: 'AP_GET_SETTINGS' }, 4000);
+        s = resp?.settings || {};
+      }
+
+      // Check if user has keys typed into the inline inputs right now
+      const inpGemini = (document.querySelector('.ap-inp-gemini')?.value || '').trim();
+      const inpGroq = (document.querySelector('.ap-inp-groq')?.value || '').trim();
+      if (inpGemini && !s.geminiKey) {
+        s.geminiKey = inpGemini;
+        await chrome.storage.local.set({ geminiKey: inpGemini });
+        ui.apiKeys.geminiKey = inpGemini;
+      }
+      if (inpGroq && !s.groqKey) {
+        s.groqKey = inpGroq;
+        await chrome.storage.local.set({ groqKey: inpGroq });
+        ui.apiKeys.groqKey = inpGroq;
+      }
+
+      const hasKey = !!(s.geminiKey?.trim() || s.groqKey?.trim() || s.openaiKey?.trim());
+
+      if (!hasKey) {
+        ui.setRunning(false);
+        ui.showSettings = true;
+        ui.render();
+        ui.setStatus('API Key Required', 'Please enter your Gemini or Groq key above and click "Save Keys".', 'warn');
+        ui.addLog('Please enter your Gemini or Groq key in the settings box above.', 'warn');
+        return;
+      }
+
+      ui.addLog('Starting automated solve flow...', 'ok');
+
+      // 2. Read context
       await handleReadContext();
 
       let maxAttempts = ui.options.autoRetry ? 3 : 1;
@@ -436,13 +493,13 @@
           ui.addLog(`🔁 Auto-Retry Attempt ${attempt}/${maxAttempts}...`, 'warn');
         }
 
-        // 2. Generate
+        // 3. Generate
         const code = await handleGenerate(feedback);
 
-        // 3. Write
+        // 4. Write
         await handleWriteCode();
 
-        // 4. Submit if enabled or requested
+        // 5. Submit if enabled or requested
         if (ui.options.autoSubmit || attempt > 1) {
           ui.addLog('Auto-submitting solution...');
           await sleep(1000);
@@ -466,6 +523,7 @@
     } catch (err) {
       console.error('[AP-Solver] One-click solve error:', err);
       ui.addLog(`Stopped: ${err.message}`, 'bad');
+      ui.setStatus('Error', err.message, 'error');
     } finally {
       ui.setRunning(false);
     }
@@ -473,12 +531,19 @@
 
   // --- Initialize UI ---
   async function init() {
-    // Load stored settings
-    const settingsResp = await new Promise((resolve) => {
-      chrome.runtime.sendMessage({ op: 'AP_GET_SETTINGS' }, (r) => resolve(r));
-    });
-
-    const settings = settingsResp?.settings || {};
+    // Load stored settings directly or via safe message dispatcher
+    let settings = {};
+    try {
+      if (chrome.storage?.local) {
+        settings = await chrome.storage.local.get(null);
+      }
+    } catch (e) {
+      console.warn('[AP-Solver] direct storage read fallback:', e);
+    }
+    if (!settings || !Object.keys(settings).length) {
+      const resp = await sendMsg({ op: 'AP_GET_SETTINGS' }, 3000);
+      settings = resp?.settings || {};
+    }
 
     ui = new window.APSolverUI({
       onOneClickSolve: handleOneClickSolve,
@@ -487,7 +552,12 @@
       onWriteCode: handleWriteCode,
       onSubmit: handleSubmit,
       onOptionsChange: (newOpts) => {
-        chrome.runtime.sendMessage({ op: 'AP_SAVE_SETTINGS', data: newOpts });
+        try {
+          if (chrome.storage?.local) {
+            chrome.storage.local.set(newOpts).catch(() => {});
+          }
+        } catch (e) {}
+        sendMsg({ op: 'AP_SAVE_SETTINGS', data: newOpts }, 4000).catch(() => {});
       }
     });
 

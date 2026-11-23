@@ -86,10 +86,10 @@ window.APSolverUI = class APSolverUI {
 
   setRunning(running) {
     this.isRunning = running;
-    const primaryBtn = this.host.querySelector('.ap-btn-primary');
-    if (primaryBtn) {
-      primaryBtn.disabled = running;
-      primaryBtn.innerHTML = running
+    const solveBtn = this.host.querySelector('.ap-btn-solve-main');
+    if (solveBtn) {
+      solveBtn.disabled = running;
+      solveBtn.innerHTML = running
         ? '<span class="ap-spinner"></span> Solving Question...'
         : '⚡ Solve & Submit Solution';
     }
@@ -159,7 +159,7 @@ window.APSolverUI = class APSolverUI {
             <input type="password" class="ap-input ap-inp-groq" placeholder="gsk_..." value="${this.escapeHtml(this.apiKeys.groqKey || '')}">
             <small><a href="https://console.groq.com/keys" target="_blank">Get Free Groq Key ↗</a></small>
           </div>
-          <button class="ap-btn-primary ap-btn-save-inline-keys" style="padding: 7px 12px; font-size: 12px; margin-top: 4px;">
+          <button class="ap-btn-save-inline-keys" style="background: linear-gradient(135deg, #0284c7, #2563eb); color: #fff; border: none; border-radius: 6px; padding: 8px 12px; font-size: 12px; font-weight: 600; cursor: pointer; margin-top: 4px;">
             💾 Save Keys
           </button>
           <div class="ap-inline-msg" style="display:none;font-size:11px;padding:4px 8px;border-radius:4px;"></div>
@@ -196,7 +196,7 @@ window.APSolverUI = class APSolverUI {
           </div>
 
           <!-- Primary One-Click Action -->
-          <button class="ap-btn-primary" ${this.isRunning ? 'disabled' : ''}>
+          <button class="ap-btn-primary ap-btn-solve-main" ${this.isRunning ? 'disabled' : ''}>
             ${this.isRunning ? '<span class="ap-spinner"></span> Solving...' : '⚡ Solve & Submit Solution'}
           </button>
 
@@ -329,7 +329,17 @@ window.APSolverUI = class APSolverUI {
         if (geminiVal) updates.geminiKey = geminiVal;
         if (groqVal) updates.groqKey = groqVal;
 
-        await chrome.runtime.sendMessage({ op: 'AP_SAVE_SETTINGS', data: updates });
+        try {
+          if (chrome.storage?.local) {
+            await chrome.storage.local.set(updates);
+          }
+        } catch (e) {}
+
+        try {
+          chrome.runtime.sendMessage({ op: 'AP_SAVE_SETTINGS', data: updates }, () => {
+            if (chrome.runtime?.lastError) { /* ignore */ }
+          });
+        } catch (e) {}
 
         this.apiKeys = { ...this.apiKeys, ...updates };
         this.options.provider = updates.provider;
@@ -340,9 +350,10 @@ window.APSolverUI = class APSolverUI {
       };
     }
 
-    const primaryBtn = this.host.querySelector('.ap-btn-primary');
-    if (primaryBtn) {
-      primaryBtn.onclick = () => {
+    const solveBtn = this.host.querySelector('.ap-btn-solve-main');
+    if (solveBtn) {
+      solveBtn.onclick = () => {
+        console.log('[AP-Solver] Solve button clicked!');
         if (this.callbacks.onOneClickSolve) this.callbacks.onOneClickSolve();
       };
     }
