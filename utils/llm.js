@@ -153,39 +153,74 @@ export function formatCodeIndentation(code) {
 export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.js') {
   if (!rawText) return [];
 
-  // Match all file headers like:
-  // // orderManager.js
-  // // src/orderManager.js
-  // // FILE: orderManager.js
-  // /* orderManager.js */
-  // ### orderManager.js
-  // // --- orderManager.js ---
-  const fileHeaderRegex = /(?:^|\n)\s*(?:\/\/|\/\*|#+)?\s*(?:file:?\s*|---\s*)?(src\/)?([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt|jsx|tsx|mjs|cjs))(?:\s*---|\s*\*\/)?\s*(?:\n|$)/gi;
+  // Strategy 1: Multiple ``` markdown code blocks
+  const blockRegex = /```(?:[a-zA-Z0-9_\-]+)?(?::([^\n]+))?([^\n]*)\n([\s\S]*?)```/g;
+  const blocks = [...rawText.matchAll(blockRegex)];
 
-  const matches = [...rawText.matchAll(fileHeaderRegex)];
+  if (blocks.length > 1) {
+    const parsedBlocks = [];
+    for (let i = 0; i < blocks.length; i++) {
+      const b = blocks[i];
+      const langExtra = (b[1] || '') + ' ' + (b[2] || '');
+      let code = b[3].trim();
 
-  if (matches.length > 1 || (matches.length === 1 && matches[0][2])) {
-    const files = [];
-    for (let i = 0; i < matches.length; i++) {
-      const hasSrc = !!matches[i][1];
-      const filename = matches[i][2].trim();
-      let p = hasSrc ? 'src/' + filename : filename;
-      if (!p.startsWith('src/') && !p.includes('/') && p !== 'package.json' && !p.startsWith('.')) {
-        p = 'src/' + p;
+      const prevEnd = (i > 0) ? (blocks[i - 1].index + blocks[i - 1][0].length) : 0;
+      const precedingText = rawText.substring(prevEnd, b.index).trim();
+
+      let detectedFilename = '';
+
+      // 1. Check first line inside code
+      const firstLineMatch = code.match(/^(?:\/\/\s*|\/\*\s*|#+\s*)?(?:file:?\s*|---\s*)?(?:src\/)?([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt))(?:\s*---|\s*\*\/)?\s*(?:\n|$)/i);
+      if (firstLineMatch) {
+        detectedFilename = firstLineMatch[1];
+        code = code.replace(/^[^\n]*\n/, '').trim();
       }
-      const startIndex = matches[i].index + matches[i][0].length;
-      const endIndex = (i + 1 < matches.length) ? matches[i + 1].index : rawText.length;
-      let rawCode = rawText.substring(startIndex, endIndex).trim();
-      // Remove any wrapping markdown code fence
-      rawCode = rawCode.replace(/^```[a-z]*\s*\n?/i, '').replace(/```+$/g, '').trim();
-      if (rawCode) {
-        files.push({
-          filePath: p,
-          code: formatCodeIndentation(rawCode)
-        });
+
+      // 2. Check lang tag / extra
+      if (!detectedFilename && langExtra) {
+        const m = langExtra.match(/([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt))/i);
+        if (m) detectedFilename = m[1];
+      }
+
+      // 3. Check preceding text
+      if (!detectedFilename && precedingText) {
+        const lines = precedingText.split('\n').map(l => l.trim()).filter(Boolean);
+        const lastFew = lines.slice(-3).join(' ');
+        const m = lastFew.match(/([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt))/i);
+        if (m) detectedFilename = m[1];
+      }
+
+      if (detectedFilename && code) {
+        let p = detectedFilename.startsWith('src/') ? detectedFilename : (detectedFilename.includes('/') ? detectedFilename : 'src/' + detectedFilename);
+        parsedBlocks.push({ filePath: p, code: formatCodeIndentation(code) });
       }
     }
-    if (files.length > 0) return files;
+
+    if (parsedBlocks.length > 1) {
+      return parsedBlocks;
+    }
+  }
+
+  // Strategy 2: Single block or raw text split by line-based file comment headers
+  const headerRegex = /(?:^|\n)\s*(?:\/\/|\/\*|#+)\s*(?:file:?\s*|---\s*)?(?:src\/)?([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt))(?:\s*---|\s*\*\/)?\s*(?:\n|$)/gi;
+  const headers = [...rawText.matchAll(headerRegex)];
+
+  if (headers.length > 1) {
+    const inlineFiles = [];
+    for (let i = 0; i < headers.length; i++) {
+      const fn = headers[i][1];
+      let p = fn.startsWith('src/') ? fn : (fn.includes('/') ? fn : 'src/' + fn);
+      const start = headers[i].index + headers[i][0].length;
+      const end = (i + 1 < headers.length) ? headers[i + 1].index : rawText.length;
+      let rawCode = rawText.substring(start, end).trim();
+      rawCode = rawCode.replace(/^```[a-z]*\s*\n?/i, '').replace(/```+$/g, '').trim();
+      if (rawCode.length > 5) {
+        inlineFiles.push({ filePath: p, code: formatCodeIndentation(rawCode) });
+      }
+    }
+    if (inlineFiles.length > 1) {
+      return inlineFiles;
+    }
   }
 
   const singleCode = extractCodeBlock(rawText);

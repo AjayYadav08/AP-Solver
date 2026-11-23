@@ -189,10 +189,26 @@
     try { target.dispatchEvent(new MouseEvent('click', clickOpts2)); } catch (e) {}
     try { target.dispatchEvent(new MouseEvent('dblclick', clickOpts2)); } catch (e) {}
 
+    if (target !== el) {
+      try { el.dispatchEvent(new PointerEvent('pointerdown', clickOpts1)); } catch (e) {}
+      try { el.dispatchEvent(new MouseEvent('mousedown', clickOpts1)); } catch (e) {}
+      try { el.dispatchEvent(new PointerEvent('pointerup', clickOpts1)); } catch (e) {}
+      try { el.dispatchEvent(new MouseEvent('mouseup', clickOpts1)); } catch (e) {}
+      try { el.dispatchEvent(new MouseEvent('click', clickOpts1)); } catch (e) {}
+      try { el.dispatchEvent(new MouseEvent('dblclick', clickOpts2)); } catch (e) {}
+    }
+
+    try { el.click?.(); } catch (e) {}
+    try { target.click?.(); } catch (e) {}
+
     // Enter keydown / keyup to open item in VS Code tree
     try {
       target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
       target.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+      if (target !== el) {
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+        el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+      }
     } catch (e) {}
 
     return true;
