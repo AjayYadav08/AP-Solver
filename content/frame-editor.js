@@ -1,5 +1,6 @@
 // content/frame-editor.js - Injected into all frames (including VS Code Web / Monaco)
 (() => {
+  if (!/(^|\.)newtonschool\.co$/i.test(location.hostname)) return; // Strictly Newton School portal only
   if (window.__apFrameEditorLoaded) return;
   window.__apFrameEditorLoaded = true;
 

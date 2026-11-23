@@ -1,6 +1,7 @@
 // content/content.js - Core Top-Frame Automation Driver for AP-Solver
 (() => {
   if (window.top !== window) return; // Only run in top window
+  if (!/(^|\.)newtonschool\.co$/i.test(location.hostname)) return; // Strictly Newton School portal only
   if (window.__apContentLoaded) return;
   window.__apContentLoaded = true;
 

@@ -15,7 +15,10 @@ const manifest = JSON.parse(manifestRaw);
 if (manifest.manifest_version !== 3) throw new Error('Manifest must be version 3');
 if (!manifest.permissions.includes('storage')) throw new Error('Missing storage permission');
 if (!manifest.permissions.includes('scripting')) throw new Error('Missing scripting permission');
-console.log('   ✓ manifest.json is valid MV3');
+// Ensure restricted to newtonschool.co
+const contentMatches = manifest.content_scripts.flatMap(cs => cs.matches);
+if (contentMatches.includes('<all_urls>')) throw new Error('Content scripts must not match <all_urls>; must be restricted to newtonschool.co');
+console.log('   ✓ manifest.json is valid MV3 and strictly restricted to newtonschool.co');
 
 // 2. Check all files exist
 console.log('2. Checking required files exist...');
