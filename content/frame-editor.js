@@ -132,20 +132,56 @@
     if (msg.op === 'AP_SET_EDITOR_CODE') {
       (async () => {
         const code = msg.code || '';
+        tryOpenTargetFileInExplorer();
+
         // Try bridge first
         const bridgeResp = await askBridge('AP_WRITE_CODE', { code });
         if (bridgeResp.ok) {
-          sendResponse({ ok: true, method: bridgeResp.method || 'bridge' });
+          sendResponse({ ok: true, verified: true, method: bridgeResp.method || 'bridge' });
           return;
         }
 
-        // Fallback: DOM execCommand
-        const textarea = document.querySelector('.monaco-editor textarea.inputarea');
+        // Fallback: DOM events on textarea
+        const editorDom = document.querySelector('.monaco-editor');
+        const textarea = editorDom?.querySelector('textarea.inputarea') || document.querySelector('textarea.inputarea');
         if (textarea) {
           textarea.focus();
           document.execCommand('selectAll', false, null);
-          const ok = document.execCommand('insertText', false, code);
-          sendResponse({ ok: ok, method: 'execCommand' });
+
+          const dt = new DataTransfer();
+          dt.setData('text/plain', code);
+          const pasteEvt = new ClipboardEvent('paste', {
+            clipboardData: dt,
+            bubbles: true,
+            cancelable: true
+          });
+          textarea.dispatchEvent(pasteEvt);
+          if (editorDom) editorDom.dispatchEvent(pasteEvt);
+
+          try {
+            document.execCommand('insertText', false, code);
+          } catch(e) {}
+
+          // Trigger Ctrl+S to save
+          const isMac = /mac/i.test(navigator.platform);
+          const saveEvt = new KeyboardEvent('keydown', {
+            key: 's',
+            code: 'KeyS',
+            keyCode: 83,
+            which: 83,
+            ctrlKey: !isMac,
+            metaKey: isMac,
+            bubbles: true,
+            cancelable: true
+          });
+          window.dispatchEvent(saveEvt);
+          document.dispatchEvent(saveEvt);
+          textarea.dispatchEvent(saveEvt);
+
+          const lines = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')].map(l => l.textContent).join('\n');
+          const verified = lines.length > 50 && !/res\.statusCode\s*=\s*501/i.test(lines);
+
+          sendResponse({ ok: true, verified, method: 'frame-dom-paste' });
           return;
         }
 

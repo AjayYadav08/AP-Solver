@@ -89,42 +89,70 @@
     if (action === 'AP_WRITE_CODE') {
       const newCode = payload?.code || '';
       try {
+        function triggerSave() {
+          const isMac = /mac/i.test(navigator.platform);
+          const saveEvt = new KeyboardEvent('keydown', {
+            key: 's',
+            code: 'KeyS',
+            keyCode: 83,
+            which: 83,
+            ctrlKey: !isMac,
+            metaKey: isMac,
+            bubbles: true,
+            cancelable: true
+          });
+          window.dispatchEvent(saveEvt);
+          document.dispatchEvent(saveEvt);
+          const ta = document.querySelector('.monaco-editor textarea.inputarea');
+          if (ta) ta.dispatchEvent(saveEvt);
+        }
+
         const monaco = getMonacoInstance();
-        if (monaco) {
+        if (monaco && monaco.editor) {
+          // Check all models for index.js
+          const models = monaco.editor.getModels ? monaco.editor.getModels() : [];
+          const indexModel = models.find((m) => /index\.(js|ts)/i.test(m.uri?.path || m.uri?.toString() || ''));
+          if (indexModel) {
+            indexModel.setValue(newCode);
+            triggerSave();
+            window.postMessage({ action: 'AP_WRITE_CODE_RESULT', id, ok: true, method: 'model.setValue' }, '*');
+            return;
+          }
+
           const editor = getActiveEditor(monaco);
           if (editor && editor.getModel()) {
             const model = editor.getModel();
             editor.focus();
-            
-            // Execute edits to preserve undo stack and fire normal change events
-            editor.executeEdits('ap-solver', [{
-              range: model.getFullModelRange(),
-              text: newCode,
-              forceMoveMarkers: true
-            }]);
-            editor.pushUndoStop();
-
-            // Verification
-            const updated = editor.getValue();
-            if (updated.trim().length > 0) {
-              window.postMessage({ action: 'AP_WRITE_CODE_RESULT', id, ok: true, method: 'executeEdits' }, '*');
-              return;
-            }
-
-            // Fallback setValue
             model.setValue(newCode);
-            window.postMessage({ action: 'AP_WRITE_CODE_RESULT', id, ok: true, method: 'setValue' }, '*');
+            triggerSave();
+            window.postMessage({ action: 'AP_WRITE_CODE_RESULT', id, ok: true, method: 'activeEditor.setValue' }, '*');
             return;
           }
         }
 
         // DOM Fallback
-        const textarea = document.querySelector('.monaco-editor textarea.inputarea');
+        const editorDom = document.querySelector('.monaco-editor');
+        const textarea = editorDom?.querySelector('textarea.inputarea');
         if (textarea) {
           textarea.focus();
           document.execCommand('selectAll', false, null);
-          const ok = document.execCommand('insertText', false, newCode);
-          window.postMessage({ action: 'AP_WRITE_CODE_RESULT', id, ok, method: 'execCommand' }, '*');
+
+          const dt = new DataTransfer();
+          dt.setData('text/plain', newCode);
+          const pasteEvt = new ClipboardEvent('paste', {
+            clipboardData: dt,
+            bubbles: true,
+            cancelable: true
+          });
+          textarea.dispatchEvent(pasteEvt);
+          if (editorDom) editorDom.dispatchEvent(pasteEvt);
+
+          try {
+            document.execCommand('insertText', false, newCode);
+          } catch (e) {}
+
+          triggerSave();
+          window.postMessage({ action: 'AP_WRITE_CODE_RESULT', id, ok: true, method: 'dom.paste' }, '*');
           return;
         }
 

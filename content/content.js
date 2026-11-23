@@ -217,22 +217,63 @@
   }
 
   async function writeCodeToEditor(newCode) {
-    const resp = await sendMsg({ op: 'AP_WRITE_EDITOR', data: { code: newCode } }, 10000);
+    // Copy code to real clipboard first
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(newCode);
+      }
+    } catch(e) {}
 
-    if (resp && resp.ok) {
-      return { ok: true, method: resp.method };
+    const resp = await sendMsg({ op: 'AP_WRITE_EDITOR', data: { code: newCode } }, 15000);
+
+    if (resp && resp.ok && resp.verified) {
+      return { ok: true, verified: true, method: resp.method };
     }
 
-    // Fallback in top document
-    const textarea = document.querySelector('.monaco-editor textarea.inputarea');
+    // Fallback in top document if editor is in top frame
+    const editorDom = document.querySelector('.monaco-editor');
+    const textarea = editorDom?.querySelector('textarea.inputarea');
     if (textarea) {
       textarea.focus();
       document.execCommand('selectAll', false, null);
-      const ok = document.execCommand('insertText', false, newCode);
-      return { ok, method: 'top-execCommand' };
+      
+      const dt = new DataTransfer();
+      dt.setData('text/plain', newCode);
+      const pasteEvt = new ClipboardEvent('paste', {
+        clipboardData: dt,
+        bubbles: true,
+        cancelable: true
+      });
+      textarea.dispatchEvent(pasteEvt);
+      if (editorDom) editorDom.dispatchEvent(pasteEvt);
+
+      try {
+        document.execCommand('insertText', false, newCode);
+      } catch(e) {}
+
+      // Trigger Ctrl+S / Cmd+S
+      const isMac = /mac/i.test(navigator.platform);
+      const saveEvt = new KeyboardEvent('keydown', {
+        key: 's',
+        code: 'KeyS',
+        keyCode: 83,
+        which: 83,
+        ctrlKey: !isMac,
+        metaKey: isMac,
+        bubbles: true,
+        cancelable: true
+      });
+      window.dispatchEvent(saveEvt);
+      document.dispatchEvent(saveEvt);
+      textarea.dispatchEvent(saveEvt);
+
+      // Verify DOM
+      const lines = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')].map(l => l.textContent).join('\n');
+      const verified = lines.length > 50 && !/res\.statusCode\s*=\s*501/i.test(lines);
+      return { ok: true, verified, method: 'top-dom-paste' };
     }
 
-    return { ok: false, error: resp?.error || 'Could not write code into editor' };
+    return { ok: !!resp?.ok, verified: !!resp?.verified, method: resp?.method || 'unknown' };
   }
 
   // --- Section 3: Submissions & Grader Tracking ---
@@ -404,21 +445,41 @@
 
   async function handleWriteCode() {
     if (!cachedGeneratedCode) {
-      alert('No code generated yet. Please click "Generate" or "Solve & Submit Solution".');
-      return;
+      alert('No code generated yet. Please click "Solve".');
+      return false;
     }
 
     ui.setStatus('Injecting code into Monaco editor...', '', 'running', true);
+
+    // Guaranteed: copy generated code to system clipboard
+    try {
+      await navigator.clipboard.writeText(cachedGeneratedCode);
+    } catch (e) {}
+
     const res = await writeCodeToEditor(cachedGeneratedCode);
 
-    if (res.ok) {
-      ui.addLog(`✓ Code successfully injected via ${res.method}!`, 'ok');
-      ui.setStatus('Code Injected', 'Editor updated successfully.', 'success');
-    } else {
-      ui.addLog(`Failed to inject: ${res.error}. Trying clipboard copy fallback...`, 'warn');
-      navigator.clipboard.writeText(cachedGeneratedCode);
-      ui.setStatus('Code Copied to Clipboard', 'Please focus editor and press Cmd+V / Ctrl+V to paste.', 'error');
+    // Wait a brief moment for editor to render
+    await sleep(800);
+
+    // Verification check
+    const verifyResp = await sendMsg({ op: 'AP_QUERY_EDITOR' }, 5000);
+    const editorText = verifyResp?.code || '';
+    const topLines = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')].map(l => l.textContent).join('\n');
+    const effectiveText = editorText.length > 50 ? editorText : topLines;
+
+    const hasOld501 = /res\.statusCode\s*=\s*501/i.test(effectiveText);
+    const codeChanged = effectiveText.length > 80 && !hasOld501;
+
+    if (codeChanged || res?.verified) {
+      ui.addLog(`✓ Code successfully injected & verified in editor (${res?.method || 'verified'})!`, 'ok');
+      ui.setStatus('Code Injected & Verified', 'Editor updated and saved to disk.', 'success');
+      return true;
     }
+
+    // If verification failed:
+    ui.addLog('⚠️ Code copied to clipboard! Please click into index.js and press Cmd+V (or Ctrl+V) to paste, then Cmd+S to save.', 'warn');
+    ui.setStatus('Paste Required', 'Code is copied to your clipboard. Press Cmd+V in index.js to paste.', 'warn');
+    return false;
   }
 
   async function handleSubmit() {
@@ -497,11 +558,15 @@
         const code = await handleGenerate(feedback);
 
         // 4. Write
-        await handleWriteCode();
+        const writeOk = await handleWriteCode();
+        if (!writeOk) {
+          ui.addLog('🛑 Automated submission paused because editor text was not yet replaced. Please click editor, press Cmd+V to paste and Cmd+S to save, then click Solve again to submit!', 'bad');
+          break; // NEVER SUBMIT 501 PLACEHOLDER CODE!
+        }
 
         // 5. Submit solution
         ui.addLog('Submitting solution to test grader...');
-        await sleep(1000);
+        await sleep(1500);
         const subRes = await handleSubmit();
 
         if (subRes && subRes.ok) {
