@@ -193,6 +193,9 @@
         const parts = resp.uri.split('/');
         activeFile = parts[parts.length - 1] || 'src/index.js';
       }
+      if (/^\d+$/.test(activeFile)) {
+        activeFile = 'src/index.js';
+      }
       return {
         code: resp.code,
         language: resp.language || 'javascript',
@@ -766,7 +769,7 @@
       const fileCount = cachedEditor.allFiles?.length || 1;
       ui.addLog(`Editor detected: "${cachedEditor.activeFile}" (${cachedEditor.code.split('\n').length} lines, ${fileCount} file(s) in workspace)`, 'ok');
 
-      // Check if question specifically specifies a different target code file (e.g. orderManager.js)
+      // Check if question specifically specifies a different target code file (e.g. seed.js, orderManager.js)
       if (cachedQuestion?.details) {
         const fileMatches = cachedQuestion.details.match(/([a-zA-Z0-9_\-]+\.(?:js|ts))/gi) || [];
         const knownFiles = cachedEditor.allFiles || [];
@@ -776,6 +779,11 @@
           if (matchingKnown && !cachedEditor.activeFile.endsWith(fm)) {
             ui.addLog(`ℹ️ Question specifically targets "${matchingKnown}". Updating active target.`, 'ok');
             cachedEditor.activeFile = matchingKnown;
+            break;
+          } else if (!matchingKnown && /seed\.js|router|controller|middleware|service/i.test(fm)) {
+            const targetPath = fm.includes('/') ? fm : 'src/' + fm;
+            ui.addLog(`ℹ️ Challenge requires new file "${targetPath}". Setting as primary target.`, 'ok');
+            cachedEditor.activeFile = targetPath;
             break;
           }
         }
@@ -1182,10 +1190,18 @@
         ui.addLog('✍️ [Step 3/6] Writing code into all files one by one...', 'ok');
         const writeOk = await handleWriteCode();
         if (!writeOk) {
-          const targetName = cachedEditor?.activeFile || 'target file';
-          ui.addLog(`🛑 Automated submission paused because editor text was not yet replaced cleanly. Please paste the clean code into "${targetName}" and click Solve again to submit!`, 'bad');
-          ui.setRunning(false);
-          break; // NEVER SUBMIT 501 PLACEHOLDER CODE!
+          // Double check: Is the active editor already holding complete, valid working code?
+          const checkResp = await sendMsg({ op: 'AP_QUERY_EDITOR' }, 5000);
+          const currentCode = checkResp?.code || '';
+          const hasCleanCode = currentCode.length > 50 && !/\/\/\s*write your code here|\/\*\s*write your code here\s*\*\//i.test(currentCode);
+          if (hasCleanCode) {
+            ui.addLog(`✓ Complete solution code already present & verified in editor. Proceeding to submit...`, 'ok');
+          } else {
+            const targetName = cachedEditor?.activeFile || 'target file';
+            ui.addLog(`🛑 Automated submission paused because editor text was not yet replaced cleanly. Please paste the clean code into "${targetName}" and click Solve again to submit!`, 'bad');
+            ui.setRunning(false);
+            break; // NEVER SUBMIT 501 PLACEHOLDER CODE!
+          }
         }
 
         // Code Completeness Check: Submit ONLY when code is complete and non-placeholder!

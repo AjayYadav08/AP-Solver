@@ -83,7 +83,7 @@
     const activeTab = tabs.find(t => t.classList.contains('active') || t.getAttribute('aria-selected') === 'true');
     if (activeTab) {
       const label = (activeTab.querySelector('.label-name') || activeTab).textContent.trim();
-      if (label && !/welcome/i.test(label)) {
+      if (label && label.includes('.') && !/^\d+$/.test(label) && !/welcome/i.test(label)) {
         return label;
       }
     }
@@ -96,7 +96,7 @@
         const p = m.uri.path || m.uri.toString();
         const parts = p.split('/');
         const fname = parts[parts.length - 1];
-        if (fname && !/welcome/i.test(fname)) {
+        if (fname && fname.includes('.') && !/^\d+$/.test(fname) && !/welcome|inmemory/i.test(fname)) {
           return p.includes('src/') ? 'src/' + fname : fname;
         }
       }

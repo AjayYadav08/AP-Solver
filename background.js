@@ -481,7 +481,7 @@ async function cdpClickElementInWorkspace(tabId, targetFilePath) {
 
         // 4. Press Enter key via CDP to confirm creation
         await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
-        await sleep(500);
+        await sleep(800); // Give VS Code Web container time to create file & initialize model
         return true;
       }
     }
@@ -510,13 +510,19 @@ async function queryEditorInTab(tabId) {
       world: 'MAIN',
       func: () => {
         try {
+          const isWorkbench = !!document.querySelector('.monaco-workbench, .part.editor, .editor-instance');
+          // If this frame contains an iframe AND has NO workbench, it's the top host window! SKIP IT!
+          if (!isWorkbench && document.querySelector('iframe')) {
+            return null;
+          }
+
           // Helper: Detect active filename from breadcrumbs, tabs, or monaco model
           function detectActiveFile() {
             // 1. Breadcrumbs (e.g. "src > JS orderManager.js")
             const breadcrumbs = [...document.querySelectorAll('.breadcrumbs-widget .monaco-breadcrumb-item')].map(b => b.textContent.trim()).filter(Boolean);
             if (breadcrumbs.length > 0) {
               const last = breadcrumbs[breadcrumbs.length - 1].replace(/^[A-Z]+\s+/, '');
-              if (last.includes('.')) {
+              if (last.includes('.') && !/^\d+$/.test(last)) {
                 if (breadcrumbs.length >= 2 && breadcrumbs[0] === 'src') {
                   return 'src/' + last;
                 }
@@ -529,7 +535,7 @@ async function queryEditorInTab(tabId) {
             const activeTab = tabs.find(t => t.classList.contains('active') || t.getAttribute('aria-selected') === 'true');
             if (activeTab) {
               const label = (activeTab.querySelector('.label-name') || activeTab).textContent.trim();
-              if (label && !/welcome/i.test(label)) {
+              if (label && label.includes('.') && !/^\d+$/.test(label) && !/welcome/i.test(label)) {
                 return label.includes('src/') ? label : 'src/' + label;
               }
             }
@@ -544,14 +550,14 @@ async function queryEditorInTab(tabId) {
             for (const row of treeRows) {
               const labelEl = row.querySelector('.label-name') || row;
               const text = labelEl.textContent.trim();
-              if (text && text.includes('.') && !/^\s*$/.test(text)) {
+              if (text && text.includes('.') && !/^\d+$/.test(text) && !/^\s*$/.test(text)) {
                 files.add(text);
               }
             }
             const tabs = [...document.querySelectorAll('.tab, [role="tab"]')];
             for (const tab of tabs) {
               const text = (tab.querySelector('.label-name') || tab).textContent.trim();
-              if (text && text.includes('.') && !/welcome/i.test(text)) {
+              if (text && text.includes('.') && !/^\d+$/.test(text) && !/welcome/i.test(text)) {
                 files.add(text);
               }
             }
@@ -588,7 +594,7 @@ async function queryEditorInTab(tabId) {
                 const val = mod.getValue();
                 if (val && val.length < 5000) referenceFiles[fname] = val;
               }
-              if (fname && fname.includes('.')) workspaceFiles.push(p.includes('src/') ? 'src/' + fname : fname);
+              if (fname && fname.includes('.') && !/^\d+$/.test(fname)) workspaceFiles.push(p.includes('src/') ? 'src/' + fname : fname);
             }
 
             // If a specific active file was detected, find its model first
@@ -616,11 +622,19 @@ async function queryEditorInTab(tabId) {
             if (activeModel) {
               const val = activeModel.getValue();
               const p = activeModel.uri?.path || activeModel.uri?.toString() || '';
-              const fname = p.split('/').pop() || detectedActive || 'src/index.js';
-              const resolvedActive = p.includes('src/') ? 'src/' + fname : fname;
+              const rawFname = p.split('/').pop() || '';
+              let fname = detectedActive || '';
+              if (rawFname && rawFname.includes('.') && !/^\d+$/.test(rawFname) && !/inmemory/i.test(p)) {
+                fname = rawFname;
+              }
+              if (!fname || /^\d+$/.test(fname)) {
+                fname = 'src/index.js';
+              }
+              const resolvedActive = fname.includes('src/') ? fname : (p.includes('src/') ? 'src/' + fname : fname);
 
               return {
                 found: true,
+                isWorkbench,
                 code: val,
                 language: activeModel.getLanguageId ? activeModel.getLanguageId() : 'javascript',
                 uri: p,
@@ -631,20 +645,23 @@ async function queryEditorInTab(tabId) {
             }
           }
 
-          // Fallback check: Monaco DOM view-lines
-          const monacoDom = document.querySelector('.monaco-editor');
-          if (monacoDom) {
-            const lines = [...monacoDom.querySelectorAll('.view-lines .view-line')];
-            const code = lines.map(l => l.textContent).join('\n');
-            if (code && !/Get Started with VS Code/i.test(code)) {
-              return {
-                found: true,
-                code,
-                language: 'javascript',
-                activeFile: detectedActive || 'src/index.js',
-                allFiles: [...new Set(workspaceFiles)],
-                fromDom: true
-              };
+          // Fallback check: Monaco DOM view-lines (ONLY inside real workbench)
+          if (isWorkbench) {
+            const monacoDom = document.querySelector('.monaco-editor');
+            if (monacoDom) {
+              const lines = [...monacoDom.querySelectorAll('.view-lines .view-line')];
+              const code = lines.map(l => l.textContent).join('\n');
+              if (code && !/Get Started with VS Code/i.test(code)) {
+                return {
+                  found: true,
+                  isWorkbench,
+                  code,
+                  language: 'javascript',
+                  activeFile: detectedActive || 'src/index.js',
+                  allFiles: [...new Set(workspaceFiles)],
+                  fromDom: true
+                };
+              }
             }
           }
         } catch (e) {
@@ -654,7 +671,8 @@ async function queryEditorInTab(tabId) {
       }
     });
 
-    const match = results?.find(r => r.result && r.result.found);
+    const workbenchMatch = results?.find(r => r.result && r.result.found && r.result.isWorkbench);
+    const match = workbenchMatch || results?.find(r => r.result && r.result.found);
     if (match && match.result) {
       return { ok: true, ...match.result };
     }
@@ -941,14 +959,24 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
 
             const activeEd = validEditors.find(e => !e.getOption?.(m.editor.EditorOption?.readOnly)) || validEditors[0] || null;
 
-            // A. If targetModel exists in getModels, write to it directly!
-            const models = m.editor.getModels ? m.editor.getModels() : [];
+            // A. If targetModel exists in getModels (poll up to 3.5s for newly created files)
             let targetModel = null;
-            if (basename) {
-              targetModel = models.find(mod => {
-                const p = mod.uri?.path || mod.uri?.toString() || '';
-                return p.endsWith('/' + basename) || p.endsWith(targetPath);
-              });
+            const tStart = Date.now();
+            while (Date.now() - tStart < 3500) {
+              const models = m.editor.getModels ? m.editor.getModels() : [];
+              if (basename) {
+                targetModel = models.find(mod => {
+                  const p = mod.uri?.path || mod.uri?.toString() || '';
+                  return p.endsWith('/' + basename) || p.endsWith(targetPath);
+                });
+              }
+              if (targetModel) break;
+
+              const curTab = document.querySelector('.tab.active, [role="tab"][aria-selected="true"]');
+              const curTxt = (curTab?.querySelector('.label-name') || curTab)?.textContent?.trim() || '';
+              if (normBase && normStr(curTxt).includes(normBase)) break;
+
+              await sleep(150);
             }
 
             if (targetModel && typeof targetModel.setValue === 'function') {

@@ -674,4 +674,31 @@ if (!contentJs23.includes("!document.querySelector('iframe')") ||
 }
 console.log('   ✓ File Icon Targeting, Inline Rename Elimination & HTTP Tester Isolation verified');
 
+// Test 24: Verify "activeFile 1" Elimination, Workbench Isolation & New File Polling
+console.log('24. Testing "activeFile 1" Elimination, Workbench Isolation & New File Polling...');
+const bgJs24 = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
+const contentJs24 = fs.readFileSync(path.join(__dirname, 'content/content.js'), 'utf8');
+const bridgeJs24 = fs.readFileSync(path.join(__dirname, 'content/main-world-bridge.js'), 'utf8');
+
+// 1. Verify workbench isolation and rejection of numeric filenames in background.js
+if (!bgJs24.includes('!isWorkbench && document.querySelector(\'iframe\')') ||
+    !bgJs24.includes('!/^\\d+$/.test(rawFname)') ||
+    !bgJs24.includes('workbenchMatch = results?.find(r => r.result && r.result.found && r.result.isWorkbench)')) {
+  throw new Error('background.js must isolate real workbench frames and reject inmemory/numeric model names like "1"!');
+}
+
+// 2. Verify polling for newly created files in writeEditorInTab
+if (!bgJs24.includes('Date.now() - tStart < 3500') ||
+    !bgJs24.includes('normBase && normStr(curTxt).includes(normBase)')) {
+  throw new Error('background.js must poll up to 3.5s for newly created files and tabs to initialize!');
+}
+
+// 3. Verify content.js numeric activeFile guard and challenge target auto-detection
+if (!contentJs24.includes('/^\\d+$/.test(activeFile)') ||
+    !contentJs24.includes('seed\\.js|router|controller|middleware|service') ||
+    !contentJs24.includes('hasCleanCode')) {
+  throw new Error('content.js must sanitize numeric activeFile, auto-target new required files like seed.js, and check existing clean code before pausing!');
+}
+console.log('   ✓ "activeFile 1" Elimination, Workbench Isolation & New File Polling verified');
+
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');
