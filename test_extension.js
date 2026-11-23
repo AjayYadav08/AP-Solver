@@ -470,11 +470,14 @@ console.log('   ✓ Multi-File Solution Manager UI & bulletproof navigation veri
 console.log('17. Testing Chrome DevTools Protocol (CDP) True Native Hardware Driver...');
 const updatedBgJs = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
 
-if (!updatedBgJs.includes('attachCDP') || !updatedBgJs.includes('cdpNativeDblClick') || !updatedBgJs.includes('cdpQuickOpenFile') || !updatedBgJs.includes('cdpSaveFile')) {
-  throw new Error('background.js must implement attachCDP, cdpNativeDblClick, cdpQuickOpenFile, and cdpSaveFile!');
+if (!updatedBgJs.includes('attachCDP') || !updatedBgJs.includes('cdpNativeDblClick') || !updatedBgJs.includes('cdpClickElementInWorkspace') || !updatedBgJs.includes('cdpSaveFile')) {
+  throw new Error('background.js must implement attachCDP, cdpNativeDblClick, cdpClickElementInWorkspace, and cdpSaveFile!');
 }
 if (!updatedBgJs.includes('Input.dispatchMouseEvent') || !updatedBgJs.includes('Input.dispatchKeyEvent') || !updatedBgJs.includes('Input.insertText')) {
   throw new Error('background.js must dispatch native mouse, keyboard and insertText events via CDP!');
+}
+if (!updatedBgJs.includes('cdpClickElementInWorkspace(tabId, targetFilePath)')) {
+  throw new Error('background.js writeEditorInTab must call cdpClickElementInWorkspace to navigate to target files!');
 }
 console.log('   ✓ Chrome DevTools Protocol (CDP) True Native Hardware Driver verified');
 

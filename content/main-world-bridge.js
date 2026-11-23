@@ -553,7 +553,8 @@
         // 3. DOM Fallback: ONLY if active tab or breadcrumb matches targetFilePath
         const curActive = detectActiveFileName(monaco);
         const basename = targetFilePath ? targetFilePath.split('/').pop() : '';
-        const isTargetActive = !targetFilePath || curActive === basename || curActive.endsWith('/' + basename);
+        const normStr = (s) => (s || '').toLowerCase().replace(/[^a-z0-9_\-.]/g, '');
+        const isTargetActive = !targetFilePath || normStr(curActive).includes(normStr(basename));
 
         if (isTargetActive) {
           const editorDom = document.querySelector('.monaco-editor');

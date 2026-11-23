@@ -128,6 +128,157 @@ async function cdpQuickOpenFile(tabId, targetFilePath) {
   }
 }
 
+// True Native CDP Click on Tab or Explorer Tree Item Across Frames
+async function cdpClickElementInWorkspace(tabId, targetFilePath) {
+  if (!targetFilePath) return false;
+  const basename = targetFilePath.split('/').pop().trim();
+
+  try {
+    const attached = await attachCDP(tabId);
+    if (!attached) return false;
+
+    // 1. Get all iframe positions in top frame
+    const iframeRes = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        return [...document.querySelectorAll('iframe')].map((ifr) => {
+          const r = ifr.getBoundingClientRect();
+          return { left: r.left, top: r.top, width: r.width, height: r.height };
+        }).filter(r => r.width > 150 && r.height > 150);
+      }
+    });
+    const iframes = iframeRes?.[0]?.result || [];
+
+    // 2. Search all frames for matching tab or explorer row
+    const scanResults = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      args: [basename],
+      func: (base) => {
+        const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9_\-.]/g, '');
+        const normBase = norm(base);
+
+        // A. Check open tabs first
+        const tabs = [...document.querySelectorAll('.tab, [role="tab"]')];
+        for (const t of tabs) {
+          const aria = norm(t.getAttribute('aria-label'));
+          const txt = norm((t.querySelector('.label-name') || t).textContent);
+          if (aria.includes(normBase) || txt.includes(normBase)) {
+            const r = t.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) {
+              return { type: 'tab', x: r.left + r.width / 2, y: r.top + r.height / 2 };
+            }
+          }
+        }
+
+        // B. Check explorer tree rows
+        const rows = [...document.querySelectorAll('.monaco-list-row, [role="treeitem"]')];
+        for (const row of rows) {
+          const aria = norm(row.getAttribute('aria-label'));
+          const txt = norm((row.querySelector('.label-name') || row).textContent);
+          if (aria.includes(normBase) || txt.includes(normBase)) {
+            try { row.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch(e) {}
+            const r = row.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) {
+              return { type: 'treeItem', x: r.left + r.width / 2, y: r.top + r.height / 2 };
+            }
+          }
+        }
+
+        // C. Check if src folder is collapsed
+        const srcFolder = rows.find(r => {
+          const txt = norm((r.querySelector('.label-name') || r).textContent);
+          const aria = norm(r.getAttribute('aria-label'));
+          return txt === 'src' || aria === 'src' || aria.startsWith('src');
+        });
+        if (srcFolder) {
+          const isCollapsed = srcFolder.getAttribute('aria-expanded') === 'false' ||
+            !!srcFolder.querySelector('.collapsed, .codicon-chevron-right');
+          if (isCollapsed) {
+            try { srcFolder.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch(e) {}
+            const twistie = srcFolder.querySelector('.monaco-tl-twistie, .codicon-chevron-right') || srcFolder;
+            const r = twistie.getBoundingClientRect();
+            return { type: 'expandSrc', x: r.left + r.width / 2, y: r.top + r.height / 2 };
+          }
+        }
+
+        // D. Check New File button if file does not exist
+        const newFileBtn = document.querySelector('.codicon-new-file, [aria-label*="New File" i], [title*="New File" i]');
+        if (newFileBtn) {
+          const r = newFileBtn.getBoundingClientRect();
+          if (r.width > 0 && r.height > 0) {
+            return { type: 'createNewFile', x: r.left + r.width / 2, y: r.top + r.height / 2 };
+          }
+        }
+
+        return null;
+      }
+    });
+
+    const targetMatch = scanResults?.find(s => s.result && s.result.type);
+    if (!targetMatch || !targetMatch.result) {
+      console.log(`[AP-Solver CDP] Element for "${basename}" not found in frame scans.`);
+      return false;
+    }
+
+    const { type, x: localX, y: localY } = targetMatch.result;
+    const frameId = targetMatch.frameId;
+
+    let globalX = localX;
+    let globalY = localY;
+
+    if (frameId !== 0 && iframes.length > 0) {
+      // Find VS Code iframe (usually on right side)
+      const vsIframe = iframes.find(ifr => ifr.left > 150) || iframes[0];
+      if (vsIframe) {
+        globalX = vsIframe.left + localX;
+        globalY = vsIframe.top + localY;
+      }
+    }
+
+    console.log(`[AP-Solver CDP] Clicking "${basename}" (${type}) at viewport pixel (${Math.round(globalX)}, ${Math.round(globalY)})`);
+
+    if (type === 'expandSrc') {
+      await cdpNativeClick(tabId, globalX, globalY, 1);
+      await sleep(350);
+      return await cdpClickElementInWorkspace(tabId, targetFilePath);
+    }
+
+    if (type === 'tab') {
+      await cdpNativeClick(tabId, globalX, globalY, 1);
+      await sleep(300);
+      return true;
+    }
+
+    if (type === 'treeItem') {
+      // 1. Single click to select/focus row
+      await cdpNativeClick(tabId, globalX, globalY, 1);
+      await sleep(80);
+      // 2. Double click to open tab
+      await cdpNativeDblClick(tabId, globalX, globalY);
+      await sleep(100);
+      // 3. Press Enter key via CDP to guarantee file open
+      await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
+      await sleep(400);
+      return true;
+    }
+
+    if (type === 'createNewFile') {
+      await cdpNativeClick(tabId, globalX, globalY, 1);
+      await sleep(250);
+      await cdpNativeInsertText(tabId, basename);
+      await sleep(150);
+      await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
+      await sleep(400);
+      return true;
+    }
+
+    return false;
+  } catch (err) {
+    console.warn('[AP-Solver CDP] cdpClickElementInWorkspace error:', err);
+    return false;
+  }
+}
+
 // Save File via CDP (Cmd+S / Ctrl+S)
 async function cdpSaveFile(tabId) {
   try {
@@ -300,13 +451,15 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
   try {
     const cleanCode = formatCodeIndentation(newCode);
 
-    // Phase 1: Try True Native Quick Open via CDP if target file is specified
+    // Phase 1: Try True Native Navigation via CDP if target file is specified
     if (targetFilePath) {
       try {
-        await cdpQuickOpenFile(tabId, targetFilePath);
-        await sleep(250);
+        console.log(`[AP-Solver] True Native CDP navigation to "${targetFilePath}"...`);
+        const navOk = await cdpClickElementInWorkspace(tabId, targetFilePath);
+        console.log(`[AP-Solver] CDP navigation result for "${targetFilePath}":`, navOk);
+        await sleep(350);
       } catch (e) {
-        console.warn('[AP-Solver CDP] Quick open pass error:', e);
+        console.warn('[AP-Solver CDP] Native navigation error:', e);
       }
     }
 
@@ -384,17 +537,18 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
             return true;
           }
 
+          const normStr = (s) => (s || '').toLowerCase().replace(/[^a-z0-9_\-.]/g, '');
+
           function findExplorerItem(name) {
             const base = name.split('/').pop().trim();
+            const normBase = normStr(base);
             const rows = [...document.querySelectorAll('.monaco-list-row, [role="treeitem"]')];
             return rows.find(r => {
-              const aria = (r.getAttribute('aria-label') || '').trim();
-              if (aria === base || aria.startsWith(base) || aria.toLowerCase().includes(base.toLowerCase())) return true;
-              const title = (r.getAttribute('title') || '').trim();
-              if (title === base || title.endsWith(base) || title.toLowerCase().includes(base.toLowerCase())) return true;
+              const aria = normStr(r.getAttribute('aria-label') || '');
+              const title = normStr(r.getAttribute('title') || '');
               const labelEl = r.querySelector('.label-name, .monaco-icon-label');
-              const text = (labelEl?.textContent || r.textContent || '').trim();
-              return text === base || text.startsWith(base) || new RegExp(`(^|\\b)${base}(\\b|\\s|$)`, 'i').test(text);
+              const text = normStr(labelEl?.textContent || r.textContent || '');
+              return aria.includes(normBase) || title.includes(normBase) || text.includes(normBase);
             });
           }
 
@@ -402,6 +556,7 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
           async function navigateToTargetFile(target) {
             if (!target) return false;
             const basename = target.split('/').pop();
+            const normBase = normStr(basename);
             const isSrc = target.includes('src/') || /\.(js|ts|json|txt)$/i.test(target);
 
             // 1. Close Welcome tab if open
@@ -415,23 +570,22 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
             // 2. Check if already open and active
             const activeTabEl = document.querySelector('.tab.active, [role="tab"][aria-selected="true"]');
             const activeLabel = (activeTabEl?.querySelector('.label-name') || activeTabEl)?.textContent?.trim() || '';
-            if (activeLabel === basename || activeLabel.startsWith(basename)) {
+            if (normStr(activeLabel).includes(normBase)) {
               return true;
             }
 
             // 3. Click tab matching target if present in tabs bar
             const matchingTab = tabs.find(t => {
-              const aria = (t.getAttribute('aria-label') || '').trim();
-              if (aria === basename || aria.includes(basename)) return true;
-              const txt = (t.querySelector('.label-name') || t).textContent.trim();
-              return txt === basename || txt.startsWith(basename) || txt.includes(basename);
+              const aria = normStr(t.getAttribute('aria-label') || '');
+              const txt = normStr((t.querySelector('.label-name') || t).textContent || '');
+              return aria.includes(normBase) || txt.includes(normBase);
             });
             if (matchingTab) {
               simulateClick(matchingTab);
               await sleep(250);
               const curTab = document.querySelector('.tab.active, [role="tab"][aria-selected="true"]');
               const curTxt = (curTab?.querySelector('.label-name') || curTab)?.textContent?.trim() || '';
-              if (curTxt === basename || curTxt.startsWith(basename)) {
+              if (normStr(curTxt).includes(normBase)) {
                 return true;
               }
             }
@@ -479,7 +633,7 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
               while (Date.now() - t0 < 1500) {
                 const curTab = document.querySelector('.tab.active, [role="tab"][aria-selected="true"]');
                 const curTxt = (curTab?.querySelector('.label-name') || curTab)?.textContent?.trim() || '';
-                if (curTxt === basename || curTxt.startsWith(basename)) {
+                if (normStr(curTxt).includes(normBase)) {
                   return true;
                 }
                 await sleep(100);
@@ -534,7 +688,9 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
           const basename = targetPath ? targetPath.split('/').pop() : null;
           const activeTabEl = document.querySelector('.tab.active, [role="tab"][aria-selected="true"]');
           const activeTabName = (activeTabEl?.querySelector('.label-name') || activeTabEl)?.textContent?.trim() || '';
-          const isTargetActive = !basename || activeTabName === basename || activeTabName.startsWith(basename);
+          const normActive = normStr(activeTabName);
+          const normBase = basename ? normStr(basename) : '';
+          const isTargetActive = !basename || normActive.includes(normBase) || normBase.includes(normActive);
 
           // Strategy 1: Monaco instance or AMD loader search (Wipe & Replace with setValue)
           let m = window.monaco;
