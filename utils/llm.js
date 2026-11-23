@@ -9,7 +9,7 @@ export const DEFAULT_SETTINGS = {
   openaiKey: '',
   openaiModel: 'gpt-4o',
   openaiBaseUrl: 'https://api.openai.com/v1',
-  autoSubmit: false,
+  autoSubmit: true,
   autoRetry: true,
   maxRetries: 3,
 };
@@ -103,14 +103,12 @@ export async function callGemini(prompt, settings) {
     throw new Error('Gemini API key is missing. Please set it in AP-Solver settings.');
   }
 
-  // Model fallback chain: start with gemini-3.8-flash, gemini-1.5-flash, gemini-2.0-flash
   const requestedModel = settings.geminiModel || 'gemini-3.8-flash';
   const modelsToTry = [
     requestedModel === 'gemini-2.5-flash' ? 'gemini-3.8-flash' : requestedModel,
     'gemini-3.8-flash',
-    'gemini-1.5-flash',
-    'gemini-2.0-flash',
-    'gemini-2.5-flash'
+    'gemini-2.5-flash',
+    'gemini-1.5-flash'
   ];
   const uniqueModels = [...new Set(modelsToTry)];
 
@@ -119,66 +117,103 @@ export async function callGemini(prompt, settings) {
   for (const model of uniqueModels) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
-    const payload = {
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            { text: SYSTEM_PROMPT + '\n\n' + prompt }
-          ]
+    // Config options to try:
+    // 1. With thinkingLevel: "low" (super fast for gemini-3.8-flash: ~3-5s response time)
+    // 2. Standard config without thinkingConfig (for models that don't support thinkingConfig)
+    const configsToTry = [
+      {
+        temperature: 0.1,
+        topP: 0.95,
+        maxOutputTokens: 8192,
+        thinkingConfig: {
+          thinkingLevel: 'low'
         }
-      ],
-      generationConfig: {
+      },
+      {
         temperature: 0.1,
         topP: 0.95,
         maxOutputTokens: 8192
       }
-    };
+    ];
 
-    try {
-      const resp = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      if (!resp.ok) {
-        const errText = await resp.text();
-        let msg = `Gemini API error (${resp.status})`;
-        try {
-          const errJson = JSON.parse(errText);
-          msg += `: ${errJson.error?.message || errText}`;
-        } catch {
-          msg += `: ${errText}`;
-        }
-
-        // If 404 (model not found / deprecated for user), try next model in chain
-        if (resp.status === 404 || /not found|no longer available/i.test(msg)) {
-          console.warn(`[AP-Solver] Gemini model ${model} unavailable (404), falling back to next model...`);
-          lastError = new Error(msg);
-          continue;
-        }
-
-        throw new Error(msg);
-      }
-
-      const data = await resp.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!text) {
-        throw new Error('Gemini returned an empty response.');
-      }
-
-      return {
-        raw: text,
-        code: extractCodeBlock(text),
-        model
+    for (const genConfig of configsToTry) {
+      const payload = {
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: SYSTEM_PROMPT + '\n\n' + prompt }
+            ]
+          }
+        ],
+        generationConfig: genConfig
       };
-    } catch (err) {
-      if (err.message && (err.message.includes('404') || err.message.includes('no longer available'))) {
-        lastError = err;
-        continue;
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 90000);
+
+      try {
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: controller.signal
+        });
+        clearTimeout(timer);
+
+        if (!resp.ok) {
+          const errText = await resp.text();
+          let msg = `Gemini API error (${resp.status})`;
+          try {
+            const errJson = JSON.parse(errText);
+            msg += `: ${errJson.error?.message || errText}`;
+          } catch {
+            msg += `: ${errText}`;
+          }
+
+          // If 400 Bad Request mentions thinkingConfig, retry without thinkingConfig
+          if (resp.status === 400 && /thinking/i.test(msg)) {
+            console.warn(`[AP-Solver] thinkingConfig not supported by ${model}, retrying standard config...`);
+            continue;
+          }
+
+          // If 404 (model not found / deprecated for user), try next model
+          if (resp.status === 404 || /not found|no longer available/i.test(msg)) {
+            console.warn(`[AP-Solver] Gemini model ${model} unavailable (404), falling back to next model...`);
+            lastError = new Error(msg);
+            break; // Try next model in uniqueModels
+          }
+
+          throw new Error(msg);
+        }
+
+        const data = await resp.json();
+        const parts = data.candidates?.[0]?.content?.parts || [];
+        // Extract text from non-thought parts
+        const codeParts = parts.filter(p => !p.thought && p.text).map(p => p.text);
+        const text = (codeParts.length > 0 ? codeParts.join('\n') : parts.map(p => p.text || '').join('\n')).trim();
+
+        if (!text) {
+          throw new Error('Gemini returned an empty response.');
+        }
+
+        return {
+          raw: text,
+          code: extractCodeBlock(text),
+          model
+        };
+      } catch (err) {
+        clearTimeout(timer);
+        if (err.name === 'AbortError') {
+          lastError = new Error(`Gemini model ${model} request timed out after 90s.`);
+          break; // Try next model
+        }
+        if (err.message && (err.message.includes('404') || err.message.includes('no longer available'))) {
+          lastError = err;
+          break; // Try next model
+        }
+        throw err;
       }
-      throw err;
     }
   }
 

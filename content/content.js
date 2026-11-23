@@ -368,7 +368,7 @@
     }
 
     const provider = ui.options.provider || 'gemini';
-    const providerName = provider === 'gemini' ? 'Gemini 2.5 Flash' : provider === 'groq' ? 'Groq Llama 3.3 70B' : 'OpenAI';
+    const providerName = provider === 'gemini' ? 'Google Gemini (3.8 Flash)' : provider === 'groq' ? 'Groq Llama 3.3 70B' : 'OpenAI';
 
     ui.setStatus(`Generating solution with ${providerName}...`, feedback ? 'Refining code based on failed test cases...' : 'Crafting 100% test-compliant code...', 'running', true);
     ui.addLog(`Calling AI solver (${providerName})...`);
@@ -385,7 +385,7 @@
     const resp = await sendMsg({
       op: 'AP_GENERATE',
       data: { promptData, settingsOverride: ui.options }
-    }, 60000);
+    }, 150000);
 
     if (!resp || !resp.ok) {
       const err = resp?.error || 'Unknown generation failure';
@@ -499,24 +499,21 @@
         // 4. Write
         await handleWriteCode();
 
-        // 5. Submit if enabled or requested
-        if (ui.options.autoSubmit || attempt > 1) {
-          ui.addLog('Auto-submitting solution...');
-          await sleep(1000);
-          const subRes = await handleSubmit();
+        // 5. Submit solution
+        ui.addLog('Submitting solution to test grader...');
+        await sleep(1000);
+        const subRes = await handleSubmit();
 
-          if (subRes.ok) {
-            ui.addLog(`🎉 Challenge completed on attempt ${attempt}!`, 'ok');
-            break;
-          } else if (attempt < maxAttempts && subRes.failedTests?.length) {
-            feedback = `The following test cases failed on this attempt:\n` +
-              subRes.failedTests.map((t) => `- ${t}`).join('\n') +
-              `\nPlease re-analyze the logic and fix every failing requirement.`;
-            await sleep(2000);
-            continue;
-          }
+        if (subRes && subRes.ok) {
+          ui.addLog(`🎉 Challenge completed on attempt ${attempt}!`, 'ok');
+          break;
+        } else if (attempt < maxAttempts && subRes?.failedTests?.length) {
+          feedback = `The following test cases failed on this attempt:\n` +
+            subRes.failedTests.map((t) => `- ${t}`).join('\n') +
+            `\nPlease re-analyze the logic and fix every failing requirement.`;
+          await sleep(2000);
+          continue;
         } else {
-          ui.addLog('Code injected. Review and click "Submit" to run test cases.', 'ok');
           break;
         }
       }
@@ -574,7 +571,7 @@
     });
 
     ui.updateOptions({
-      autoSubmit: settings.autoSubmit ?? false,
+      autoSubmit: settings.autoSubmit ?? true,
       autoRetry: settings.autoRetry ?? true,
       provider: activeProvider
     });
