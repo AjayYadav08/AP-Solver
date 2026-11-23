@@ -367,8 +367,8 @@
       cachedEditor = await queryActiveEditor();
     }
 
-    const provider = ui.options.provider || 'gemini';
-    const providerName = provider === 'gemini' ? 'Google Gemini (3.8 Flash)' : provider === 'groq' ? 'Groq Llama 3.3 70B' : 'OpenAI';
+    const provider = ui.options.provider || 'groq';
+    const providerName = provider === 'gemini' ? 'Google Gemini (3.8 Flash)' : provider === 'groq' ? 'Groq AI (GPT OSS 120B)' : 'OpenAI';
 
     ui.setStatus(`Generating solution with ${providerName}...`, feedback ? 'Refining code based on failed test cases...' : 'Crafting 100% test-compliant code...', 'running', true);
     ui.addLog(`Calling AI solver (${providerName})...`);
@@ -558,7 +558,7 @@
       }
     });
 
-    let activeProvider = settings.provider || 'gemini';
+    let activeProvider = settings.provider || 'groq';
     if (settings.geminiKey?.trim() && !settings.groqKey?.trim()) {
       activeProvider = 'gemini';
     } else if (settings.groqKey?.trim() && !settings.geminiKey?.trim()) {

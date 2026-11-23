@@ -1,11 +1,11 @@
 // utils/llm.js - Multi-Provider AI Engine (Gemini, Groq, OpenAI / OpenRouter)
 
 export const DEFAULT_SETTINGS = {
-  provider: 'gemini', // 'gemini' | 'groq' | 'openai'
+  provider: 'groq', // 'gemini' | 'groq' | 'openai'
   geminiKey: '',
   geminiModel: 'gemini-3.8-flash',
   groqKey: '',
-  groqModel: 'llama-3.3-70b-versatile',
+  groqModel: 'openai/gpt-oss-120b',
   openaiKey: '',
   openaiModel: 'gpt-4o',
   openaiBaseUrl: 'https://api.openai.com/v1',
@@ -223,54 +223,85 @@ export async function callGemini(prompt, settings) {
 export async function callGroq(prompt, settings) {
   const apiKey = settings.groqKey?.trim();
   if (!apiKey) {
-    throw new Error('Groq API key is missing. Please set it in AP-Solver options.');
+    throw new Error('Groq API key is missing. Please set it in AP-Solver settings.');
   }
 
-  const model = settings.groqModel || 'llama-3.3-70b-versatile';
-  const url = 'https://api.groq.com/openai/v1/chat/completions';
+  const requestedModel = settings.groqModel || 'openai/gpt-oss-120b';
+  const modelsToTry = [
+    requestedModel,
+    'openai/gpt-oss-120b',
+    'qwen/qwen3.8-27b',
+    'openai/gpt-oss-20b',
+    'llama-3.3-70b-versatile'
+  ].filter(Boolean);
+  const uniqueModels = [...new Set(modelsToTry)];
 
-  const payload = {
-    model,
-    messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: prompt }
-    ],
-    temperature: 0.1,
-    max_tokens: 8192
-  };
+  let lastError = null;
 
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`
-    },
-    body: JSON.stringify(payload)
-  });
+  for (const model of uniqueModels) {
+    const url = 'https://api.groq.com/openai/v1/chat/completions';
 
-  if (!resp.ok) {
-    const errText = await resp.text();
-    let msg = `Groq API error (${resp.status})`;
+    const payload = {
+      model,
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: prompt }
+      ],
+      temperature: 0.1,
+      max_tokens: 8192
+    };
+
     try {
-      const errJson = JSON.parse(errText);
-      msg += `: ${errJson.error?.message || errText}`;
-    } catch {
-      msg += `: ${errText}`;
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (!resp.ok) {
+        const errText = await resp.text();
+        let msg = `Groq API error (${resp.status})`;
+        try {
+          const errJson = JSON.parse(errText);
+          msg += `: ${errJson.error?.message || errText}`;
+        } catch {
+          msg += `: ${errText}`;
+        }
+
+        // If 404 (model does not exist or access denied), try next model
+        if (resp.status === 404 || /does not exist|access|decommissioned/i.test(msg)) {
+          console.warn(`[AP-Solver] Groq model ${model} unavailable (404), trying next model...`);
+          lastError = new Error(msg);
+          continue;
+        }
+
+        throw new Error(msg);
+      }
+
+      const data = await resp.json();
+      const text = data.choices?.[0]?.message?.content;
+      if (!text) {
+        throw new Error('Groq returned an empty response.');
+      }
+
+      return {
+        raw: text,
+        code: extractCodeBlock(text),
+        model
+      };
+    } catch (err) {
+      if (err.message && (err.message.includes('404') || err.message.includes('does not exist'))) {
+        lastError = err;
+        continue;
+      }
+      throw err;
     }
-    throw new Error(msg);
   }
 
-  const data = await resp.json();
-  const text = data.choices?.[0]?.message?.content;
-  if (!text) {
-    throw new Error('Groq returned an empty response.');
-  }
-
-  return {
-    raw: text,
-    code: extractCodeBlock(text),
-    model
-  };
+  throw lastError || new Error('All Groq model candidates failed.');
 }
 
 export async function callOpenAI(prompt, settings) {
