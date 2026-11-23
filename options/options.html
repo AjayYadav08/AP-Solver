@@ -34,17 +34,24 @@
           <label>Primary Provider</label>
           <div class="provider-radio-group">
             <label class="provider-card">
-              <input type="radio" name="provider" value="gemini" checked>
+              <input type="radio" name="provider" value="race" checked>
               <div class="provider-info">
-                <strong>Google Gemini</strong>
-                <span>Recommended · Free Tier via Google AI Studio · Fast 2.5 Flash</span>
+                <strong>⚡ Turbo Race Mode (Groq vs Gemini Parallel)</strong>
+                <span>Instant sub-second response · Calls both APIs simultaneously, fastest wins!</span>
               </div>
             </label>
             <label class="provider-card">
               <input type="radio" name="provider" value="groq">
               <div class="provider-info">
-                <strong>Groq Cloud</strong>
-                <span>Free Tier via console.groq.com · ~300 tok/sec LLaMA 3.3 70B</span>
+                <strong>Groq LPU Cloud</strong>
+                <span>Ultra-Fast LPU Inference · 70ms response time · GPT OSS 120B</span>
+              </div>
+            </label>
+            <label class="provider-card">
+              <input type="radio" name="provider" value="gemini">
+              <div class="provider-info">
+                <strong>Google Gemini</strong>
+                <span>Free Tier via Google AI Studio · Gemini 3.8 Flash</span>
               </div>
             </label>
             <label class="provider-card">
@@ -86,9 +93,9 @@
           <div class="form-group">
             <label for="groqModel">Model</label>
             <select id="groqModel" class="input-select">
-              <option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile (Recommended)</option>
-              <option value="qwen-2.5-coder-32b">qwen-2.5-coder-32b (Specialized Coder)</option>
-              <option value="mixtral-8x7b-32768">mixtral-8x7b-32768</option>
+              <option value="openai/gpt-oss-120b">openai/gpt-oss-120b (Recommended - Ultra Fast 70ms)</option>
+              <option value="qwen/qwen3.8-27b">qwen/qwen3.8-27b (Fast & Accurate)</option>
+              <option value="openai/gpt-oss-20b">openai/gpt-oss-20b (Lightweight Fast)</option>
             </select>
           </div>
         </div>

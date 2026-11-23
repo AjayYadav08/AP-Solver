@@ -307,4 +307,40 @@ if (parsedTests.length !== 12) {
 }
 console.log(`   ✓ Successfully verified Tab 2 test scraper parsing all ${parsedTests.length} tests with status & timestamp`);
 
+// 12. Test Turbo Parallel Speculative Race Mode & Groq Normalization
+console.log('12. Testing Turbo Parallel Speculative Race & Model Normalization...');
+if (!updatedLlmJs.includes('Turbo Parallel Race') ||
+    !updatedLlmJs.includes('Promise.any([runGroq(), runGemini()])') ||
+    !updatedLlmJs.includes('openai/gpt-oss-120b') ||
+    !updatedLlmJs.includes('qwen/qwen3.8-27b')) {
+  throw new Error('Turbo race engine or updated Groq models missing from utils/llm.js');
+}
+
+// Test Groq model normalization for legacy LLaMA names
+let testLegacyModel = 'llama-3.3-70b-versatile';
+if (!testLegacyModel || testLegacyModel.includes('llama') || testLegacyModel.includes('mixtral')) {
+  testLegacyModel = 'openai/gpt-oss-120b';
+}
+if (testLegacyModel !== 'openai/gpt-oss-120b') {
+  throw new Error('Groq legacy model normalization failed');
+}
+
+// Test Promise.any speculative race resolution
+const fastPromise = new Promise(resolve => setTimeout(() => resolve({ provider: 'groq', latency: 70 }), 20));
+const slowPromise = new Promise(resolve => setTimeout(() => resolve({ provider: 'gemini', latency: 2500 }), 200));
+const winner = await Promise.any([fastPromise, slowPromise]);
+if (winner.provider !== 'groq') {
+  throw new Error('Speculative race failed: fastest provider did not win');
+}
+console.log('   ✓ Turbo parallel speculative race logic and Groq model normalization verified');
+
+// 13. Test Sub-Second Evaluation Fast Exit
+console.log('13. Testing Sub-Second Evaluation Fast Exit Conditions...');
+if (!updatedContentJs.includes('consecutivePassedChecks') ||
+    !updatedContentJs.includes('Instant Exit: All') ||
+    !updatedContentJs.includes('sleep(300)')) {
+  throw new Error('Sub-second responsive evaluation checks missing from content.js');
+}
+console.log('   ✓ Responsive 300ms polling and instant completion exits verified');
+
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');

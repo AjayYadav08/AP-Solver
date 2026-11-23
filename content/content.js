@@ -509,14 +509,15 @@
     ui.setStatus('Evaluating Submission...', 'Grader running test cases...', 'running', true);
 
     // Switch to Submissions tab (Tab 2) so live test results are actively rendered
-    await sleep(600);
+    await sleep(400);
     switchToSubmissionsTab();
 
     const start = Date.now();
     let sawRunning = false;
+    let consecutivePassedChecks = 0;
 
     while (Date.now() - start < timeoutMs) {
-      await sleep(800);
+      await sleep(300);
 
       const submitBtn = getSubmitButton();
       const submitBtnText = (submitBtn?.innerText || '').trim();
@@ -528,31 +529,49 @@
 
       // Check Submissions Tab (Tab 2)
       const results = readSubmissionResults();
-      if (results) {
+      if (results && results.totalCount > 0) {
         if (results.isRunning) {
           sawRunning = true;
-          ui.setStatus('Grading in progress...', `${results.passedCount}/${results.totalCount || 'All'} test cases passed so far...`, 'running', true);
-          continue;
-        }
+          ui.setStatus('Grading in progress...', `${results.passedCount}/${results.totalCount} test cases passed so far...`, 'running', true);
+        } else {
+          // Check 1: 100% all passed!
+          if (results.passedCount === results.totalCount && results.failedCount === 0) {
+            consecutivePassedChecks++;
+            if (consecutivePassedChecks >= 2 || !isBtnRunning) {
+              ui.addLog(`⚡ Instant Exit: All ${results.passedCount}/${results.totalCount} test cases verified passed!`, 'ok');
+              return {
+                ok: true,
+                passed: results.passedCount,
+                total: results.totalCount,
+                tests: results.tests,
+                timestamp: results.timestamp,
+                failedTests: [],
+                passedTests: results.passedTests
+              };
+            }
+          }
 
-        if (sawRunning && !results.isRunning && results.totalCount > 0) {
-          const allPassed = results.passedCount === results.totalCount && results.failedCount === 0;
-          return {
-            ok: allPassed,
-            passed: results.passedCount,
-            total: results.totalCount,
-            tests: results.tests,
-            timestamp: results.timestamp,
-            failedTests: results.failedTests,
-            passedTests: results.passedTests
-          };
+          // Check 2: All test cases have been evaluated and grader is no longer running
+          if (sawRunning && !isBtnRunning && (results.passedCount + results.failedCount >= results.totalCount)) {
+            const allPassed = results.passedCount === results.totalCount && results.failedCount === 0;
+            ui.addLog(`⚡ Evaluation Completed in ${((Date.now() - start) / 1000).toFixed(1)}s: ${results.passedCount}/${results.totalCount} passed.`, allPassed ? 'ok' : 'warn');
+            return {
+              ok: allPassed,
+              passed: results.passedCount,
+              total: results.totalCount,
+              tests: results.tests,
+              timestamp: results.timestamp,
+              failedTests: results.failedTests,
+              passedTests: results.passedTests
+            };
+          }
         }
       }
 
-      // Fast Exit: Once button finishes running, check Terminal Tab (Tab 3) immediately!
+      // Fast Exit Check 3: Once button finishes running, check Terminal Tab (Tab 3) immediately!
       if (sawRunning && !isBtnRunning) {
-        await sleep(400);
-        const terminalLog = await readTerminalOutput(2500);
+        await sleep(300);
+        const terminalLog = await readTerminalOutput(1500);
         let passedCount = 0;
         let failedCount = 0;
         if (terminalLog) {
@@ -570,7 +589,7 @@
               timestamp: new Date().toLocaleTimeString(),
               failedTests: [],
               passedTests: [],
-              summary: 'All test cases passed!'
+              summary: 'All test cases passed in Mocha!'
             };
           }
         }
@@ -638,9 +657,6 @@
     ui.setStatus('Context Loaded', `${cachedQuestion.testCases.length} test cases detected. Ready to generate.`, 'normal');
   }
 
-    ui.setStatus('Context Loaded', `${cachedQuestion.testCases.length} test cases detected. Ready to generate.`, 'normal');
-  }
-
   async function handleGenerate(feedback = null) {
     if (!cachedQuestion) {
       cachedQuestion = extractQuestion();
@@ -649,8 +665,14 @@
       cachedEditor = await queryActiveEditor();
     }
 
-    const provider = ui.options.provider || 'groq';
-    const providerName = provider === 'gemini' ? 'Google Gemini (3.8 Flash)' : provider === 'groq' ? 'Groq AI (GPT OSS 120B)' : 'OpenAI';
+    const provider = ui.options.provider || 'race';
+    const providerName = provider === 'gemini' 
+      ? 'Google Gemini (3.8 Flash)' 
+      : provider === 'groq' 
+        ? 'Groq AI (GPT OSS 120B)' 
+        : provider === 'race'
+          ? '⚡ Turbo Race (Groq vs Gemini Parallel)'
+          : 'OpenAI';
 
     ui.setStatus(`Generating solution with ${providerName}...`, feedback ? 'Refining code based on failed test cases...' : 'Crafting 100% test-compliant code...', 'running', true);
     ui.addLog(`Calling AI solver (${providerName})...`);
@@ -678,8 +700,9 @@
 
     cachedGeneratedCode = resp.result.code;
     ui.setGeneratedCode(cachedGeneratedCode);
-    ui.addLog(`✓ Solution generated by ${resp.result.model} (${cachedGeneratedCode.split('\n').length} lines)`, 'ok');
-    ui.setStatus('Solution Generated', `${cachedGeneratedCode.split('\n').length} lines ready to inject.`, 'success');
+    const winnerTag = resp.result.raceWinner ? ` [Won by ${resp.result.raceWinner} in ${resp.result.latencyMs}ms]` : '';
+    ui.addLog(`✓ Solution generated by ${resp.result.model}${winnerTag} (${cachedGeneratedCode.split('\n').length} lines)`, 'ok');
+    ui.setStatus('Solution Generated', `${cachedGeneratedCode.split('\n').length} lines ready to inject.${winnerTag}`, 'success');
 
     return cachedGeneratedCode;
   }

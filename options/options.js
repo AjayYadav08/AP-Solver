@@ -29,7 +29,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const settings = resp?.settings || {};
 
   // Populate UI
-  const currentProvider = settings.provider || 'gemini';
+  const currentProvider = settings.provider || 'race';
   const radio = document.querySelector(`input[name="provider"][value="${currentProvider}"]`);
   if (radio) radio.checked = true;
 
@@ -37,7 +37,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   geminiModelSelect.value = (settings.geminiModel && settings.geminiModel !== 'gemini-2.5-flash') ? settings.geminiModel : 'gemini-3.8-flash';
 
   groqKeyInput.value = settings.groqKey || '';
-  groqModelSelect.value = settings.groqModel || 'llama-3.3-70b-versatile';
+  groqModelSelect.value = (!settings.groqModel || settings.groqModel.includes('llama') || settings.groqModel.includes('mixtral')) ? 'openai/gpt-oss-120b' : settings.groqModel;
 
   openaiKeyInput.value = settings.openaiKey || '';
   openaiBaseUrlInput.value = settings.openaiBaseUrl || 'https://api.openai.com/v1';
@@ -47,9 +47,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   autoRetryCheck.checked = settings.autoRetry !== false;
 
   function updateProviderBoxes() {
-    const val = document.querySelector('input[name="provider"]:checked')?.value || 'gemini';
-    geminiBox.style.display = val === 'gemini' ? 'block' : 'none';
-    groqBox.style.display = val === 'groq' ? 'block' : 'none';
+    const val = document.querySelector('input[name="provider"]:checked')?.value || 'race';
+    geminiBox.style.display = (val === 'gemini' || val === 'race') ? 'block' : 'none';
+    groqBox.style.display = (val === 'groq' || val === 'race') ? 'block' : 'none';
     openaiBox.style.display = val === 'openai' ? 'block' : 'none';
   }
 

@@ -1,7 +1,7 @@
 // utils/llm.js - Multi-Provider AI Engine (Gemini, Groq, OpenAI / OpenRouter)
 
 export const DEFAULT_SETTINGS = {
-  provider: 'groq', // 'gemini' | 'groq' | 'openai'
+  provider: 'race', // 'race' (Turbo Parallel) | 'groq' | 'gemini' | 'openai'
   geminiKey: '',
   geminiModel: 'gemini-3.8-flash',
   groqKey: '',
@@ -182,13 +182,18 @@ export async function callGemini(prompt, settings) {
     throw new Error('Gemini API key is missing. Please set it in AP-Solver settings.');
   }
 
-  const requestedModel = settings.geminiModel || 'gemini-3.8-flash';
+  let requestedModel = settings.geminiModel || 'gemini-3.8-flash';
+  if (requestedModel === 'gemini-2.5-flash' || requestedModel === 'gemini-1.5-flash') {
+    requestedModel = 'gemini-3.8-flash';
+  }
+
   const modelsToTry = [
-    requestedModel === 'gemini-2.5-flash' ? 'gemini-3.8-flash' : requestedModel,
+    requestedModel,
     'gemini-3.8-flash',
-    'gemini-2.5-flash',
-    'gemini-1.5-flash'
-  ];
+    'gemini-flash-latest',
+    'gemini-3.5-flash',
+    'gemini-2.5-flash-lite'
+  ].filter(Boolean);
   const uniqueModels = [...new Set(modelsToTry)];
 
   let lastError = null;
@@ -229,7 +234,7 @@ export async function callGemini(prompt, settings) {
       };
 
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 90000);
+      const timer = setTimeout(() => controller.abort(), 60000);
 
       try {
         const resp = await fetch(url, {
@@ -256,9 +261,9 @@ export async function callGemini(prompt, settings) {
             continue;
           }
 
-          // If 404 (model not found / deprecated for user), try next model
-          if (resp.status === 404 || /not found|no longer available/i.test(msg)) {
-            console.warn(`[AP-Solver] Gemini model ${model} unavailable (404), falling back to next model...`);
+          // If 404 (model not found / deprecated) or 503 (high demand), try next model candidate
+          if (resp.status === 404 || resp.status === 503 || /not found|no longer available|high demand|unavailable/i.test(msg)) {
+            console.warn(`[AP-Solver] Gemini model ${model} unavailable (${resp.status}), trying next candidate...`);
             lastError = new Error(msg);
             break; // Try next model in uniqueModels
           }
@@ -284,10 +289,10 @@ export async function callGemini(prompt, settings) {
       } catch (err) {
         clearTimeout(timer);
         if (err.name === 'AbortError') {
-          lastError = new Error(`Gemini model ${model} request timed out after 90s.`);
+          lastError = new Error(`Gemini model ${model} request timed out.`);
           break; // Try next model
         }
-        if (err.message && (err.message.includes('404') || err.message.includes('no longer available'))) {
+        if (err.message && (err.message.includes('404') || err.message.includes('503') || err.message.includes('unavailable') || err.message.includes('no longer available'))) {
           lastError = err;
           break; // Try next model
         }
@@ -305,13 +310,17 @@ export async function callGroq(prompt, settings) {
     throw new Error('Groq API key is missing. Please set it in AP-Solver settings.');
   }
 
-  const requestedModel = settings.groqModel || 'openai/gpt-oss-120b';
+  let requestedModel = (settings.groqModel || '').trim();
+  // Auto-normalize deprecated/inaccessible model names to ultra-fast GPT OSS 120B
+  if (!requestedModel || requestedModel.includes('llama') || requestedModel.includes('mixtral') || requestedModel.includes('qwen-2.5')) {
+    requestedModel = 'openai/gpt-oss-120b';
+  }
+
   const modelsToTry = [
     requestedModel,
     'openai/gpt-oss-120b',
     'qwen/qwen3.8-27b',
-    'openai/gpt-oss-20b',
-    'llama-3.3-70b-versatile'
+    'openai/gpt-oss-20b'
   ].filter(Boolean);
   const uniqueModels = [...new Set(modelsToTry)];
 
@@ -350,9 +359,9 @@ export async function callGroq(prompt, settings) {
           msg += `: ${errText}`;
         }
 
-        // If 404 (model does not exist or access denied), try next model
-        if (resp.status === 404 || /does not exist|access|decommissioned/i.test(msg)) {
-          console.warn(`[AP-Solver] Groq model ${model} unavailable (404), trying next model...`);
+        // If 404 (model does not exist or access denied) or 429 (rate limit), try next model
+        if (resp.status === 404 || resp.status === 429 || /does not exist|access|decommissioned|rate limit/i.test(msg)) {
+          console.warn(`[AP-Solver] Groq model ${model} unavailable (${resp.status}), trying next model...`);
           lastError = new Error(msg);
           continue;
         }
@@ -372,7 +381,7 @@ export async function callGroq(prompt, settings) {
         model
       };
     } catch (err) {
-      if (err.message && (err.message.includes('404') || err.message.includes('does not exist'))) {
+      if (err.message && (err.message.includes('404') || err.message.includes('does not exist') || err.message.includes('429'))) {
         lastError = err;
         continue;
       }
@@ -458,33 +467,60 @@ export async function generateSolution(promptData, settingsOverride = null) {
   const hasGroq = !!(settings.groqKey && settings.groqKey.trim());
   const hasOpenAI = !!(settings.openaiKey && settings.openaiKey.trim());
 
-  let provider = settings.provider || 'gemini';
-
-  // Smart Auto-Switch: If the chosen provider has NO key, auto-switch to whatever provider HAS a key!
-  if (provider === 'gemini' && !hasGemini) {
-    if (hasGroq) {
-      console.log('[AP-Solver] Gemini key missing, auto-switching to configured Groq key');
-      provider = 'groq';
-    } else if (hasOpenAI) {
-      provider = 'openai';
-    }
-  } else if (provider === 'groq' && !hasGroq) {
-    if (hasGemini) {
-      console.log('[AP-Solver] Groq key missing, auto-switching to configured Gemini key');
-      provider = 'gemini';
-    } else if (hasOpenAI) {
-      provider = 'openai';
-    }
-  } else if (provider === 'openai' && !hasOpenAI) {
-    if (hasGemini) provider = 'gemini';
-    else if (hasGroq) provider = 'groq';
-  }
-
   if (!hasGemini && !hasGroq && !hasOpenAI) {
     throw new Error('No API key configured. Please enter your Gemini or Groq API key in AP-Solver settings.');
   }
 
-  // Attempt main provider with automatic fallback
+  let provider = settings.provider || 'race';
+
+  // SPECULATIVE TURBO PARALLEL RACE:
+  // If provider is 'race' OR if both Groq and Gemini keys are available, race them concurrently!
+  // Whichever provider returns valid code first WINS and solves the problem in sub-second time!
+  const shouldRace = (provider === 'race' || provider === 'auto') ? (hasGroq && hasGemini) : (hasGroq && hasGemini && (provider === 'groq' || provider === 'gemini'));
+
+  if (shouldRace || (provider === 'race' && hasGroq && hasGemini)) {
+    console.log('[AP-Solver] ⚡ Turbo Parallel Race: Executing Groq & Gemini concurrently...');
+
+    const runGroq = async () => {
+      const t0 = Date.now();
+      const res = await callGroq(prompt, settings);
+      res.latencyMs = Date.now() - t0;
+      res.raceWinner = `Groq LPU (${res.model})`;
+      return res;
+    };
+
+    const runGemini = async () => {
+      const t0 = Date.now();
+      const res = await callGemini(prompt, settings);
+      res.latencyMs = Date.now() - t0;
+      res.raceWinner = `Google Gemini (${res.model})`;
+      return res;
+    };
+
+    try {
+      const winner = await Promise.any([runGroq(), runGemini()]);
+      console.log(`[AP-Solver] 🚀 Turbo Winner: ${winner.raceWinner} in ${winner.latencyMs}ms!`);
+      return winner;
+    } catch (aggErr) {
+      console.warn('[AP-Solver] Turbo race aggregate error, trying fallback:', aggErr);
+      if (hasOpenAI) {
+        return await callOpenAI(prompt, settings);
+      }
+      throw aggErr.errors?.[0] || new Error('All parallel AI solvers failed.');
+    }
+  }
+
+  // Single provider mode or fallback
+  if (provider === 'race') {
+    provider = hasGroq ? 'groq' : (hasGemini ? 'gemini' : 'openai');
+  }
+
+  if (provider === 'gemini' && !hasGemini) {
+    provider = hasGroq ? 'groq' : 'openai';
+  } else if (provider === 'groq' && !hasGroq) {
+    provider = hasGemini ? 'gemini' : 'openai';
+  }
+
   try {
     if (provider === 'gemini') {
       return await callGemini(prompt, settings);
@@ -497,12 +533,14 @@ export async function generateSolution(promptData, settingsOverride = null) {
     console.warn(`[AP-Solver] Primary provider (${provider}) failed:`, err);
 
     // Fallbacks if available
-    if (provider !== 'gemini' && hasGemini) {
-      console.log('[AP-Solver] Falling back to Gemini...');
-      return await callGemini(prompt, settings);
-    } else if (provider !== 'groq' && hasGroq) {
+    if (provider !== 'groq' && hasGroq) {
       console.log('[AP-Solver] Falling back to Groq...');
       return await callGroq(prompt, settings);
+    } else if (provider !== 'gemini' && hasGemini) {
+      console.log('[AP-Solver] Falling back to Gemini...');
+      return await callGemini(prompt, settings);
+    } else if (provider !== 'openai' && hasOpenAI) {
+      return await callOpenAI(prompt, settings);
     }
 
     throw err;

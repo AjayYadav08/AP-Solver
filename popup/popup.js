@@ -68,7 +68,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   // Setup Main View
-  providerSelect.value = settings.provider || 'gemini';
+  providerSelect.value = settings.provider || 'race';
   autoSubmitCheck.checked = !!settings.autoSubmit;
   autoRetryCheck.checked = settings.autoRetry !== false;
 
@@ -77,7 +77,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     let hasKey = false;
     let label = '';
 
-    if (p === 'gemini') {
+    if (p === 'race') {
+      const hasGroq = !!settings.groqKey?.trim();
+      const hasGemini = !!settings.geminiKey?.trim();
+      if (hasGroq && hasGemini) {
+        hasKey = true;
+        label = '⚡ Turbo Race active (Groq + Gemini)';
+      } else if (hasGroq || hasGemini) {
+        hasKey = true;
+        label = `✓ Active via ${hasGroq ? 'Groq' : 'Gemini'}`;
+      } else {
+        hasKey = false;
+        label = '⚠ Add Groq or Gemini key';
+      }
+    } else if (p === 'gemini') {
       hasKey = !!settings.geminiKey?.trim();
       label = hasKey ? '✓ Gemini Key configured' : '⚠ Gemini Key missing';
     } else if (p === 'groq') {
