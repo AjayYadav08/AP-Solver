@@ -510,72 +510,166 @@
     };
   }
 
-  async function submitAndMonitor(timeoutMs = 45000) {
+  function findMochaErrorForTest(testName) {
+    if (!testName) return '';
+    try {
+      const candidates = [...document.querySelectorAll('.xterm-rows, pre, code, [class*="terminal" i], [class*="console" i], [class*="output" i]')];
+      for (const el of candidates) {
+        const text = el.innerText || '';
+        if (!text || (!text.includes('AssertionError') && !text.includes('failing') && !text.includes('Error:'))) continue;
+
+        const cleanTestName = testName.replace(/^\d+[\.\)]\s*/, '').trim();
+        const testIdx = text.indexOf(cleanTestName);
+        if (testIdx !== -1) {
+          const after = text.substring(testIdx);
+          const lines = after.split('\n').map(l => l.trim()).filter(Boolean);
+          for (let i = 1; i < Math.min(lines.length, 12); i++) {
+            if (/AssertionError|Error:|expected|timeout of|Cannot find module|TypeError/i.test(lines[i])) {
+              return lines.slice(i, Math.min(i + 3, lines.length)).join(' | ');
+            }
+          }
+        }
+      }
+    } catch (e) {}
+    return '';
+  }
+
+  async function readSubmissionResultsWithErrors() {
+    const res = readSubmissionResults();
+    if (!res || res.totalCount === 0) return res;
+
+    // For any failed tests, attempt to extract precise error messages
+    for (const t of res.tests) {
+      if (t.fail && !t.error) {
+        let errText = '';
+        const row = t.el ? (t.el.closest('tr, li, [role="row"], [class*="row" i], [class*="item" i]') || t.el.parentElement) : null;
+
+        if (row) {
+          const errEls = row.querySelectorAll('.error, [class*="error" i], [class*="fail" i], [class*="trace" i], [class*="diff" i], pre, code');
+          for (const errEl of errEls) {
+            const txt = (errEl.innerText || '').trim();
+            if (txt && !txt.includes(t.name) && txt.length > 5 && txt.length < 500) {
+              errText = txt;
+              break;
+            }
+          }
+
+          if (!errText) {
+            try {
+              const expandBtn = row.querySelector('.chevron, .codicon-chevron-right, .expand, button, svg') || t.el;
+              expandBtn.click();
+              await sleep(150);
+              const postExpand = row.querySelectorAll('.error, [class*="error" i], [class*="message" i], [class*="trace" i], [class*="diff" i], pre, code, div');
+              for (const pe of postExpand) {
+                const txt = (pe.innerText || '').trim();
+                if (/expected|AssertionError|timeout|received|Error:/i.test(txt) && !txt.includes(t.name)) {
+                  errText = txt;
+                  break;
+                }
+              }
+            } catch (e) {}
+          }
+        }
+
+        if (!errText) {
+          errText = findMochaErrorForTest(t.name);
+        }
+
+        if (errText) {
+          t.error = errText;
+        }
+      }
+    }
+
+    return res;
+  }
+
+  async function submitAndMonitor(timeoutMs = 60000) {
     const btn = getSubmitButton();
     if (!btn) throw new Error('"Submit Solution" button not found on page.');
+
+    // 1. Snapshot previous results to ensure we don't return stale data
+    const baseline = readSubmissionResults();
+    const baselineTimestamp = baseline?.timestamp || '';
+    const baselinePassed = baseline?.passedCount || 0;
+    const baselineFailed = baseline?.failedCount || 0;
 
     ui.addLog('Clicking "Submit Solution" button...', 'ok');
     btn.click();
 
-    ui.setStatus('Evaluating Submission...', 'Grader running test cases...', 'running', true);
+    ui.setStatus('Evaluating Submission...', 'Waiting for grader to execute test cases...', 'running', true);
 
     // Switch to Submissions tab (Tab 2) so live test results are actively rendered
     await sleep(400);
     switchToSubmissionsTab();
+
+    // 2. WAIT FOR EVALUATION TO START (minimum 3.5 seconds)
+    ui.addLog('Waiting for grader evaluation to begin...', 'running');
+    await sleep(3500);
 
     const start = Date.now();
     let sawRunning = false;
     let consecutivePassedChecks = 0;
 
     while (Date.now() - start < timeoutMs) {
-      await sleep(300);
+      await sleep(500);
 
       const submitBtn = getSubmitButton();
       const submitBtnText = (submitBtn?.innerText || '').trim();
       const isBtnRunning = /Running Test Cases|Checking|Evaluating/i.test(submitBtnText) || submitBtn?.disabled;
+      const isPageRunning = /Running Test Cases|Checking Submission|evaluat(ing|e)|several minutes/i.test(document.body.innerText);
 
-      if (isBtnRunning) {
+      if (isBtnRunning || isPageRunning) {
         sawRunning = true;
+        ui.setStatus('Grading in progress...', 'Grader running test suite...', 'running', true);
+        continue;
       }
 
       // Check Submissions Tab (Tab 2)
-      const results = readSubmissionResults();
+      const results = await readSubmissionResultsWithErrors();
       if (results && results.totalCount > 0) {
-        if (results.isRunning) {
-          sawRunning = true;
-          ui.setStatus('Grading in progress...', `${results.passedCount}/${results.totalCount} test cases passed so far...`, 'running', true);
-        } else {
-          // Check 1: 100% all passed!
-          if (results.passedCount === results.totalCount && results.failedCount === 0) {
-            consecutivePassedChecks++;
-            if (consecutivePassedChecks >= 2 || !isBtnRunning) {
-              ui.addLog(`⚡ Instant Exit: All ${results.passedCount}/${results.totalCount} test cases verified passed!`, 'ok');
-              return {
-                ok: true,
-                passed: results.passedCount,
-                total: results.totalCount,
-                tests: results.tests,
-                timestamp: results.timestamp,
-                failedTests: [],
-                passedTests: results.passedTests
-              };
-            }
-          }
+        // Guard against stale baseline if not seen running yet
+        const isStale = (
+          !sawRunning &&
+          results.timestamp === baselineTimestamp &&
+          results.passedCount === baselinePassed &&
+          results.failedCount === baselineFailed &&
+          Date.now() - start < 8000
+        );
+        if (isStale) {
+          continue;
+        }
 
-          // Check 2: All test cases have been evaluated and grader is no longer running
-          if (sawRunning && !isBtnRunning && (results.passedCount + results.failedCount >= results.totalCount)) {
-            const allPassed = results.passedCount === results.totalCount && results.failedCount === 0;
-            ui.addLog(`⚡ Evaluation Completed in ${((Date.now() - start) / 1000).toFixed(1)}s: ${results.passedCount}/${results.totalCount} passed.`, allPassed ? 'ok' : 'warn');
+        // Check 1: 100% all passed!
+        if (results.passedCount === results.totalCount && results.failedCount === 0) {
+          consecutivePassedChecks++;
+          if (consecutivePassedChecks >= 2 || !isBtnRunning) {
+            ui.addLog(`⚡ Instant Exit: All ${results.passedCount}/${results.totalCount} test cases verified passed!`, 'ok');
             return {
-              ok: allPassed,
+              ok: true,
               passed: results.passedCount,
               total: results.totalCount,
               tests: results.tests,
               timestamp: results.timestamp,
-              failedTests: results.failedTests,
+              failedTests: [],
               passedTests: results.passedTests
             };
           }
+        }
+
+        // Check 2: All test cases have been evaluated and grader is no longer running
+        if (sawRunning && !isBtnRunning && (results.passedCount + results.failedCount >= results.totalCount)) {
+          const allPassed = results.passedCount === results.totalCount && results.failedCount === 0;
+          ui.addLog(`⚡ Evaluation Completed in ${((Date.now() - start) / 1000).toFixed(1)}s: ${results.passedCount}/${results.totalCount} passed.`, allPassed ? 'ok' : 'warn');
+          return {
+            ok: allPassed,
+            passed: results.passedCount,
+            total: results.totalCount,
+            tests: results.tests,
+            timestamp: results.timestamp,
+            failedTests: results.failedTests,
+            passedTests: results.passedTests
+          };
         }
       }
 
@@ -606,7 +700,7 @@
         }
 
         // Return combined results from Tab 2 and Tab 3
-        const finalSub = readSubmissionResults();
+        const finalSub = await readSubmissionResultsWithErrors();
         const tab2Failed = finalSub?.failedTests || [];
         const total = finalSub?.totalCount || (passedCount + failedCount);
         const passed = finalSub?.passedCount ?? passedCount;
@@ -628,6 +722,19 @@
       if (/Latest Submission is Successful|All test cases passed/i.test(document.body.innerText)) {
         return { ok: true, summary: 'All test cases passed successfully!' };
       }
+    }
+
+    const fallbackResults = await readSubmissionResultsWithErrors();
+    return {
+      ok: fallbackResults ? (fallbackResults.passedCount === fallbackResults.totalCount && fallbackResults.failedCount === 0) : false,
+      passed: fallbackResults?.passedCount || 0,
+      total: fallbackResults?.totalCount || 0,
+      tests: fallbackResults?.tests || [],
+      timestamp: fallbackResults?.timestamp || new Date().toLocaleTimeString(),
+      failedTests: fallbackResults?.failedTests || [],
+      passedTests: fallbackResults?.passedTests || []
+    };
+  }
     }
 
     return { ok: false, error: 'Submission evaluation timed out after 45s.' };
@@ -938,6 +1045,48 @@
     return false;
   }
 
+  async function verifyCodeCompleteness(filesToWrite) {
+    if (!filesToWrite || filesToWrite.length === 0) {
+      ui.addLog('🛑 Verification failed: No solution files specified to verify.', 'bad');
+      ui.setStatus('No Code', 'No solution files to verify.', 'error');
+      return false;
+    }
+
+    for (const f of filesToWrite) {
+      const code = f.code || '';
+      if (!code || code.trim().length < 30) {
+        ui.addLog(`🛑 Verification failed: "${f.filePath}" code is too short or empty (${code.trim().length} chars). Submission aborted.`, 'bad');
+        ui.setStatus('Incomplete Code', `Code for ${f.filePath} is incomplete.`, 'error');
+        return false;
+      }
+      if (/\/\/\s*write your code here|\/\*\s*write your code here\s*\*\/|\/\/\s*TODO:\s*implement/i.test(code)) {
+        ui.addLog(`🛑 Verification failed: Placeholder comment detected in "${f.filePath}". Submission aborted.`, 'bad');
+        ui.setStatus('Incomplete Code', `Placeholder detected in ${f.filePath}.`, 'error');
+        return false;
+      }
+    }
+
+    // Give editor buffer and container file system 1500ms to settle after file save
+    await sleep(1500);
+
+    // Verify active editor in workspace does not have starter placeholder
+    try {
+      const editorStatus = await sendMsg({ op: 'AP_GET_EDITOR_STATUS' }, 5000);
+      if (editorStatus && editorStatus.ok && editorStatus.code) {
+        if (/\/\/\s*write your code here|\/\*\s*write your code here\s*\*\//i.test(editorStatus.code)) {
+          ui.addLog('🛑 Verification failed: Active editor still contains "// write your code here"! The code was not replaced. Please paste the solution into the editor before submitting.', 'bad');
+          ui.setStatus('Editor Not Replaced', 'Starter placeholder still present in editor.', 'error');
+          return false;
+        }
+      }
+    } catch (e) {
+      console.warn('[AP-Solver] Editor status verification check bypassed:', e);
+    }
+
+    ui.addLog(`✓ Code completeness verified (${filesToWrite.length} file(s) complete, non-placeholder). Ready to submit!`, 'ok');
+    return true;
+  }
+
   async function handleSubmit() {
     try {
       const res = await submitAndMonitor();
@@ -1004,12 +1153,12 @@
       await sleep(300);
       await handleReadContext();
 
-      let maxAttempts = ui.options.autoRetry ? 5 : 1;
+      let maxAttempts = ui.options.autoRetry ? 2 : 1;
       let feedback = null;
 
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         if (attempt > 1) {
-          ui.addLog(`🔁 [Loop Attempt ${attempt}/${maxAttempts}] Retrying with Tab 2 & Tab 3 feedback...`, 'warn');
+          ui.addLog(`🔁 [Attempt ${attempt}/${maxAttempts}] Retrying with Tab 2 & Tab 3 feedback...`, 'warn');
         }
 
         // 3. Generate clean complete replacement using multi-tab feedback
@@ -1022,13 +1171,23 @@
         if (!writeOk) {
           const targetName = cachedEditor?.activeFile || 'target file';
           ui.addLog(`🛑 Automated submission paused because editor text was not yet replaced cleanly. Please paste the clean code into "${targetName}" and click Solve again to submit!`, 'bad');
+          ui.setRunning(false);
           break; // NEVER SUBMIT 501 PLACEHOLDER CODE!
         }
 
-        // 5. Submit solution and track Tab 2
+        // 5. Code Completeness Check: Submit ONLY when code is complete and non-placeholder!
+        const filesToCheck = (cachedGeneratedFiles && cachedGeneratedFiles.length > 0)
+          ? cachedGeneratedFiles
+          : [{ filePath: cachedEditor?.activeFile || 'src/index.js', code: cachedGeneratedCode }];
+        const isComplete = await verifyCodeCompleteness(filesToCheck);
+        if (!isComplete) {
+          ui.setRunning(false);
+          break;
+        }
+
+        // 6. Submit solution and track Tab 2
         ui.setStatus(`Attempt ${attempt}/${maxAttempts}: Submitting Solution...`, 'Evaluating solution with test grader...', 'running', true);
         ui.addLog(`Submitting solution to test grader (Attempt ${attempt}/${maxAttempts})...`);
-        await sleep(1500);
         const subRes = await handleSubmit();
 
         const timeStr = subRes?.timestamp || new Date().toLocaleTimeString();
@@ -1038,6 +1197,9 @@
           for (const t of subRes.tests) {
             if (t.fail) {
               ui.addLog(`   ❌ ${t.name}`, 'bad');
+              if (t.error) {
+                ui.addLog(`      ↳ Error: ${t.error}`, 'bad');
+              }
             } else if (t.pass) {
               ui.addLog(`   ✅ ${t.name}`, 'ok');
             }
@@ -1047,6 +1209,7 @@
         if (subRes && subRes.ok) {
           ui.addLog(`🎉 CHALLENGE SOLVED! All ${subRes.passed || 'all'} test cases passed on Attempt ${attempt} (${timeStr})!`, 'ok');
           ui.setStatus('Accepted 🎉', `All ${subRes.passed || 'all'} test cases passed at ${timeStr}!`, 'success');
+          ui.setRunning(false);
           break;
         } else if (attempt < maxAttempts) {
           ui.addLog(`⚠️ Attempt ${attempt} finished at ${timeStr}: ${subRes?.passed || 0}/${subRes?.total || 0} test cases passed.`, 'warn');
@@ -1058,7 +1221,12 @@
           const feedbackBlocks = [];
           feedbackBlocks.push(`=== PREVIOUS ATTEMPT ${attempt} FAILED (${subRes?.passed || 0}/${subRes?.total || 0} PASSED AT ${timeStr}) ===`);
 
-          if (subRes?.failedTests && subRes.failedTests.length > 0) {
+          if (subRes?.tests && subRes.tests.length > 0) {
+            const failItems = subRes.tests.filter(t => t.fail);
+            for (const item of failItems) {
+              feedbackBlocks.push(`FAILED TEST: ${item.name}${item.error ? `\nERROR: ${item.error}` : ''}`);
+            }
+          } else if (subRes?.failedTests && subRes.failedTests.length > 0) {
             feedbackBlocks.push(`FAILED TEST CASES (FROM TAB 2 - ALL SUBMISSIONS TABLE AT ${timeStr}):\n` + subRes.failedTests.map((t) => `- ❌ ${t}`).join('\n'));
           }
 
@@ -1087,7 +1255,11 @@
           await sleep(1500);
           continue;
         } else {
-          ui.addLog(`Reached max attempts (${maxAttempts}). You can click "Solve" to try again with updated feedback.`, 'warn');
+          ui.addLog(`⚠️ Attempt ${attempt} finished: ${subRes?.passed || 0}/${subRes?.total || 0} test cases passed.`, 'warn');
+          if (!ui.options.autoRetry) {
+            ui.addLog('ℹ️ Auto-retry is disabled to prevent repeated submission spam. Review error messages above or click Solve to retry.', 'normal');
+          }
+          ui.setRunning(false);
           break;
         }
       }
@@ -1159,7 +1331,7 @@
 
     ui.updateOptions({
       autoSubmit: settings.autoSubmit ?? true,
-      autoRetry: settings.autoRetry ?? true,
+      autoRetry: settings.autoRetry ?? false,
       provider: activeProvider
     });
 

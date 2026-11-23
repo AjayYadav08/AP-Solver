@@ -30,18 +30,19 @@
     const editors = monaco.editor.getEditors();
     if (!editors || editors.length === 0) return null;
 
-    // Prefer visible, non-readonly editor (excluding HTTP tester response panes)
-    const active = editors.find((ed) => {
+    const isExcluded = (ed) => {
       const node = ed.getContainerDomNode ? ed.getContainerDomNode() : null;
-      if (node && node.closest?.('[class*="response" i], [class*="http-request" i], [class*="postman" i], [class*="preview" i], #ap-solver-host')) return false;
-      const rect = node ? node.getBoundingClientRect() : null;
-      return rect && rect.width > 0 && rect.height > 40 && !ed.getOption(monaco.editor.EditorOption.readOnly);
+      return !node || !!node.closest?.('[class*="response" i], [class*="http-request" i], [class*="postman" i], [class*="preview" i], [class*="request-body" i], [class*="response-body" i], #ap-solver-host');
+    };
+
+    const validEditors = editors.filter(ed => {
+      if (isExcluded(ed)) return false;
+      const r = ed.getContainerDomNode().getBoundingClientRect();
+      return r.width > 50 && r.height > 50;
     });
 
-    return active || editors.find(ed => {
-      const node = ed.getContainerDomNode ? ed.getContainerDomNode() : null;
-      return !node?.closest?.('[class*="response" i], [class*="http-request" i], #ap-solver-host');
-    }) || editors[0];
+    const active = validEditors.find(ed => !ed.getOption(monaco.editor.EditorOption.readOnly));
+    return active || validEditors[0] || null;
   }
 
   // Helper: Trigger Ctrl+S / Cmd+S save
@@ -110,7 +111,7 @@
       return (openTab.querySelector('.label-name') || openTab).textContent.trim();
     }
 
-    return 'src/index.js';
+    return '';
   }
 
   // Helper: Scan all files visible in Explorer tree & Monaco models
@@ -521,7 +522,9 @@
 
           // If targetFilePath is specified, check if active editor tab actually matches target
           const activeFileName = detectActiveFileName(monaco);
-          const isTargetActuallyActive = !basename || activeFileName.toLowerCase().includes(basename.toLowerCase());
+          const isTargetActuallyActive = !basename || (
+            activeFileName.length > 0 && activeFileName.toLowerCase().includes(basename.toLowerCase())
+          );
 
           // If target is active in activeEd, write to its model
           if (isTargetActuallyActive) {
@@ -530,6 +533,11 @@
             if (activeModel && typeof activeModel.setValue === 'function') {
               activeModel.setValue(newCode);
               triggerSave();
+              const val = activeModel.getValue();
+              if (/\/\/\s*write your code here|\/\*\s*write your code here\s*\*\//i.test(val)) {
+                window.postMessage({ action: 'AP_WRITE_CODE_RESULT', id, ok: false, error: 'Editor still contains placeholder code' }, '*');
+                return;
+              }
               window.postMessage({ action: 'AP_WRITE_CODE_RESULT', id, ok: true, method: 'monaco.activeModel.setValue', filePath: targetFilePath }, '*');
               return;
             }

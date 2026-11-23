@@ -10,8 +10,8 @@ export const DEFAULT_SETTINGS = {
   openaiModel: 'gpt-4o',
   openaiBaseUrl: 'https://api.openai.com/v1',
   autoSubmit: true,
-  autoRetry: true,
-  maxRetries: 3,
+  autoRetry: false,
+  maxRetries: 1,
 };
 
 export async function getSettings() {

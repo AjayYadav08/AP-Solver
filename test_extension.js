@@ -578,4 +578,51 @@ if (!bgExpandJs.includes('ArrowRight') || !bgExpandJs.includes('cdpNativeDblClic
 }
 console.log('   ✓ Robust src Folder Dropdown Expansion verified');
 
+// Test 22: Verify Anti-Spam Single Submission, Code Completeness Verification, and Precision Error Extraction
+console.log('22. Testing Anti-Spam Single Submission, Code Completeness Check & Precision Error Extraction...');
+const contentJs22 = fs.readFileSync(path.join(__dirname, 'content/content.js'), 'utf8');
+const solverUi22 = fs.readFileSync(path.join(__dirname, 'content/solver-ui.js'), 'utf8');
+const optionsJs22 = fs.readFileSync(path.join(__dirname, 'options/options.js'), 'utf8');
+const popupJs22 = fs.readFileSync(path.join(__dirname, 'popup/popup.js'), 'utf8');
+const utilsLlm22 = fs.readFileSync(path.join(__dirname, 'utils/llm.js'), 'utf8');
+const bgJs22 = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
+const bridgeJs22 = fs.readFileSync(path.join(__dirname, 'content/main-world-bridge.js'), 'utf8');
+
+// 1. Anti-spam check: autoRetry defaults to false across all config files
+if (!solverUi22.includes('autoRetry: false') ||
+    !contentJs22.includes('autoRetry: settings.autoRetry ?? false') ||
+    !optionsJs22.includes('autoRetryCheck.checked = !!settings.autoRetry') ||
+    !popupJs22.includes('autoRetryCheck.checked = !!settings.autoRetry') ||
+    !utilsLlm22.includes('autoRetry: false')) {
+  throw new Error('autoRetry MUST default to false across solver-ui, content, options, popup, and llm to prevent repeated submission spam!');
+}
+
+// 2. Single attempt enforcement in handleOneClickSolve
+if (!contentJs22.includes('let maxAttempts = ui.options.autoRetry ? 2 : 1')) {
+  throw new Error('handleOneClickSolve must default to 1 attempt when autoRetry is false!');
+}
+
+// 3. Code completeness gate before submit
+if (!contentJs22.includes('async function verifyCodeCompleteness') ||
+    !contentJs22.includes('write your code here') ||
+    !contentJs22.includes('const isComplete = await verifyCodeCompleteness')) {
+  throw new Error('content.js must verify code completeness and reject starter placeholders before submitting!');
+}
+
+// 4. Editor targeting guards against HTTP tester panel
+if (!bgJs22.includes('normActive.length > 0 && normBase.length > 0') ||
+    !bgJs22.includes('No valid workspace editor in this frame') ||
+    !bridgeJs22.includes('validEditors.find(ed => !ed.getOption(monaco.editor.EditorOption.readOnly))') ||
+    !bridgeJs22.includes('activeFileName.length > 0 && activeFileName.toLowerCase().includes(basename.toLowerCase())')) {
+  throw new Error('background.js and main-world-bridge.js must strictly guard against empty tab string matching and HTTP tester editor injection!');
+}
+
+// 5. Precision error extraction and Mocha runner parsing
+if (!contentJs22.includes('function findMochaErrorForTest') ||
+    !contentJs22.includes('readSubmissionResultsWithErrors') ||
+    !contentJs22.includes('t.error')) {
+  throw new Error('content.js must implement findMochaErrorForTest and readSubmissionResultsWithErrors to wait and capture precise error messages!');
+}
+console.log('   ✓ Anti-Spam Single Submission, Code Completeness Check & Precision Error Extraction verified');
+
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');

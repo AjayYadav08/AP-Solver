@@ -898,7 +898,10 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
           const activeTabName = (activeTabEl?.querySelector('.label-name') || activeTabEl)?.textContent?.trim() || '';
           const normActive = normStr(activeTabName);
           const normBase = basename ? normStr(basename) : '';
-          const isTargetActive = !basename || normActive.includes(normBase) || normBase.includes(normActive);
+          const isTargetActive = !basename || (
+            normActive.length > 0 && normBase.length > 0 &&
+            (normActive.includes(normBase) || normBase.includes(normActive))
+          );
 
           // Strategy 1: Monaco instance or AMD loader search (Wipe & Replace with setValue)
           let m = window.monaco;
@@ -918,14 +921,19 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
 
           if (m && m.editor) {
             const editors = m.editor.getEditors ? m.editor.getEditors() : [];
-            const activeEd = editors.find(e => {
+            const isExcludedNode = (node) => {
+              if (!node) return false;
+              return !!node.closest?.('[class*="response" i], [class*="http-request" i], [class*="postman" i], [class*="preview" i], [class*="request-body" i], [class*="response-body" i], #ap-solver-host');
+            };
+
+            const validEditors = editors.filter(e => {
               const node = e.getContainerDomNode ? e.getContainerDomNode() : null;
-              if (node && node.closest?.('[class*="response" i], [class*="http-request" i], [class*="postman" i], [class*="preview" i], #ap-solver-host')) return false;
-              return node && node.getBoundingClientRect().width > 0;
-            }) || editors.find(e => {
-              const node = e.getContainerDomNode ? e.getContainerDomNode() : null;
-              return !node?.closest?.('[class*="response" i], [class*="http-request" i], #ap-solver-host');
-            }) || editors[0];
+              if (isExcludedNode(node)) return false;
+              const r = node ? node.getBoundingClientRect() : null;
+              return r && r.width > 50 && r.height > 50;
+            });
+
+            const activeEd = validEditors.find(e => !e.getOption?.(m.editor.EditorOption?.readOnly)) || validEditors[0] || null;
 
             // A. If targetModel exists in getModels, write to it directly!
             const models = m.editor.getModels ? m.editor.getModels() : [];
@@ -944,7 +952,15 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
               }
               triggerFileSave();
               await sleep(150);
+              const curVal = targetModel.getValue();
+              if (/\/\/\s*write your code here|\/\*\s*write your code here\s*\*\//i.test(curVal)) {
+                return { success: false, error: 'Model still contains placeholder code' };
+              }
               return { success: true, verified: true, method: 'monaco.model.setValue', filePath: targetPath };
+            }
+
+            if (!activeEd) {
+              return { success: false, error: 'No valid workspace editor in this frame' };
             }
 
             // B. If target is active in activeEd (or if (!targetPath)), write to activeEd model!
@@ -952,6 +968,10 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
               activeEd.getModel().setValue(codeToWrite);
               triggerFileSave();
               await sleep(150);
+              const curVal = activeEd.getModel().getValue();
+              if (/\/\/\s*write your code here|\/\*\s*write your code here\s*\*\//i.test(curVal)) {
+                return { success: false, error: 'Editor still contains placeholder code' };
+              }
               return { success: true, verified: true, method: 'monaco.activeModel.setValue', filePath: targetPath };
             }
           }
