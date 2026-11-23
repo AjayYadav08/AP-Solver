@@ -12,6 +12,131 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   }
 });
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// =======================================================================
+// Chrome DevTools Protocol (CDP) True Native Hardware Driver
+// Enables Real OS-Level Mouse Clicks, Double-Clicks, Keyboard & Shortcuts
+// =======================================================================
+
+async function attachCDP(tabId) {
+  if (!chrome.debugger) return false;
+  try {
+    await chrome.debugger.attach({ tabId }, '1.3');
+    console.log('[AP-Solver CDP] Attached successfully to tab', tabId);
+    return true;
+  } catch (err) {
+    if (err.message && err.message.includes('Already attached')) {
+      return true;
+    }
+    console.warn('[AP-Solver CDP] Attach warning:', err.message);
+    return false;
+  }
+}
+
+function sendCDP(tabId, method, params = {}) {
+  return new Promise((resolve) => {
+    if (!chrome.debugger) return resolve({ ok: false, error: 'debugger API not available' });
+    chrome.debugger.sendCommand({ tabId }, method, params, (res) => {
+      if (chrome.runtime.lastError) {
+        resolve({ ok: false, error: chrome.runtime.lastError.message });
+      } else {
+        resolve({ ok: true, result: res });
+      }
+    });
+  });
+}
+
+// True Native Mouse Click with real OS isTrusted=true event
+async function cdpNativeClick(tabId, x, y, clickCount = 1) {
+  await sendCDP(tabId, 'Input.dispatchMouseEvent', {
+    type: 'mousePressed',
+    x: Math.round(x),
+    y: Math.round(y),
+    button: 'left',
+    clickCount
+  });
+  await sleep(40);
+  await sendCDP(tabId, 'Input.dispatchMouseEvent', {
+    type: 'mouseReleased',
+    x: Math.round(x),
+    y: Math.round(y),
+    button: 'left',
+    clickCount
+  });
+}
+
+// True Native Double-Click
+async function cdpNativeDblClick(tabId, x, y) {
+  await cdpNativeClick(tabId, x, y, 1);
+  await sleep(60);
+  await cdpNativeClick(tabId, x, y, 2);
+}
+
+// True Native Key Press
+async function cdpNativeKey(tabId, key, code, keyCode, modifiers = 0) {
+  await sendCDP(tabId, 'Input.dispatchKeyEvent', {
+    type: 'rawKeyDown',
+    key,
+    code,
+    windowsVirtualKeyCode: keyCode,
+    nativeVirtualKeyCode: keyCode,
+    modifiers
+  });
+  await sleep(30);
+  await sendCDP(tabId, 'Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key,
+    code,
+    windowsVirtualKeyCode: keyCode,
+    nativeVirtualKeyCode: keyCode,
+    modifiers
+  });
+}
+
+// True Native Text Typing
+async function cdpNativeInsertText(tabId, text) {
+  await sendCDP(tabId, 'Input.insertText', { text });
+}
+
+// Quick Open via CDP (Cmd+P on Mac, Ctrl+P on Windows)
+async function cdpQuickOpenFile(tabId, targetFilePath) {
+  if (!targetFilePath) return false;
+  const basename = targetFilePath.split('/').pop().trim();
+  try {
+    const attached = await attachCDP(tabId);
+    if (!attached) return false;
+
+    // Modifiers: 4 = Meta (Cmd on Mac), 2 = Ctrl (Win/Linux)
+    // Send Cmd+P
+    await cdpNativeKey(tabId, 'p', 'KeyP', 80, 4);
+    await sleep(250);
+
+    // Type the filename into Quick Open input
+    await cdpNativeInsertText(tabId, basename);
+    await sleep(250);
+
+    // Press Enter to open
+    await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
+    await sleep(350);
+
+    console.log(`[AP-Solver CDP] Quick Open triggered for "${basename}".`);
+    return true;
+  } catch (err) {
+    console.warn('[AP-Solver CDP] Quick Open error:', err);
+    return false;
+  }
+}
+
+// Save File via CDP (Cmd+S / Ctrl+S)
+async function cdpSaveFile(tabId) {
+  try {
+    await cdpNativeKey(tabId, 's', 'KeyS', 83, 4); // Cmd+S
+    await sleep(50);
+    await cdpNativeKey(tabId, 's', 'KeyS', 83, 2); // Ctrl+S
+  } catch (e) {}
+}
+
 // Broadcast or request data across frames in a specific tab
 async function queryEditorInTab(tabId) {
   try {
@@ -174,6 +299,17 @@ async function queryEditorInTab(tabId) {
 async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
   try {
     const cleanCode = formatCodeIndentation(newCode);
+
+    // Phase 1: Try True Native Quick Open via CDP if target file is specified
+    if (targetFilePath) {
+      try {
+        await cdpQuickOpenFile(tabId, targetFilePath);
+        await sleep(250);
+      } catch (e) {
+        console.warn('[AP-Solver CDP] Quick open pass error:', e);
+      }
+    }
+
     const results = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       world: 'MAIN',
@@ -509,7 +645,9 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
 
     const successResult = results?.find(r => r.result && r.result.success);
     if (successResult) {
-      return { ok: true, verified: !!successResult.result.verified, method: successResult.result.method, filePath: successResult.result.filePath };
+      // Phase 3: Trigger real OS-level Save via CDP
+      await cdpSaveFile(tabId);
+      return { ok: true, verified: !!successResult.result.verified, method: successResult.result.method + '+cdp', filePath: successResult.result.filePath };
     }
   } catch (err) {
     console.warn('[AP-Solver] Error writing to editor in tab:', err);

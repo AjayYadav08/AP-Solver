@@ -15,6 +15,7 @@ const manifest = JSON.parse(manifestRaw);
 if (manifest.manifest_version !== 3) throw new Error('Manifest must be version 3');
 if (!manifest.permissions.includes('storage')) throw new Error('Missing storage permission');
 if (!manifest.permissions.includes('scripting')) throw new Error('Missing scripting permission');
+if (!manifest.permissions.includes('debugger')) throw new Error('Missing debugger permission for hardware mouse/keyboard events');
 // Ensure restricted to newtonschool.co
 const contentMatches = manifest.content_scripts.flatMap(cs => cs.matches);
 if (contentMatches.includes('<all_urls>')) throw new Error('Content scripts must not match <all_urls>; must be restricted to newtonschool.co');
@@ -464,5 +465,17 @@ if (!currentBridgeJs.includes('KeyboardEvent') || !currentBridgeJs.includes('det
   throw new Error('main-world-bridge.js must simulate dblclick with detail: 2 and Enter key events!');
 }
 console.log('   ✓ Multi-File Solution Manager UI & bulletproof navigation verified');
+
+// Test 17: Verify Chrome DevTools Protocol (CDP) True Native Hardware Driver
+console.log('17. Testing Chrome DevTools Protocol (CDP) True Native Hardware Driver...');
+const updatedBgJs = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
+
+if (!updatedBgJs.includes('attachCDP') || !updatedBgJs.includes('cdpNativeDblClick') || !updatedBgJs.includes('cdpQuickOpenFile') || !updatedBgJs.includes('cdpSaveFile')) {
+  throw new Error('background.js must implement attachCDP, cdpNativeDblClick, cdpQuickOpenFile, and cdpSaveFile!');
+}
+if (!updatedBgJs.includes('Input.dispatchMouseEvent') || !updatedBgJs.includes('Input.dispatchKeyEvent') || !updatedBgJs.includes('Input.insertText')) {
+  throw new Error('background.js must dispatch native mouse, keyboard and insertText events via CDP!');
+}
+console.log('   ✓ Chrome DevTools Protocol (CDP) True Native Hardware Driver verified');
 
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');
