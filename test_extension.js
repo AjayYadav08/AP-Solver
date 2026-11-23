@@ -436,7 +436,10 @@ if (parsedUserFiles[2].filePath !== 'src/index.js' || !parsedUserFiles[2].code.i
 }
 
 // Safety guard verification: verify that main-world-bridge and background do NOT fall back to active editor when target is specified
-if (!bridgeJs.includes('if (!targetFilePath)') || !bgJs.includes('if (!targetPath)')) {
+const currentBridgeJs = fs.readFileSync(path.join(__dirname, 'content/main-world-bridge.js'), 'utf8');
+const currentBgJs = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
+
+if (!currentBridgeJs.includes('if (!targetFilePath)') || !currentBgJs.includes('if ((!targetPath || isTargetActive)')) {
   throw new Error('Target safety guard missing: active editor fallback must only run when target is NOT specified!');
 }
 

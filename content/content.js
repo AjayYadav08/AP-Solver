@@ -242,7 +242,14 @@
       return { ok: true, verified: true, method: resp.method, filePath: resp.filePath || filePath };
     }
 
-    // Fallback in top document if editor is in top frame with multi-tier Select All & Wipe
+    // CRITICAL SAFETY GUARD: If filePath was specified, DO NOT fall back to top DOM!
+    // Falling back to top DOM when target is orderManager.js will overwrite index.js!
+    if (filePath) {
+      console.warn(`[AP-Solver] Failed to write into target file "${filePath}":`, resp?.error || 'Target file not active');
+      return { ok: false, error: resp?.error || `Could not open and write to "${filePath}"` };
+    }
+
+    // Fallback in top document ONLY if no specific targetFilePath was requested
     const editorDom = document.querySelector('.monaco-editor');
     const textarea = editorDom?.querySelector('textarea.inputarea');
     if (textarea) {

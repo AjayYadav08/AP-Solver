@@ -147,6 +147,57 @@
     return [...files];
   }
 
+  // Helper: Simulate realistic user click and dblclick using PointerEvent and MouseEvent with accurate coordinates
+  function simulateClick(el) {
+    if (!el) return false;
+    try { el.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch(e) {}
+    const target = el.querySelector('.label-name, .monaco-icon-label') || el;
+    const rect = target.getBoundingClientRect();
+    const clientX = (rect.left + rect.width / 2) || 100;
+    const clientY = (rect.top + rect.height / 2) || 100;
+
+    const opts = {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      clientX,
+      clientY,
+      screenX: clientX,
+      screenY: clientY,
+      button: 0,
+      buttons: 1
+    };
+
+    try { target.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch (e) {}
+    try { target.dispatchEvent(new MouseEvent('mousedown', opts)); } catch (e) {}
+    try { target.dispatchEvent(new PointerEvent('pointerup', opts)); } catch (e) {}
+    try { target.dispatchEvent(new MouseEvent('mouseup', opts)); } catch (e) {}
+    try { target.dispatchEvent(new MouseEvent('click', opts)); } catch (e) {}
+    try { target.dispatchEvent(new MouseEvent('dblclick', opts)); } catch (e) {}
+
+    if (target !== el) {
+      try { el.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch (e) {}
+      try { el.dispatchEvent(new MouseEvent('mousedown', opts)); } catch (e) {}
+      try { el.dispatchEvent(new MouseEvent('click', opts)); } catch (e) {}
+      try { el.dispatchEvent(new MouseEvent('dblclick', opts)); } catch (e) {}
+    }
+    return true;
+  }
+
+  function findExplorerItem(name) {
+    const base = name.split('/').pop().trim();
+    const rows = [...document.querySelectorAll('.monaco-list-row, [role="treeitem"]')];
+    return rows.find(r => {
+      const aria = (r.getAttribute('aria-label') || '').trim();
+      if (aria === base || aria.startsWith(base) || aria.toLowerCase().includes(base.toLowerCase())) return true;
+      const title = (r.getAttribute('title') || '').trim();
+      if (title === base || title.endsWith(base) || title.toLowerCase().includes(base.toLowerCase())) return true;
+      const labelEl = r.querySelector('.label-name, .monaco-icon-label');
+      const text = (labelEl?.textContent || r.textContent || '').trim();
+      return text === base || text.startsWith(base) || new RegExp(`(^|\\b)${base}(\\b|\\s|$)`, 'i').test(text);
+    });
+  }
+
   // Helper: Navigate to or open a target file in VS Code
   async function navigateToTargetFile(targetFilePath, monaco) {
     if (!targetFilePath) return false;
@@ -162,26 +213,30 @@
     }
 
     // 2. Check if already open and active
-    const curActive = detectActiveFileName(monaco);
-    if (curActive === targetFilePath || curActive.endsWith('/' + basename) || curActive === basename) {
+    const activeTabEl = document.querySelector('.tab.active, [role="tab"][aria-selected="true"]');
+    const activeLabel = (activeTabEl?.querySelector('.label-name') || activeTabEl)?.textContent?.trim() || '';
+    if (activeLabel === basename || activeLabel.startsWith(basename)) {
       return true;
     }
 
     // 3. Check if open in tabs
     const matchingTab = tabs.find(t => {
+      const aria = (t.getAttribute('aria-label') || '').trim();
+      if (aria === basename || aria.includes(basename)) return true;
       const txt = (t.querySelector('.label-name') || t).textContent.trim();
-      return txt === basename || txt === targetFilePath;
+      return txt === basename || txt.startsWith(basename) || txt.includes(basename);
     });
     if (matchingTab) {
-      matchingTab.click();
-      matchingTab.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-      matchingTab.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
-      matchingTab.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-      await new Promise(r => setTimeout(r, 150));
-      return true;
+      simulateClick(matchingTab);
+      await new Promise(r => setTimeout(r, 200));
+      const curTab = document.querySelector('.tab.active, [role="tab"][aria-selected="true"]');
+      const curTxt = (curTab?.querySelector('.label-name') || curTab)?.textContent?.trim() || '';
+      if (curTxt === basename || curTxt.startsWith(basename)) {
+        return true;
+      }
     }
 
-    // 4. Monaco Model Switch (Instant API switch)
+    // 4. Monaco Model Switch (Instant API switch if model already in memory)
     if (monaco && monaco.editor) {
       const models = monaco.editor.getModels ? monaco.editor.getModels() : [];
       const matchModel = models.find(m => {
@@ -196,44 +251,52 @@
       }
     }
 
-    // 5. Explorer Tree Navigation
-    const treeRows = [...document.querySelectorAll('.monaco-list-row, [role="treeitem"]')];
-
-    // If target is in src/, ensure src folder is expanded
+    // 5. Expand 'src' folder if target is in src/
     if (isSrc) {
-      const srcFolder = treeRows.find(r => {
-        const text = (r.querySelector('.label-name') || r).textContent.trim();
-        return /^src$/i.test(text);
-      });
-      if (srcFolder) {
-        const isCollapsed = srcFolder.getAttribute('aria-expanded') === 'false' ||
-          !!srcFolder.querySelector('.collapsed, .codicon-chevron-right');
+      const srcItem = findExplorerItem('src');
+      if (srcItem) {
+        const isCollapsed = srcItem.getAttribute('aria-expanded') === 'false' ||
+          !!srcItem.querySelector('.collapsed, .codicon-chevron-right');
         if (isCollapsed) {
-          const twistie = srcFolder.querySelector('.monaco-tl-twistie, .codicon');
-          if (twistie) twistie.click();
-          else srcFolder.click();
-          srcFolder.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-          srcFolder.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
-          await new Promise(r => setTimeout(r, 300));
+          const twistie = srcItem.querySelector('.monaco-tl-twistie, .codicon-chevron-right, .codicon');
+          simulateClick(twistie || srcItem);
+          await new Promise(r => setTimeout(r, 350));
         }
       }
     }
 
-    // Re-query rows after folder expansion
-    const updatedRows = [...document.querySelectorAll('.monaco-list-row, [role="treeitem"], .monaco-icon-label')];
-    const fileRow = updatedRows.find(r => {
-      const text = (r.querySelector('.label-name') || r).textContent.trim();
-      return text === basename || text === targetFilePath;
-    });
-
+    // 6. Find and click target file in Explorer tree
+    const fileRow = findExplorerItem(basename);
     if (fileRow) {
-      fileRow.click();
-      fileRow.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-      fileRow.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
-      fileRow.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-      fileRow.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
-      await new Promise(r => setTimeout(r, 300));
+      simulateClick(fileRow);
+      // Poll up to 1.5s for tab or active editor to switch
+      const t0 = Date.now();
+      while (Date.now() - t0 < 1500) {
+        const curTab = document.querySelector('.tab.active, [role="tab"][aria-selected="true"]');
+        const curTxt = (curTab?.querySelector('.label-name') || curTab)?.textContent?.trim() || '';
+        if (curTxt === basename || curTxt.startsWith(basename)) {
+          return true;
+        }
+        await new Promise(r => setTimeout(r, 100));
+      }
       return true;
+    }
+
+    // 7. If file does not exist, create it
+    const newFileBtn = document.querySelector('.codicon-new-file, [aria-label*="New File" i], [title*="New File" i]');
+    if (newFileBtn) {
+      const srcItem = findExplorerItem('src');
+      if (srcItem) simulateClick(srcItem);
+      simulateClick(newFileBtn);
+      await new Promise(r => setTimeout(r, 250));
+      const input = document.querySelector('.monaco-inputbox input, .inputArea input, input.monaco-inputbox');
+      if (input) {
+        input.value = basename;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+        await new Promise(r => setTimeout(r, 400));
+        return true;
+      }
     }
 
     return false;
