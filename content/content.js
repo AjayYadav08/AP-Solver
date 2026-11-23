@@ -648,11 +648,12 @@
       const fileCount = cachedEditor.allFiles?.length || 1;
       ui.addLog(`Editor detected: "${cachedEditor.activeFile}" (${cachedEditor.code.split('\n').length} lines, ${fileCount} file(s) in workspace)`, 'ok');
 
-      // Check if question specifically specifies a different target file (e.g. orderManager.js)
+      // Check if question specifically specifies a different target code file (e.g. orderManager.js)
       if (cachedQuestion?.details) {
-        const fileMatches = cachedQuestion.details.match(/([a-zA-Z0-9_\-\.]+\.(?:js|ts|json))/g) || [];
+        const fileMatches = cachedQuestion.details.match(/([a-zA-Z0-9_\-]+\.(?:js|ts))/gi) || [];
         const knownFiles = cachedEditor.allFiles || [];
         for (const fm of fileMatches) {
+          if (/package|prisma\.config|schema\.prisma|\.env|nodemon|readme|test/i.test(fm)) continue;
           const matchingKnown = knownFiles.find(kf => kf.endsWith(fm));
           if (matchingKnown && !cachedEditor.activeFile.endsWith(fm)) {
             ui.addLog(`ℹ️ Question specifically targets "${matchingKnown}". Updating active target.`, 'ok');

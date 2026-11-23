@@ -38,11 +38,15 @@ STRICT GUIDELINES:
    - Keep predefined variables (such as 'const tasks = [...]' or 'PORT') intact.
 3. REST API & BACKEND PATTERNS:
    - For Express / Prisma / PostgreSQL / Authentication (e.g. POST /register, POST /login):
-     * Input Validation: Validate required fields (such as 'email', 'password'). If missing, null, undefined, not a string, or empty string (after .trim()), return HTTP status 400 with { error: "Email and password are required" }. Return 400 immediately before performing database operations!
-     * Duplicate Check: Before creating a user, query the database using Prisma (e.g. 'await prisma.user.findUnique({ where: { email } })' or 'findFirst'). If an account with that email already exists, return HTTP status 400 with { error: "User already registered" } or duplicate email error.
-     * Bcrypt Hashing: Always hash passwords using bcrypt with EXACTLY the specified salt rounds (e.g. 'await bcrypt.hash(password, 10)' for 10 salt rounds). NEVER store plain text passwords in the database!
-     * Database Creation: Save the record to PostgreSQL using Prisma ('await prisma.user.create({ data: { email, password: hashedPassword } })').
-     * Response Security: NEVER return or expose the plain-text password or password hash in the response! Omit the password field from the returned object (e.g. 'const { password: _, ...safeUser } = user; return res.status(201).json(safeUser);' or '{ message: "User registered successfully", user: safeUser }').
+     * Input Validation: Validate required fields (such as 'email', 'password').
+       - Validate: if (!email || !password || typeof email !== 'string' || typeof password !== 'string' || !email.trim() || !password.trim()) { return res.status(400).json({ error: 'Email and password are required' }); }
+       - Return HTTP 400 immediately if email is missing, empty, or whitespace-only.
+       - Return HTTP 400 immediately if password is missing, empty, or whitespace-only.
+       - Return HTTP 400 immediately if both fields are missing.
+     * Duplicate Check: Before creating a user, query PostgreSQL using Prisma (e.g. 'await prisma.user.findFirst({ where: { email: email.trim() } })' or 'findUnique'). If an account with that email already exists, return HTTP status 400 with { error: "User already registered" }.
+     * Bcrypt Hashing: Always hash passwords using bcrypt with EXACTLY 10 salt rounds: 'const hashedPassword = await bcrypt.hash(password.trim(), 10);'. NEVER store plain text passwords in the database!
+     * Database Creation: Save the record to PostgreSQL using Prisma: 'const user = await prisma.user.create({ data: { email: email.trim(), password: hashedPassword } });'.
+     * Response Security: NEVER return or expose the plain-text password or password hash in the response! Omit the password field from the returned object: 'const { password: _, ...userWithoutPassword } = user; return res.status(201).json(userWithoutPassword);'.
      * Async Route Handlers: Always declare route handlers as 'async (req, res) => { try { ... } catch (err) { res.status(500).json({ error: err.message }); } }'. Ensure EVERY code path calls 'res.status(...).json(...)' or 'res.send(...)' so requests NEVER time out or exceed Mocha timeout!
    - For Native Node.js HTTP Server ('node:http'):
      * Always set 'Content-Type: application/json; charset=utf-8' on every response.
@@ -70,20 +74,23 @@ STRICT GUIDELINES:
    - Do NOT use tab characters.
    - Keep code clean, elegant, and readable.
 6. MULTI-FILE WORKSPACE & TARGET FILE AWARENESS:
-   - The project workspace may contain multiple files and folders (e.g. 'src/orderManager.js', 'src/logReader.js', 'src/index.js', 'customers.json', 'orders.json', etc.).
+   - The project workspace contains multiple files and folders in 'src/' (e.g. 'src/orderManager.js', 'src/logReader.js', 'src/index.js', 'customers.json', 'orders.json', etc.).
    - Carefully inspect the problem requirements to determine which file(s) must be created or modified.
    - DO NOT assume everything goes into index.js! If the challenge specifies 'orderManager.js' or another file, generate the solution for that exact file.
-   - If multiple files are required, output each file clearly with a file path comment header:
+   - If multiple files are required, output each file clearly with a file comment header like:
      \`\`\`javascript
-     // FILE: src/orderManager.js
-     ...code for orderManager.js...
+     // orderManager.js
+     ...complete code for orderManager.js...
      \`\`\`
      \`\`\`javascript
-     // FILE: src/logReader.js
-     ...code for logReader.js...
+     // logReader.js
+     ...complete code for logReader.js...
      \`\`\`
-   - If only one file is modified, you can still include \`// FILE: <filepath>\` or write the complete code for the target active file.
-   - Always ensure required imports, exports, and module connections are complete and bug-free.
+     \`\`\`javascript
+     // index.js
+     ...complete code for index.js...
+     \`\`\`
+   - Never merge multiple different modules or files into index.js. Keep each file independent with its own requires and exports.
 7. OUTPUT FORMAT:
    - Output ONLY the clean replacement code enclosed in markdown code block(s):
    \`\`\`javascript
@@ -145,34 +152,51 @@ export function formatCodeIndentation(code) {
 
 export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.js') {
   if (!rawText) return [];
-  const blocks = [...rawText.matchAll(/```(?:javascript|js|typescript|ts|node|json)?\s*\n([\s\S]*?)```/gi)].map(m => m[1].trim());
-  const content = blocks.length > 0 ? blocks.join('\n\n') : rawText.trim();
 
-  // Pattern matching file headers: // FILE: src/orderManager.js or /* FILE: src/orderManager.js */
-  const fileRegex = /(?:^|\n)\s*(?:\/\/\s*FILE:?\s*|\/\*\s*FILE:?\s*)([^\s\*\/]+(?:\/[^\s\*\/]+)*)(?:\s*\*\/)?\s*\n/gi;
-  const matches = [...content.matchAll(fileRegex)];
+  // Match all file headers like:
+  // // orderManager.js
+  // // src/orderManager.js
+  // // FILE: orderManager.js
+  // /* orderManager.js */
+  // ### orderManager.js
+  // // --- orderManager.js ---
+  const fileHeaderRegex = /(?:^|\n)\s*(?:\/\/|\/\*|#+)?\s*(?:file:?\s*|---\s*)?(src\/)?([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt|jsx|tsx|mjs|cjs))(?:\s*---|\s*\*\/)?\s*(?:\n|$)/gi;
 
-  if (matches.length === 0) {
-    const singleCode = extractCodeBlock(rawText);
-    return [{
-      filePath: defaultActiveFile || 'src/index.js',
-      code: formatCodeIndentation(singleCode)
-    }];
+  const matches = [...rawText.matchAll(fileHeaderRegex)];
+
+  if (matches.length > 1 || (matches.length === 1 && matches[0][2])) {
+    const files = [];
+    for (let i = 0; i < matches.length; i++) {
+      const hasSrc = !!matches[i][1];
+      const filename = matches[i][2].trim();
+      let p = hasSrc ? 'src/' + filename : filename;
+      if (!p.startsWith('src/') && !p.includes('/') && p !== 'package.json' && !p.startsWith('.')) {
+        p = 'src/' + p;
+      }
+      const startIndex = matches[i].index + matches[i][0].length;
+      const endIndex = (i + 1 < matches.length) ? matches[i + 1].index : rawText.length;
+      let rawCode = rawText.substring(startIndex, endIndex).trim();
+      // Remove any wrapping markdown code fence
+      rawCode = rawCode.replace(/^```[a-z]*\s*\n?/i, '').replace(/```+$/g, '').trim();
+      if (rawCode) {
+        files.push({
+          filePath: p,
+          code: formatCodeIndentation(rawCode)
+        });
+      }
+    }
+    if (files.length > 0) return files;
   }
 
-  const files = [];
-  for (let i = 0; i < matches.length; i++) {
-    const filePath = matches[i][1].trim();
-    const startIndex = matches[i].index + matches[i][0].length;
-    const endIndex = (i + 1 < matches.length) ? matches[i + 1].index : content.length;
-    const rawCode = content.substring(startIndex, endIndex).trim();
-    files.push({
-      filePath,
-      code: formatCodeIndentation(rawCode)
-    });
+  const singleCode = extractCodeBlock(rawText);
+  let defPath = defaultActiveFile || 'src/index.js';
+  if (!defPath.startsWith('src/') && !defPath.includes('/') && defPath !== 'package.json' && !defPath.startsWith('.')) {
+    defPath = 'src/' + defPath;
   }
-
-  return files;
+  return [{
+    filePath: defPath,
+    code: formatCodeIndentation(singleCode)
+  }];
 }
 
 export function extractCodeBlock(rawText) {

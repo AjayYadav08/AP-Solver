@@ -404,4 +404,42 @@ if (!bgJs.includes('detectActiveFile') || !bgJs.includes('scanWorkspaceFiles') |
 
 console.log('   ✓ Multi-file workspace scanner, file navigator, and multi-block parser verified');
 
+console.log('15. Testing Multi-File Header Permutations & Target Safety Guards...');
+const userThreeFiles = `
+// orderManager.js
+const fs = require('fs');
+function processOrder() {}
+module.exports = { processOrder };
+
+// logReader.js
+const fs = require('fs');
+function readLogs() {}
+module.exports = { readLogs };
+
+// index.js
+const { processOrder } = require('./orderManager');
+const { readLogs } = require('./logReader');
+`;
+
+const parsedUserFiles = parseMultiFileSolution(userThreeFiles, 'src/index.js');
+if (parsedUserFiles.length !== 3) {
+  throw new Error(`Expected 3 files parsed from user snippet, got ${parsedUserFiles.length}`);
+}
+if (parsedUserFiles[0].filePath !== 'src/orderManager.js' || !parsedUserFiles[0].code.includes('processOrder')) {
+  throw new Error('User snippet file 0 mismatch: ' + JSON.stringify(parsedUserFiles[0]));
+}
+if (parsedUserFiles[1].filePath !== 'src/logReader.js' || !parsedUserFiles[1].code.includes('readLogs')) {
+  throw new Error('User snippet file 1 mismatch: ' + JSON.stringify(parsedUserFiles[1]));
+}
+if (parsedUserFiles[2].filePath !== 'src/index.js' || !parsedUserFiles[2].code.includes('processOrder')) {
+  throw new Error('User snippet file 2 mismatch: ' + JSON.stringify(parsedUserFiles[2]));
+}
+
+// Safety guard verification: verify that main-world-bridge and background do NOT fall back to active editor when target is specified
+if (!bridgeJs.includes('if (!targetFilePath)') || !bgJs.includes('if (!targetPath)')) {
+  throw new Error('Target safety guard missing: active editor fallback must only run when target is NOT specified!');
+}
+
+console.log('   ✓ User 3-file snippet and target model safety guards verified');
+
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');

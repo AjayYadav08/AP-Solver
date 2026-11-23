@@ -183,223 +183,252 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
           const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
           // Helper: Navigate explorer to target file
-          async function navigateToTargetFile(target) {
-            if (!target) return;
-            const basename = target.split('/').pop();
-            const isSrc = target.includes('src/');
+            async function navigateToTargetFile(target) {
+              if (!target) return false;
+              const basename = target.split('/').pop();
+              // In Newton School, all code files (.js, .ts, etc.) are inside src/
+              const isSrc = target.includes('src/') || /\.(js|ts|json|txt)$/i.test(target);
 
-            // 1. Close Welcome tab if open
-            const tabs = [...document.querySelectorAll('.tab, [role="tab"]')];
-            const welcomeTab = tabs.find(t => /welcome/i.test(t.textContent.trim()));
-            if (welcomeTab) {
-              const closeBtn = welcomeTab.querySelector('.tab-close-action, .codicon-close');
-              if (closeBtn) closeBtn.click();
-            }
+              // 1. Close Welcome tab if open
+              const tabs = [...document.querySelectorAll('.tab, [role="tab"]')];
+              const welcomeTab = tabs.find(t => /welcome/i.test(t.textContent.trim()));
+              if (welcomeTab) {
+                const closeBtn = welcomeTab.querySelector('.tab-close-action, .codicon-close');
+                if (closeBtn) closeBtn.click();
+              }
 
-            // 2. Click tab matching target if present
-            const matchingTab = tabs.find(t => {
-              const txt = (t.querySelector('.label-name') || t).textContent.trim();
-              return txt === basename || txt === target;
-            });
-            if (matchingTab) {
-              matchingTab.click();
-              await sleep(100);
-              return true;
-            }
-
-            // 3. Look in Explorer file tree
-            const treeRows = [...document.querySelectorAll('.monaco-list-row, [role="treeitem"]')];
-            if (isSrc) {
-              const srcRow = treeRows.find(r => {
-                const text = (r.querySelector('.label-name') || r).textContent.trim();
-                return /^src$/i.test(text);
+              // 2. Click tab matching target if present in tabs bar
+              const matchingTab = tabs.find(t => {
+                const txt = (t.querySelector('.label-name') || t).textContent.trim();
+                return txt === basename || txt === target;
               });
-              if (srcRow) {
-                const isCollapsed = srcRow.getAttribute('aria-expanded') === 'false' ||
-                  !!srcRow.querySelector('.collapsed, .codicon-chevron-right');
-                if (isCollapsed) {
-                  srcRow.click();
-                  const twistie = srcRow.querySelector('.monaco-tl-twistie, .codicon');
-                  if (twistie) twistie.click();
-                  await sleep(150);
+              if (matchingTab) {
+                matchingTab.click();
+                matchingTab.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+                matchingTab.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+                matchingTab.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                await sleep(150);
+              }
+
+              // 3. Always expand 'src' folder in Explorer tree if target is inside src/
+              const treeRows = [...document.querySelectorAll('.monaco-list-row, [role="treeitem"]')];
+              if (isSrc) {
+                const srcRow = treeRows.find(r => {
+                  const text = (r.querySelector('.label-name') || r).textContent.trim();
+                  return /^src$/i.test(text);
+                });
+                if (srcRow) {
+                  const isCollapsed = srcRow.getAttribute('aria-expanded') === 'false' ||
+                    !!srcRow.querySelector('.collapsed, .codicon-chevron-right');
+                  if (isCollapsed) {
+                    const twistie = srcRow.querySelector('.monaco-tl-twistie, .codicon');
+                    if (twistie) twistie.click();
+                    else srcRow.click();
+                    srcRow.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                    srcRow.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+                    await sleep(250);
+                  }
                 }
               }
-            }
 
-            // Find and open target file item
-            const allTreeItems = [...document.querySelectorAll('.monaco-list-row, [role="treeitem"], .monaco-icon-label')];
-            const fileItem = allTreeItems.find(r => {
-              const text = (r.querySelector('.label-name') || r).textContent.trim();
-              return text === basename || text === target;
-            });
-            if (fileItem) {
-              fileItem.click();
-              fileItem.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
-              await sleep(150);
-              return true;
-            }
-
-            // 4. If file not found in tree, create it using New File button!
-            const newFileBtn = document.querySelector('.codicon-new-file, [aria-label*="New File" i], [title*="New File" i]');
-            if (newFileBtn) {
-              if (isSrc) {
-                const srcRow = treeRows.find(r => /^src$/i.test((r.querySelector('.label-name') || r).textContent.trim()));
-                if (srcRow) srcRow.click();
-              }
-              newFileBtn.click();
-              await sleep(150);
-              const input = document.querySelector('.monaco-inputbox input, .inputArea input, input.monaco-inputbox');
-              if (input) {
-                input.value = basename;
-                input.dispatchEvent(new Event('input', { bubbles: true }));
-                input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+              // 4. Find and double-click the target file in the tree
+              const allTreeItems = [...document.querySelectorAll('.monaco-list-row, [role="treeitem"], .monaco-icon-label')];
+              const fileItem = allTreeItems.find(r => {
+                const text = (r.querySelector('.label-name') || r).textContent.trim();
+                return text === basename || text === target;
+              });
+              if (fileItem) {
+                fileItem.click();
+                fileItem.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+                fileItem.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+                fileItem.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                fileItem.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
                 await sleep(250);
                 return true;
               }
-            }
 
-            return false;
-          }
-
-          if (targetPath) {
-            await navigateToTargetFile(targetPath);
-          }
-          await sleep(100);
-
-          // Helper: trigger Ctrl+S / Cmd+S to save file on disk
-          function triggerFileSave() {
-            const isMac = /mac/i.test(navigator.platform);
-            const saveEvt = new KeyboardEvent('keydown', {
-              key: 's',
-              code: 'KeyS',
-              keyCode: 83,
-              which: 83,
-              ctrlKey: !isMac,
-              metaKey: isMac,
-              bubbles: true,
-              cancelable: true
-            });
-            window.dispatchEvent(saveEvt);
-            document.dispatchEvent(saveEvt);
-            const ta = document.querySelector('.monaco-editor textarea.inputarea');
-            if (ta) ta.dispatchEvent(saveEvt);
-          }
-
-          // Strategy 1: Monaco instance or AMD loader search (Wipe & Replace with setValue)
-          let m = window.monaco;
-          if (!m && typeof window.require === 'function') {
-            const amdMods = ['vs/editor/editor.main', 'vs/editor/common/services/modelService', 'vs/editor/browser/services/codeEditorService'];
-            for (const modName of amdMods) {
-              try {
-                const loaded = await new Promise((res) => {
-                  try {
-                    window.require([modName], (mod) => res(mod), () => res(null));
-                    setTimeout(() => res(null), 150);
-                  } catch(e) { res(null); }
-                });
-                if (loaded?.editor?.getModels || loaded?.getModels) {
-                  m = loaded;
-                  break;
+              // 5. If file not found in tree, create it using New File button!
+              const newFileBtn = document.querySelector('.codicon-new-file, [aria-label*="New File" i], [title*="New File" i]');
+              if (newFileBtn) {
+                const srcRow = treeRows.find(r => /^src$/i.test((r.querySelector('.label-name') || r).textContent.trim()));
+                if (srcRow) srcRow.click();
+                newFileBtn.click();
+                await sleep(200);
+                const input = document.querySelector('.monaco-inputbox input, .inputArea input, input.monaco-inputbox');
+                if (input) {
+                  input.value = basename;
+                  input.dispatchEvent(new Event('input', { bubbles: true }));
+                  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+                  await sleep(350);
+                  return true;
                 }
-              } catch(e) {}
-            }
-          }
-          if (!m) {
-            for (const k of Object.keys(window)) {
-              try {
-                if (window[k]?.editor?.getModels || typeof window[k]?.getModels === 'function') {
-                  m = window[k];
-                  break;
-                }
-              } catch(e) {}
-            }
-          }
-
-          if (m) {
-            const getModelsFn = m.editor?.getModels || m.getModels;
-            if (typeof getModelsFn === 'function') {
-              const models = getModelsFn.call(m.editor || m) || [];
-              let targetModel = null;
-
-              if (targetPath) {
-                const basename = targetPath.split('/').pop();
-                targetModel = models.find(mod => (mod.uri?.path || '').endsWith(basename));
               }
 
-              if (!targetModel) {
-                const editors = m.editor?.getEditors ? m.editor.getEditors() : [];
-                const activeEd = editors.find(e => {
-                  const node = e.getContainerDomNode();
-                  return node && node.getBoundingClientRect().width > 0 && !e.getOption(m.editor.EditorOption.readOnly);
-                }) || editors[0];
-                targetModel = activeEd?.getModel();
-              }
-
-              if (targetModel && typeof targetModel.setValue === 'function') {
-                targetModel.setValue(codeToWrite);
-                const editors = m.editor?.getEditors ? m.editor.getEditors() : [];
-                const activeEd = editors[0];
-                if (activeEd && activeEd.getModel() !== targetModel) {
-                  activeEd.setModel(targetModel);
-                }
-                triggerFileSave();
-                await sleep(150);
-                return { success: true, verified: true, method: 'monaco.model.setValue', filePath: targetPath };
-              }
+              return false;
             }
-          }
 
-          // Strategy 2: DOM fallback: Block Paste
-          const editorDom = document.querySelector('.monaco-editor');
-          const input = editorDom?.querySelector('textarea.inputarea') || document.querySelector('textarea.inputarea');
-          if (input) {
-            input.focus();
-            const isMac = /mac/i.test(navigator.platform);
-
-            // Move to start, then select all
-            const topEvt = new KeyboardEvent('keydown', {
-              key: isMac ? 'ArrowUp' : 'Home',
-              code: isMac ? 'ArrowUp' : 'Home',
-              keyCode: isMac ? 38 : 36,
-              which: isMac ? 38 : 36,
-              ctrlKey: !isMac,
-              metaKey: isMac,
-              bubbles: true,
-              cancelable: true
-            });
-            input.dispatchEvent(topEvt);
-
-            const selectAllEvt = new KeyboardEvent('keydown', {
-              key: 'a',
-              code: 'KeyA',
-              keyCode: 65,
-              which: 65,
-              ctrlKey: !isMac,
-              metaKey: isMac,
-              bubbles: true,
-              cancelable: true
-            });
-            input.dispatchEvent(selectAllEvt);
-            document.execCommand('selectAll', false, null);
-
-            const dt = new DataTransfer();
-            dt.setData('text/plain', codeToWrite);
-
-            try { document.execCommand('paste'); } catch(e) {}
-            try {
-              const pasteEvt = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
-              input.dispatchEvent(pasteEvt);
-            } catch(e) {}
-
+            if (targetPath) {
+              await navigateToTargetFile(targetPath);
+            }
             await sleep(150);
-            triggerFileSave();
-            return {
-              success: true,
-              verified: true,
-              method: 'dom.insertTextAndPaste',
-              filePath: targetPath
-            };
-          }
+
+            // Helper: trigger Ctrl+S / Cmd+S to save file on disk
+            function triggerFileSave() {
+              const isMac = /mac/i.test(navigator.platform);
+              const saveEvt = new KeyboardEvent('keydown', {
+                key: 's',
+                code: 'KeyS',
+                keyCode: 83,
+                which: 83,
+                ctrlKey: !isMac,
+                metaKey: isMac,
+                bubbles: true,
+                cancelable: true
+              });
+              window.dispatchEvent(saveEvt);
+              document.dispatchEvent(saveEvt);
+              const ta = document.querySelector('.monaco-editor textarea.inputarea');
+              if (ta) ta.dispatchEvent(saveEvt);
+            }
+
+            // Strategy 1: Monaco instance or AMD loader search (Wipe & Replace with setValue)
+            let m = window.monaco;
+            if (!m && typeof window.require === 'function') {
+              try { m = window.require('vs/editor/editor.main'); } catch(e) {}
+            }
+            if (!m) {
+              for (const k of Object.keys(window)) {
+                try {
+                  if (window[k]?.editor?.getModels || typeof window[k]?.getModels === 'function') {
+                    m = window[k];
+                    break;
+                  }
+                } catch(e) {}
+              }
+            }
+
+            if (m) {
+              const getModelsFn = m.editor?.getModels || m.getModels;
+              if (typeof getModelsFn === 'function') {
+                let targetModel = null;
+                const basename = targetPath ? targetPath.split('/').pop() : null;
+
+                // Poll for targetModel matching basename (up to 2s)
+                const t0 = Date.now();
+                while (Date.now() - t0 < 2000) {
+                  const models = getModelsFn.call(m.editor || m) || [];
+                  if (basename) {
+                    targetModel = models.find(mod => (mod.uri?.path || '').endsWith(basename) || (mod.uri?.path || '').endsWith(targetPath));
+                  } else {
+                    targetModel = models[0];
+                  }
+                  if (targetModel) break;
+                  await sleep(100);
+                }
+
+                // If targetModel found, write directly into it!
+                if (targetModel && typeof targetModel.setValue === 'function') {
+                  targetModel.setValue(codeToWrite);
+                  const editors = m.editor?.getEditors ? m.editor.getEditors() : [];
+                  const activeEd = editors[0];
+                  if (activeEd && activeEd.getModel() !== targetModel) {
+                    activeEd.setModel(targetModel);
+                  }
+                  triggerFileSave();
+                  await sleep(150);
+                  return { success: true, verified: true, method: 'monaco.model.setValue', filePath: targetPath };
+                }
+
+                // SAFETY GUARD: If targetPath was specified and its model not found in memory, create it directly in Monaco!
+                if (targetPath && m.Uri && m.editor?.createModel) {
+                  const normPath = targetPath.startsWith('/') ? targetPath : '/' + targetPath;
+                  const fullUri = m.Uri.file('/workspace' + (normPath.startsWith('/src/') ? normPath : '/src' + normPath));
+                  const createdModel = m.editor.createModel(codeToWrite, 'javascript', fullUri);
+                  const editors = m.editor?.getEditors ? m.editor.getEditors() : [];
+                  const activeEd = editors[0];
+                  if (activeEd && createdModel) activeEd.setModel(createdModel);
+                  triggerFileSave();
+                  await sleep(150);
+                  return { success: true, verified: true, method: 'monaco.createModel', filePath: targetPath };
+                }
+
+                // If targetPath was not specified, write into active editor
+                if (!targetPath) {
+                  const editors = m.editor?.getEditors ? m.editor.getEditors() : [];
+                  const activeEd = editors.find(e => {
+                    const node = e.getContainerDomNode();
+                    return node && node.getBoundingClientRect().width > 0 && !e.getOption(m.editor.EditorOption.readOnly);
+                  }) || editors[0];
+                  if (activeEd && activeEd.getModel()) {
+                    activeEd.getModel().setValue(codeToWrite);
+                    triggerFileSave();
+                    return { success: true, verified: true, method: 'monaco.activeModel.setValue' };
+                  }
+                }
+              }
+            }
+
+            // Strategy 2: DOM fallback: Block Paste (ONLY if active tab matches targetPath)
+            const activeTabLabel = document.querySelector('.tab.active .label-name, [role="tab"][aria-selected="true"] .label-name')?.textContent?.trim() || '';
+            const basename = targetPath ? targetPath.split('/').pop() : '';
+            const isTargetActive = !targetPath || activeTabLabel === basename;
+
+            if (isTargetActive) {
+              const editorDom = document.querySelector('.monaco-editor');
+              const input = editorDom?.querySelector('textarea.inputarea') || document.querySelector('textarea.inputarea');
+              if (input) {
+                input.focus();
+                const isMac = /mac/i.test(navigator.platform);
+
+                // Move to start, then select all
+                const topEvt = new KeyboardEvent('keydown', {
+                  key: isMac ? 'ArrowUp' : 'Home',
+                  code: isMac ? 'ArrowUp' : 'Home',
+                  keyCode: isMac ? 38 : 36,
+                  which: isMac ? 38 : 36,
+                  ctrlKey: !isMac,
+                  metaKey: isMac,
+                  bubbles: true,
+                  cancelable: true
+                });
+                input.dispatchEvent(topEvt);
+
+                const selectAllEvt = new KeyboardEvent('keydown', {
+                  key: 'a',
+                  code: 'KeyA',
+                  keyCode: 65,
+                  which: 65,
+                  ctrlKey: !isMac,
+                  metaKey: isMac,
+                  bubbles: true,
+                  cancelable: true
+                });
+                input.dispatchEvent(selectAllEvt);
+                document.execCommand('selectAll', false, null);
+
+                const dt = new DataTransfer();
+                dt.setData('text/plain', codeToWrite);
+
+                try { document.execCommand('paste'); } catch(e) {}
+                try {
+                  const pasteEvt = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+                  input.dispatchEvent(pasteEvt);
+                } catch(e) {}
+
+                try {
+                  document.execCommand('insertText', false, codeToWrite);
+                } catch(e) {}
+
+                await sleep(150);
+                triggerFileSave();
+                return {
+                  success: true,
+                  verified: true,
+                  method: 'dom.insertTextAndPaste',
+                  filePath: targetPath
+                };
+              }
+            }
         } catch (e) {
           return { error: e.message };
         }
