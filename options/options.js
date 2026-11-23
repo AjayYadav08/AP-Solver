@@ -44,7 +44,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   openaiModelInput.value = settings.openaiModel || 'gpt-4o';
 
   autoSubmitCheck.checked = !!settings.autoSubmit;
-  autoRetryCheck.checked = !!settings.autoRetry;
+  autoRetryCheck.checked = settings.autoRetry !== false;
 
   function updateProviderBoxes() {
     const val = document.querySelector('input[name="provider"]:checked')?.value || 'race';

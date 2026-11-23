@@ -945,25 +945,26 @@
 
     const start = Date.now();
     while (Date.now() - start < maxWaitMs) {
-      // Find terminal output container in the left section (x < window.innerWidth * 0.55)
-      const candidates = [...document.querySelectorAll('pre, code, .xterm-rows, [class*="terminal" i], [class*="console" i], div')].filter((el) => {
+      // Find terminal output container in the left section (x < window.innerWidth * 0.55) or whole page
+      const candidates = [...document.querySelectorAll('pre, code, .xterm-rows, [class*="terminal" i], [class*="console" i], [class*="output" i], [class*="log" i], div')].filter((el) => {
         const r = el.getBoundingClientRect();
         const text = el.innerText || '';
         return (
           isVisible(el) &&
-          r.left < window.innerWidth * 0.55 &&
-          r.width > 200 &&
-          r.height > 80 &&
+          r.width > 80 &&
+          r.height > 40 &&
           !el.closest('#ap-solver-host') &&
-          (/mocha|npm test|git clone|AssertionError|failing|passing|prisma|timeout|error|exit|node/i.test(text))
+          (/mocha|npm test|git clone|AssertionError|failing|passing|prisma|timeout|error|exit|node|TypeError|ReferenceError|SyntaxError|failed/i.test(text))
         );
       });
 
       if (candidates.length > 0) {
-        // Sort by text length to find the root terminal container
-        const longest = candidates.sort((a, b) => b.innerText.length - a.innerText.length)[0];
-        const logText = longest.innerText.trim();
-        if (logText.length > 80) {
+        // Prioritize candidates located in left section (x < window.innerWidth * 0.55)
+        const leftCandidates = candidates.filter(c => c.getBoundingClientRect().left < window.innerWidth * 0.55);
+        const bestPool = leftCandidates.length > 0 ? leftCandidates : candidates;
+        const longest = bestPool.sort((a, b) => (b.innerText || '').length - (a.innerText || '').length)[0];
+        const logText = (longest.innerText || '').trim();
+        if (logText.length > 25) {
           return logText;
         }
       }
@@ -1020,8 +1021,12 @@
     let allSucceeded = true;
 
     for (const f of filesToWrite) {
-      ui.setStatus(`Targeting: ${f.filePath}`, 'Locating file in workspace tabs and explorer...', 'running', true);
-      ui.addLog(`🎯 [Target Navigator] Switching to "${f.filePath}"...`);
+      const isKnown = cachedEditor?.allFiles?.some(af => af.endsWith(f.filePath) || f.filePath.endsWith(af));
+      if (!isKnown) {
+        ui.addLog(`📄 [Step 2/6] "${f.filePath}" not found in workspace. Creating new file at given location...`, 'ok');
+      }
+      ui.setStatus(`Targeting: ${f.filePath}`, isKnown ? 'Locating file in workspace tabs and explorer...' : 'Creating new file at given location...', 'running', true);
+      ui.addLog(`✍️ [Step 3/6] Writing code into "${f.filePath}"...`);
       const res = await writeCodeToEditor(f.code, f.filePath);
       if (res && res.ok) {
         ui.setFileStatus(f.filePath, 'injected');
@@ -1146,27 +1151,31 @@
         return;
       }
 
-      ui.addLog('Starting automated solve flow...', 'ok');
+      ui.addLog('Starting automated 6-step solve lifecycle...', 'ok');
 
-      // 2. Read context from Tab 1
+      // Step 1: Read full question & initial code of all files
+      ui.setStatus('Step 1/6: Reading Full Question & Initial Files...', '', 'running', true);
+      ui.addLog('📋 [Step 1/6] Giving full question and initial code of files to AI...', 'ok');
       switchToQuestionTab();
       await sleep(300);
       await handleReadContext();
 
-      let maxAttempts = ui.options.autoRetry ? 2 : 1;
+      let maxAttempts = ui.options.autoRetry ? 3 : 1;
       let feedback = null;
 
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         if (attempt > 1) {
-          ui.addLog(`🔁 [Attempt ${attempt}/${maxAttempts}] Retrying with Tab 2 & Tab 3 feedback...`, 'warn');
+          ui.addLog(`🔁 [Attempt ${attempt}/${maxAttempts}] Generating fix from side bar terminal & retrying steps 4 & 5...`, 'warn');
         }
 
-        // 3. Generate clean complete replacement using multi-tab feedback
-        ui.setStatus(`Attempt ${attempt}/${maxAttempts}: Generating Solution...`, feedback ? 'Refining solution using Tab 2 & Tab 3 failure traces...' : 'Generating initial test-compliant solution...', 'running', true);
+        // Generate clean complete replacement using multi-tab feedback
+        ui.setStatus(`Attempt ${attempt}/${maxAttempts}: Generating Solution...`, feedback ? 'Refining solution using side bar terminal failure traces...' : 'Generating initial test-compliant solution...', 'running', true);
         const code = await handleGenerate(feedback);
 
-        // 4. Wipe editor completely and inject code
-        ui.setStatus(`Attempt ${attempt}/${maxAttempts}: Injecting Solution...`, 'Wiping editor and writing clean solution...', 'running', true);
+        // Step 2 & Step 3: Check files, create any missing files, and write code one by one
+        ui.setStatus(`Attempt ${attempt}/${maxAttempts} - Step 2 & 3: Checking Files & Writing Code...`, 'Checking missing files and writing code one by one...', 'running', true);
+        ui.addLog(`🔍 [Step 2/6] Determining required files & creating any missing files at given location...`, 'ok');
+        ui.addLog('✍️ [Step 3/6] Writing code into all files one by one...', 'ok');
         const writeOk = await handleWriteCode();
         if (!writeOk) {
           const targetName = cachedEditor?.activeFile || 'target file';
@@ -1175,7 +1184,7 @@
           break; // NEVER SUBMIT 501 PLACEHOLDER CODE!
         }
 
-        // 5. Code Completeness Check: Submit ONLY when code is complete and non-placeholder!
+        // Code Completeness Check: Submit ONLY when code is complete and non-placeholder!
         const filesToCheck = (cachedGeneratedFiles && cachedGeneratedFiles.length > 0)
           ? cachedGeneratedFiles
           : [{ filePath: cachedEditor?.activeFile || 'src/index.js', code: cachedGeneratedCode }];
@@ -1185,9 +1194,9 @@
           break;
         }
 
-        // 6. Submit solution and track Tab 2
-        ui.setStatus(`Attempt ${attempt}/${maxAttempts}: Submitting Solution...`, 'Evaluating solution with test grader...', 'running', true);
-        ui.addLog(`Submitting solution to test grader (Attempt ${attempt}/${maxAttempts})...`);
+        // Step 4: Submit and wait until testcases judgement
+        ui.setStatus(`Attempt ${attempt}/${maxAttempts} - Step 4/6: Submitting Solution...`, 'Evaluating solution with test grader...', 'running', true);
+        ui.addLog(`🚀 [Step 4/6] Submitting solution & waiting until testcases judgement (Attempt ${attempt}/${maxAttempts})...`);
         const subRes = await handleSubmit();
 
         const timeStr = subRes?.timestamp || new Date().toLocaleTimeString();
@@ -1212,8 +1221,9 @@
           ui.setRunning(false);
           break;
         } else if (attempt < maxAttempts) {
-          ui.addLog(`⚠️ Attempt ${attempt} finished at ${timeStr}: ${subRes?.passed || 0}/${subRes?.total || 0} test cases passed.`, 'warn');
-          ui.addLog('Switching to Terminal (Tab 3) to scrape exact runtime & Mocha failure logs...', 'warn');
+          // Step 5: Check error message in side bar terminal, analyze it, and fix error
+          ui.addLog(`🔍 [Step 5/6] Tests failed. Checking error message in side bar terminal & analyzing failure...`, 'warn');
+          ui.setStatus(`Attempt ${attempt}/${maxAttempts} - Step 5/6: Analyzing Terminal Errors...`, 'Checking error messages in side bar terminal...', 'running', true);
 
           const terminalOutput = await readTerminalOutput(5500);
 
@@ -1230,13 +1240,14 @@
             feedbackBlocks.push(`FAILED TEST CASES (FROM TAB 2 - ALL SUBMISSIONS TABLE AT ${timeStr}):\n` + subRes.failedTests.map((t) => `- ❌ ${t}`).join('\n'));
           }
 
-          if (terminalOutput && terminalOutput.length > 50) {
-            feedbackBlocks.push(`TERMINAL & MOCHA ERROR TRACES (FROM TAB 3):\n\`\`\`\n${terminalOutput.slice(-3500)}\n\`\`\``);
+          if (terminalOutput && terminalOutput.length > 25) {
+            feedbackBlocks.push(`SIDE BAR TERMINAL & MOCHA ERROR TRACES (FROM TAB 3):\n\`\`\`\n${terminalOutput.slice(-3500)}\n\`\`\``);
+            ui.addLog(`📄 Captured side bar terminal error logs (${terminalOutput.split('\n').length} lines).`, 'ok');
           }
 
           feedbackBlocks.push(
             `CRITICAL DEBUGGING DIRECTIVES FOR NEXT ATTEMPT:\n` +
-            `1. Fix every failed test case listed above from Tab 2.\n` +
+            `1. Fix every failed test case listed above from Tab 2 and Tab 3.\n` +
             `2. If any timeouts occurred (e.g. "Timeout of 2000ms exceeded"), ensure EVERY route handler calls res.status(...).json(...) or res.send(...) so the request NEVER hangs.\n` +
             `3. For user authentication / Prisma / bcrypt:\n` +
             `   - Validate input: return 400 immediately if email or password is missing or empty string.\n` +
@@ -1248,7 +1259,9 @@
           );
 
           feedback = feedbackBlocks.join('\n\n');
-          ui.addLog(`✓ Captured failure context from Tab 2 (${subRes?.failedTests?.length || 0} failed tests) & Tab 3 Terminal (${terminalOutput ? terminalOutput.split('\n').length : 0} log lines).`, 'ok');
+
+          // Step 6: Repeat step 4 & 5 again
+          ui.addLog(`🔁 [Step 6/6] Repeating steps 4 and 5 with targeted fix on Attempt ${attempt + 1}/${maxAttempts}...`, 'warn');
 
           // Switch back to Tab 1 (Question) for the next iteration
           switchToQuestionTab();
@@ -1257,7 +1270,7 @@
         } else {
           ui.addLog(`⚠️ Attempt ${attempt} finished: ${subRes?.passed || 0}/${subRes?.total || 0} test cases passed.`, 'warn');
           if (!ui.options.autoRetry) {
-            ui.addLog('ℹ️ Auto-retry is disabled to prevent repeated submission spam. Review error messages above or click Solve to retry.', 'normal');
+            ui.addLog('ℹ️ Auto-retry is disabled. Review error messages above or click Solve to retry.', 'normal');
           }
           ui.setRunning(false);
           break;
@@ -1331,7 +1344,7 @@
 
     ui.updateOptions({
       autoSubmit: settings.autoSubmit ?? true,
-      autoRetry: settings.autoRetry ?? false,
+      autoRetry: settings.autoRetry !== false,
       provider: activeProvider
     });
 

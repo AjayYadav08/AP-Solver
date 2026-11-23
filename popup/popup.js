@@ -70,7 +70,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Setup Main View
   providerSelect.value = settings.provider || 'race';
   autoSubmitCheck.checked = !!settings.autoSubmit;
-  autoRetryCheck.checked = !!settings.autoRetry;
+  autoRetryCheck.checked = settings.autoRetry !== false;
 
   function updateKeyBadge() {
     const p = providerSelect.value;

@@ -24,7 +24,7 @@ window.APSolverUI = class APSolverUI {
     this.logs = [];
     this.options = {
       autoSubmit: false,
-      autoRetry: false,
+      autoRetry: true,
       provider: 'gemini'
     };
 

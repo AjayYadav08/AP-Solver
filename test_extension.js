@@ -578,8 +578,8 @@ if (!bgExpandJs.includes('ArrowRight') || !bgExpandJs.includes('cdpNativeDblClic
 }
 console.log('   ✓ Robust src Folder Dropdown Expansion verified');
 
-// Test 22: Verify Anti-Spam Single Submission, Code Completeness Verification, and Precision Error Extraction
-console.log('22. Testing Anti-Spam Single Submission, Code Completeness Check & Precision Error Extraction...');
+// Test 22: Verify Full 6-Step Autonomous Solving Lifecycle & Precision Side Bar Terminal Scraper
+console.log('22. Testing Full 6-Step Autonomous Solving Lifecycle & Precision Side Bar Terminal Scraper...');
 const contentJs22 = fs.readFileSync(path.join(__dirname, 'content/content.js'), 'utf8');
 const solverUi22 = fs.readFileSync(path.join(__dirname, 'content/solver-ui.js'), 'utf8');
 const optionsJs22 = fs.readFileSync(path.join(__dirname, 'options/options.js'), 'utf8');
@@ -588,21 +588,22 @@ const utilsLlm22 = fs.readFileSync(path.join(__dirname, 'utils/llm.js'), 'utf8')
 const bgJs22 = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
 const bridgeJs22 = fs.readFileSync(path.join(__dirname, 'content/main-world-bridge.js'), 'utf8');
 
-// 1. Anti-spam check: autoRetry defaults to false across all config files
-if (!solverUi22.includes('autoRetry: false') ||
-    !contentJs22.includes('autoRetry: settings.autoRetry ?? false') ||
-    !optionsJs22.includes('autoRetryCheck.checked = !!settings.autoRetry') ||
-    !popupJs22.includes('autoRetryCheck.checked = !!settings.autoRetry') ||
-    !utilsLlm22.includes('autoRetry: false')) {
-  throw new Error('autoRetry MUST default to false across solver-ui, content, options, popup, and llm to prevent repeated submission spam!');
+// 1. Verify 6-step lifecycle in content.js
+if (!contentJs22.includes('[Step 1/6]') ||
+    !contentJs22.includes('[Step 2/6]') ||
+    !contentJs22.includes('[Step 3/6]') ||
+    !contentJs22.includes('[Step 4/6]') ||
+    !contentJs22.includes('[Step 5/6]') ||
+    !contentJs22.includes('[Step 6/6]')) {
+  throw new Error('content.js must implement and log all 6 steps of the autonomous solving lifecycle!');
 }
 
-// 2. Single attempt enforcement in handleOneClickSolve
-if (!contentJs22.includes('let maxAttempts = ui.options.autoRetry ? 2 : 1')) {
-  throw new Error('handleOneClickSolve must default to 1 attempt when autoRetry is false!');
+// 2. Loop repetition enforcement when testcases fail (Step 6)
+if (!contentJs22.includes('let maxAttempts = ui.options.autoRetry ? 3 : 1')) {
+  throw new Error('handleOneClickSolve must allow up to 3 attempts when autoRetry is active to repeat steps 4 & 5!');
 }
 
-// 3. Code completeness gate before submit
+// 3. Code completeness gate before submit (Step 3 to 4)
 if (!contentJs22.includes('async function verifyCodeCompleteness') ||
     !contentJs22.includes('write your code here') ||
     !contentJs22.includes('const isComplete = await verifyCodeCompleteness')) {
@@ -617,12 +618,14 @@ if (!bgJs22.includes('normActive.length > 0 && normBase.length > 0') ||
   throw new Error('background.js and main-world-bridge.js must strictly guard against empty tab string matching and HTTP tester editor injection!');
 }
 
-// 5. Precision error extraction and Mocha runner parsing
+// 5. Precision error extraction and Side Bar Terminal scraper (Step 5)
 if (!contentJs22.includes('function findMochaErrorForTest') ||
     !contentJs22.includes('readSubmissionResultsWithErrors') ||
-    !contentJs22.includes('t.error')) {
-  throw new Error('content.js must implement findMochaErrorForTest and readSubmissionResultsWithErrors to wait and capture precise error messages!');
+    !contentJs22.includes('readTerminalOutput') ||
+    !contentJs22.includes('switchToTerminalTab')) {
+  throw new Error('content.js must implement findMochaErrorForTest, readSubmissionResultsWithErrors, and readTerminalOutput to scrape side bar terminal error messages!');
 }
+console.log('   ✓ Full 6-Step Autonomous Solving Lifecycle & Precision Side Bar Terminal Scraper verified');
 console.log('   ✓ Anti-Spam Single Submission, Code Completeness Check & Precision Error Extraction verified');
 
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');

@@ -10,8 +10,8 @@ export const DEFAULT_SETTINGS = {
   openaiModel: 'gpt-4o',
   openaiBaseUrl: 'https://api.openai.com/v1',
   autoSubmit: true,
-  autoRetry: false,
-  maxRetries: 1,
+  autoRetry: true,
+  maxRetries: 3,
 };
 
 export async function getSettings() {
@@ -355,13 +355,15 @@ Carefully re-read requirements and ensure all edge cases, files, and status code
   }
 
   parts.push(`## Instructions:
-1. Implement the complete, bug-free solution for the question.
-2. CRITICAL FILE NAMING RULES:
-   - NEVER write generic names or numbered labels like "File 1", "file 1", "1.js", "file1.js", "part 1".
-   - You MUST match the exact filename from the Project Workspace Files (e.g. "src/middleware.js", "src/validateMiddleware.js", "src/index.js").
-   - Place ONLY the direct file path on Line 1 of each code block (e.g. \`// src/middleware.js\`). Do NOT include "File 1" in comments or anywhere!
-3. If multiple files must be created or edited, provide EACH file in its own distinct code block with its file header line.
-4. Return ONLY the code blocks. Absolutely NO conversational explanation, "File 1" labels, or markdown outside the code blocks.`);
+1. Analyze the full question requirements and initial starter code across all files.
+2. Determine ALL files in which code is needed to be written. If a file is not yet present in the project (e.g. a new router, controller, or middleware), specify its target path (e.g. \`// src/controllers/orderController.js\`) so it can be created at its given location.
+3. For existing files, provide the complete, clean replacement code.
+4. CRITICAL FILE NAMING RULES:
+   - Match exact filenames from Project Workspace Files when editing existing files.
+   - Place ONLY the direct file path on Line 1 of each code block (e.g. \`// src/index.js\` or \`// src/middleware.js\`).
+   - Do NOT use generic names or numbered labels like "File 1", "file 1", "1.js", or "part 1".
+5. If multiple files must be created or edited, provide EACH file in its own distinct code block with its file header line.
+6. Return ONLY the code blocks. Absolutely NO conversational explanation or placeholder comments like "// write your code here". Return full working code with clean 2-space indentation.`);
 
   return parts.join('\n\n');
 }
