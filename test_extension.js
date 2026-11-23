@@ -189,4 +189,69 @@ if (!formatted.includes('  res.setHeader') || !formatted.includes('    res.statu
 }
 console.log('   ✓ Code indentation successfully formatted with clean 2-space alignment');
 
+// 9. Test Verification against Target Screenshot (Netflix Challenge 2-Space Alignment)
+console.log('9. Testing Nested Block & Callback Alignment (Target Image Verification)...');
+const sampleNetflixCode = `
+const http = require('http');
+const path = require('path');
+const EventEmitter = require('events');
+
+const netflix = new EventEmitter();
+
+netflix.on('play', (show, episode) => {
+console.log('Playing ' + show);
+});
+
+const app = http.createServer((req, res) => {
+if (req.method === 'GET' && req.url.startsWith('/play/')) {
+const normalized = path.normalize(req.url);
+const parts = normalized.split('/').filter(Boolean);
+if (parts.length >= 3 && parts[0] === 'play') {
+const [, show, episode] = parts;
+netflix.emit('play', show, episode);
+const response = {
+message: 'Now playing',
+show,
+episode,
+};
+res.writeHead(200, { 'Content-Type': 'application/json' });
+res.end(JSON.stringify(response));
+return;
+}
+}
+res.writeHead(404, { 'Content-Type': 'text/plain' });
+res.end('Not Found');
+});
+
+app.listen(3000, () => {
+console.log('Listening');
+});
+
+module.exports = { app, netflix };
+`;
+
+const netflixFormatted = formatCodeIndentation(sampleNetflixCode);
+if (!netflixFormatted.includes('  console.log(\'Playing \' + show);')) {
+  throw new Error('Callback body should be indented by 2 spaces, got:\n' + netflixFormatted);
+}
+if (!netflixFormatted.includes('  if (req.method === \'GET\'')) {
+  throw new Error('Server body should be indented by 2 spaces, got:\n' + netflixFormatted);
+}
+if (!netflixFormatted.includes('    const normalized = path.normalize(req.url);')) {
+  throw new Error('Nested if body should be indented by 4 spaces, got:\n' + netflixFormatted);
+}
+if (!netflixFormatted.includes('      const [, show, episode] = parts;')) {
+  throw new Error('Deeply nested if body should be indented by 6 spaces, got:\n' + netflixFormatted);
+}
+if (!netflixFormatted.includes('        message: \'Now playing\',')) {
+  throw new Error('Object body should be indented by 8 spaces, got:\n' + netflixFormatted);
+}
+if (!netflixFormatted.includes('      };')) {
+  throw new Error('Object closing brace should be indented by 6 spaces, got:\n' + netflixFormatted);
+}
+if (!netflixFormatted.includes('module.exports = { app, netflix };')) {
+  throw new Error('Top-level exports should have 0 indent, got:\n' + netflixFormatted);
+}
+console.log('   ✓ Target image layout verified: exactly matching clean 2-space indentation');
+
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');

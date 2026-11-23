@@ -302,21 +302,45 @@
       }
       document.execCommand('selectAll', false, null);
 
-      // 4. Insert clean code replacing selection
-      try {
-        document.execCommand('insertText', false, newCode);
-      } catch(e) {}
-
-      // 5. Paste clean code
+      // 4. Primary: Block Paste to avoid newline auto-indent staircase drift
       const dt = new DataTransfer();
       dt.setData('text/plain', newCode);
-      const pasteEvt = new ClipboardEvent('paste', {
-        clipboardData: dt,
-        bubbles: true,
-        cancelable: true
-      });
-      textarea.dispatchEvent(pasteEvt);
-      if (editorDom) editorDom.dispatchEvent(pasteEvt);
+
+      // Try native clipboard paste
+      try {
+        document.execCommand('paste');
+      } catch(e) {}
+
+      // Dispatch synthetic ClipboardEvent paste
+      try {
+        const pasteEvt = new ClipboardEvent('paste', {
+          clipboardData: dt,
+          bubbles: true,
+          cancelable: true
+        });
+        textarea.dispatchEvent(pasteEvt);
+        if (editorDom) editorDom.dispatchEvent(pasteEvt);
+      } catch(e) {}
+
+      // Dispatch beforeinput with insertFromPaste
+      try {
+        textarea.dispatchEvent(new InputEvent('beforeinput', {
+          inputType: 'insertFromPaste',
+          data: newCode,
+          dataTransfer: dt,
+          bubbles: true,
+          cancelable: true
+        }));
+      } catch(e) {}
+
+      // Fallback only if paste was blocked and editor is empty
+      await new Promise(r => setTimeout(r, 100));
+      const linesCheck = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')].map(l => l.textContent).join('\n');
+      if (linesCheck.length < 50) {
+        try {
+          document.execCommand('insertText', false, newCode);
+        } catch(e) {}
+      }
 
       // Trigger Ctrl+S / Cmd+S
       const saveEvt = new KeyboardEvent('keydown', {

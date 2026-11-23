@@ -80,44 +80,43 @@ export function formatCodeIndentation(code) {
   const indentSize = 2;
   const result = [];
 
-  for (const line of lines) {
-    const trimmed = line.trim();
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
     if (!trimmed) {
       result.push('');
       continue;
     }
 
-    // Check how many closing braces/brackets start this line
-    let leadingCloses = 0;
-    const m = trimmed.match(/^(\}|\)|\])+/);
-    if (m) {
-      leadingCloses = m[0].length;
+    // Determine how many blocks this line closes at start
+    let closes = 0;
+    if (/^(\}|\)|\])+/.test(trimmed)) {
+      const match = trimmed.match(/^(\}+|\]+|\)+)/);
+      if (match) {
+        closes = match[1].length;
+      } else {
+        closes = 1;
+      }
     } else if (/^(else|catch|finally)\b/.test(trimmed)) {
-      leadingCloses = 1;
+      closes = 1;
     }
 
-    const printIndent = Math.max(0, currentIndent - leadingCloses);
-    result.push(' '.repeat(printIndent * indentSize) + trimmed);
+    const currentLineIndent = Math.max(0, currentIndent - closes);
+    result.push(' '.repeat(currentLineIndent * indentSize) + trimmed);
 
-    // Calculate net brace change across the line
+    // Calculate net brace change for subsequent lines
+    // Strip comments and strings first
+    const stripped = trimmed
+      .replace(/\/\/.*/, '')
+      .replace(/\/\*.*?\*\//g, '')
+      .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+      .replace(/'(?:[^'\\]|\\.)*'/g, "''")
+      .replace(/`(?:[^`\\]|\\.)*`/g, '``');
+
     let net = 0;
-    let inStr = false;
-    let quote = '';
-    for (let i = 0; i < trimmed.length; i++) {
-      const c = trimmed[i];
-      const prev = i > 0 ? trimmed[i - 1] : '';
-      if (inStr) {
-        if (c === quote && prev !== '\\') inStr = false;
-        continue;
-      }
-      if (c === "'" || c === '"' || c === '`') {
-        inStr = true;
-        quote = c;
-        continue;
-      }
-      if (c === '/' && trimmed[i + 1] === '/') break; // line comment
-      if (c === '{' || c === '(' || c === '[') net++;
-      if (c === '}' || c === ')' || c === ']') net--;
+    for (let j = 0; j < stripped.length; j++) {
+      const c = stripped[j];
+      if (c === '{' || c === '[') net++;
+      if (c === '}' || c === ']') net--;
     }
 
     currentIndent = Math.max(0, currentIndent + net);

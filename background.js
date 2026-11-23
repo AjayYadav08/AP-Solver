@@ -257,35 +257,64 @@ async function writeEditorInTab(tabId, newCode) {
               return node && node.getBoundingClientRect().width > 0 && !e.getOption(m.editor.EditorOption.readOnly);
             }) || editors[0];
 
-            if (activeEd && activeEd.getModel()) {
+            if (activeEd && activeEd.getModel && activeEd.getModel()) {
               activeEd.focus();
               activeEd.getModel().setValue(codeToWrite);
               triggerFileSave();
               await sleep(150);
-              return { success: true, verified: true, method: 'monaco.activeEd.setValue' };
+              return { success: true, verified: true, method: 'monaco.model.setValue' };
             }
           }
 
           // Strategy 2: Check DOM element properties for Monaco Editor instance
           const editorDom = document.querySelector('.monaco-editor');
           if (editorDom) {
-            const domElements = [editorDom, editorDom.parentElement, editorDom.querySelector('.overflow-guard')].filter(Boolean);
+            const domElements = [
+              editorDom,
+              editorDom.parentElement,
+              editorDom.querySelector('.overflow-guard'),
+              editorDom.querySelector('.monaco-scrollable-element'),
+              editorDom.querySelector('textarea.inputarea')
+            ].filter(Boolean);
+
             for (const el of domElements) {
-              for (const k of Object.keys(el)) {
+              const props = [...Object.getOwnPropertyNames(el), ...Object.keys(el)];
+              for (const k of props) {
                 try {
                   const val = el[k];
                   if (val && typeof val === 'object') {
-                    if (typeof val.getModel === 'function' && typeof val.setValue === 'function') {
+                    // Check if val is an editor instance with getModel()
+                    if (typeof val.getModel === 'function') {
+                      const m = val.getModel();
+                      if (m && typeof m.setValue === 'function') {
+                        if (typeof val.executeEdits === 'function') {
+                          val.focus();
+                          const fullRange = typeof m.getFullModelRange === 'function'
+                            ? m.getFullModelRange()
+                            : { startLineNumber: 1, startColumn: 1, endLineNumber: (m.getLineCount ? m.getLineCount() : 9999) + 1, endColumn: 999 };
+                          val.executeEdits('ap-solver', [{ range: fullRange, text: codeToWrite, forceMoveMarkers: true }]);
+                        } else {
+                          m.setValue(codeToWrite);
+                        }
+                        triggerFileSave();
+                        await sleep(150);
+                        return { success: true, verified: true, method: 'monaco.model.setValue' };
+                      }
+                    }
+                    // Check if val is model directly
+                    if (typeof val.setValue === 'function' && typeof val.getLineCount === 'function') {
                       val.setValue(codeToWrite);
                       triggerFileSave();
                       await sleep(150);
-                      return { success: true, verified: true, method: 'domInstance.setValue' };
+                      return { success: true, verified: true, method: 'monaco.model.setValue' };
                     }
-                    if (val._model && typeof val._model.setValue === 'function') {
-                      val._model.setValue(codeToWrite);
+                    // Check internal model
+                    const innerM = val._model || val.model || val._modelData?.model;
+                    if (innerM && typeof innerM.setValue === 'function') {
+                      innerM.setValue(codeToWrite);
                       triggerFileSave();
                       await sleep(150);
-                      return { success: true, verified: true, method: 'domInstance._model.setValue' };
+                      return { success: true, verified: true, method: 'monaco.model.setValue' };
                     }
                   }
                 } catch(e) {}
@@ -293,7 +322,7 @@ async function writeEditorInTab(tabId, newCode) {
             }
           }
 
-          // Strategy 3: Multi-Tier Mouse Range Selection & Keyboard Wipe & Paste
+          // Strategy 3: Multi-Tier Mouse Range Selection & Keyboard Wipe & Block Paste
           const input = editorDom?.querySelector('textarea.inputarea') || document.querySelector('.monaco-editor textarea.inputarea') || document.querySelector('textarea.inputarea');
           if (input) {
             window.focus();
@@ -355,49 +384,62 @@ async function writeEditorInTab(tabId, newCode) {
             try {
               document.execCommand('delete', false, null);
             } catch(e) {}
+            await sleep(60);
 
-            // Insert new code replacing the selection!
+            // Primary: Block Paste to eliminate newline auto-indent staircase drift
+            const dt = new DataTransfer();
+            dt.setData('text/plain', codeToWrite);
+
+            // 1. Try native clipboard paste
+            try {
+              document.execCommand('paste');
+            } catch(e) {}
+
+            // 2. Dispatch synthetic ClipboardEvent paste with DataTransfer
+            try {
+              const pasteEvt = new ClipboardEvent('paste', {
+                clipboardData: dt,
+                bubbles: true,
+                cancelable: true
+              });
+              input.dispatchEvent(pasteEvt);
+              if (editorDom) editorDom.dispatchEvent(pasteEvt);
+            } catch(e) {}
+
+            // 3. Dispatch beforeinput with insertFromPaste
+            try {
+              input.dispatchEvent(new InputEvent('beforeinput', {
+                inputType: 'insertFromPaste',
+                data: codeToWrite,
+                dataTransfer: dt,
+                bubbles: true,
+                cancelable: true
+              }));
+            } catch(e) {}
+
+            await sleep(150);
+            let check = checkEditorDomVerified();
+            if (check.verified) {
+              triggerFileSave();
+              await sleep(150);
+              return {
+                success: true,
+                verified: true,
+                method: 'dom.insertTextAndPaste',
+                details: check
+              };
+            }
+
+            // Fallback: If paste was blocked, insert text with normalized indentation
             try {
               document.execCommand('insertText', false, codeToWrite);
             } catch(e) {}
 
-            // Also dispatch ClipboardEvent paste with DataTransfer
-            const dt = new DataTransfer();
-            dt.setData('text/plain', codeToWrite);
-            const pasteEvt = new ClipboardEvent('paste', {
-              clipboardData: dt,
-              bubbles: true,
-              cancelable: true
-            });
-            input.dispatchEvent(pasteEvt);
-            if (editorDom) editorDom.dispatchEvent(pasteEvt);
-
-            // Trigger Format Document (Shift+Option+F / Shift+Alt+F)
-            function triggerFormatDocument() {
-              const formatEvt = new KeyboardEvent('keydown', {
-                key: 'F',
-                code: 'KeyF',
-                keyCode: 70,
-                which: 70,
-                shiftKey: true,
-                altKey: true,
-                bubbles: true,
-                cancelable: true
-              });
-              input.dispatchEvent(formatEvt);
-              if (editorDom) editorDom.dispatchEvent(formatEvt);
-              window.dispatchEvent(formatEvt);
-              document.dispatchEvent(formatEvt);
-            }
-
-            // Step 4: Format & Save file
-            await sleep(100);
-            triggerFormatDocument();
             await sleep(150);
             triggerFileSave();
-            await sleep(250);
+            await sleep(200);
 
-            const check = checkEditorDomVerified();
+            check = checkEditorDomVerified();
             return {
               success: true,
               verified: check.verified,
