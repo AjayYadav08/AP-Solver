@@ -132,7 +132,14 @@
         const isCollapsed = srcFolder.getAttribute('aria-expanded') === 'false' ||
           !!srcFolder.querySelector('.collapsed, .codicon-chevron-right');
         if (isCollapsed) {
-          const twistie = srcFolder.querySelector('.monaco-tl-twistie, .codicon-chevron-right');
+          const twistie = srcFolder.querySelector('.monaco-tl-twistie, .codicon-chevron-right, .collapsed');
+          if (twistie) {
+            try { twistie.click(); } catch(e) {}
+            try { twistie.dispatchEvent(new MouseEvent('click', { bubbles: true })); } catch(e) {}
+          }
+          try { srcFolder.focus(); } catch(e) {}
+          try { srcFolder.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39, bubbles: true })); } catch(e) {}
+          try { srcFolder.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true })); } catch(e) {}
           simulateClick(twistie || srcFolder);
         }
       }

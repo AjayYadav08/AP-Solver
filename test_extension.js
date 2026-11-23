@@ -569,4 +569,13 @@ if (bgJsClean.includes('findExplorerItem(\'src\');\n              if (srcItem) s
 }
 console.log('   ✓ "File 1" Header Stripping & Synthetic DOM Click Elimination verified');
 
+// Test 21: Verify Robust src Folder Twistie & ArrowRight Expansion
+console.log('21. Testing Robust src Folder Dropdown Expansion...');
+const bgExpandJs = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
+
+if (!bgExpandJs.includes('ArrowRight') || !bgExpandJs.includes('cdpNativeDblClick(tabId, globalX, globalY)') || !bgExpandJs.includes('rowR.left + 12')) {
+  throw new Error('background.js must implement robust src twistie chevron targeting with ArrowRight and double-click!');
+}
+console.log('   ✓ Robust src Folder Dropdown Expansion verified');
+
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');

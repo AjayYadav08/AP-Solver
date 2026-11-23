@@ -310,9 +310,18 @@ async function cdpClickElementInWorkspace(tabId, targetFilePath) {
             !!srcFolder.querySelector('.collapsed, .codicon-chevron-right');
           if (isCollapsed) {
             try { srcFolder.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch(e) {}
-            const twistie = srcFolder.querySelector('.monaco-tl-twistie, .codicon-chevron-right') || srcFolder;
-            const r = twistie.getBoundingClientRect();
-            return { type: 'expandSrc', x: r.left + r.width / 2, y: r.top + r.height / 2 };
+            const twistie = srcFolder.querySelector('.monaco-tl-twistie, .codicon-chevron-right, .collapsed');
+            const rowR = srcFolder.getBoundingClientRect();
+            let twistieX = rowR.left + 12;
+            let twistieY = rowR.top + rowR.height / 2;
+            if (twistie) {
+              const tr = twistie.getBoundingClientRect();
+              if (tr.width > 0 && tr.height > 0) {
+                twistieX = tr.left + tr.width / 2;
+                twistieY = tr.top + tr.height / 2;
+              }
+            }
+            return { type: 'expandSrc', x: twistieX, y: twistieY };
           }
         }
 
@@ -386,8 +395,44 @@ async function cdpClickElementInWorkspace(tabId, targetFilePath) {
 
     if (attached) {
       if (type === 'expandSrc') {
+        // 1. In-frame direct DOM trigger on twistie, ArrowRight and Enter
+        await chrome.scripting.executeScript({
+          target: { tabId, allFrames: true },
+          func: () => {
+            const rows = [...document.querySelectorAll('.monaco-list-row, [role="treeitem"]')];
+            const src = rows.find(r => {
+              const txt = (r.querySelector('.label-name') || r).textContent.trim().toLowerCase();
+              return txt === 'src';
+            });
+            if (src) {
+              const twistie = src.querySelector('.monaco-tl-twistie, .codicon-chevron-right, .collapsed');
+              if (twistie) {
+                try { twistie.click(); } catch(e) {}
+                try { twistie.dispatchEvent(new MouseEvent('click', { bubbles: true })); } catch(e) {}
+              }
+              try { src.focus(); } catch(e) {}
+              try { src.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39, bubbles: true })); } catch(e) {}
+              try { src.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true })); } catch(e) {}
+            }
+          }
+        });
+
+        // 2. Hardware native click on twistie chevron
         await cdpNativeClick(tabId, globalX, globalY, 1);
-        await sleep(350);
+        await sleep(60);
+
+        // 3. Hardware native double-click
+        await cdpNativeDblClick(tabId, globalX, globalY);
+        await sleep(60);
+
+        // 4. Hardware native ArrowRight key to expand folder in VS Code
+        await cdpNativeKey(tabId, 'ArrowRight', 'ArrowRight', 39, 0);
+        await sleep(60);
+
+        // 5. Hardware native Enter key
+        await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
+        await sleep(400);
+
         return await cdpClickElementInWorkspace(tabId, targetFilePath);
       }
 
@@ -791,6 +836,13 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
                   !!srcItem.querySelector('.collapsed, .codicon-chevron-right');
                 if (isCollapsed) {
                   const twistie = srcItem.querySelector('.monaco-tl-twistie, .codicon-chevron-right, .codicon');
+                  if (twistie) {
+                    try { twistie.click(); } catch(e) {}
+                    try { twistie.dispatchEvent(new MouseEvent('click', { bubbles: true })); } catch(e) {}
+                  }
+                  try { srcItem.focus(); } catch(e) {}
+                  try { srcItem.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39, bubbles: true })); } catch(e) {}
+                  try { srcItem.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true })); } catch(e) {}
                   simulateClick(twistie || srcItem);
                   await sleep(350);
                 }

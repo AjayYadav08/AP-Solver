@@ -293,6 +293,13 @@
           !!srcItem.querySelector('.collapsed, .codicon-chevron-right');
         if (isCollapsed) {
           const twistie = srcItem.querySelector('.monaco-tl-twistie, .codicon-chevron-right, .codicon');
+          if (twistie) {
+            try { twistie.click(); } catch(e) {}
+            try { twistie.dispatchEvent(new MouseEvent('click', { bubbles: true })); } catch(e) {}
+          }
+          try { srcItem.focus(); } catch(e) {}
+          try { srcItem.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39, bubbles: true })); } catch(e) {}
+          try { srcItem.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true })); } catch(e) {}
           simulateClick(twistie || srcItem);
           await new Promise(r => setTimeout(r, 350));
         }
