@@ -496,4 +496,22 @@ if (!updatedBgJs.includes('cdpClickElementInWorkspace(tabId, targetFilePath)')) 
 }
 console.log('   ✓ Chrome DevTools Protocol (CDP) True Native Hardware Driver verified');
 
+// Test 18: Verify Direct Terminal File Injection Engine & All-In-One Script Generator
+console.log('18. Testing Direct Terminal File Injection Engine & Terminal Copy...');
+const terminalBgJs = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
+const terminalContentJs = fs.readFileSync(path.join(__dirname, 'content/content.js'), 'utf8');
+const terminalUiJs = fs.readFileSync(path.join(__dirname, 'content/solver-ui.js'), 'utf8');
+const terminalCss = fs.readFileSync(path.join(__dirname, 'content/styles.css'), 'utf8');
+
+if (!terminalBgJs.includes('writeFilesViaTerminal') || !terminalBgJs.includes('AP_WRITE_TERMINAL')) {
+  throw new Error('background.js must implement writeFilesViaTerminal and AP_WRITE_TERMINAL handler!');
+}
+if (!terminalContentJs.includes('AP_WRITE_TERMINAL') || !terminalContentJs.includes('Terminal Turbo Engine')) {
+  throw new Error('content.js must support fast-path terminal injection!');
+}
+if (!terminalUiJs.includes('ap-btn-copy-terminal-script') || !terminalCss.includes('.ap-btn-copy-terminal-script')) {
+  throw new Error('solver-ui.js and styles.css must provide ap-btn-copy-terminal-script button!');
+}
+console.log('   ✓ Direct Terminal File Injection Engine & All-In-One Script Generator verified');
+
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');

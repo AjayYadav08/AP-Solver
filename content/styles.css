@@ -524,6 +524,28 @@
   color: #38bdf8;
 }
 
+.ap-btn-copy-terminal-script {
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  color: #34d399;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 3px 8px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.2s ease;
+}
+
+.ap-btn-copy-terminal-script:hover {
+  background: rgba(16, 185, 129, 0.3);
+  border-color: #10b981;
+  color: #fff;
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.3);
+}
+
 .ap-multi-files-hint {
   font-size: 10px;
   color: #94a3b8;

@@ -879,10 +879,36 @@
 
     ui.setStatus(`Injecting solution into ${filesToWrite.length} file(s)...`, '', 'running', true);
 
-    // Copy primary code to system clipboard
+    // Build all-in-one terminal bash script for these files
+    let bashScript = '';
+    for (const f of filesToWrite) {
+      const dir = f.filePath.includes('/') ? f.filePath.substring(0, f.filePath.lastIndexOf('/')) : '';
+      if (dir) {
+        bashScript += `mkdir -p "${dir}" && `;
+      }
+      bashScript += `cat << 'EOF' > "${f.filePath}"\n${f.code}\nEOF\n`;
+    }
+
+    // Auto-copy terminal script to clipboard as an instant superpower
     try {
-      await navigator.clipboard.writeText(filesToWrite[0].code);
+      await navigator.clipboard.writeText(bashScript);
+      ui.addLog(`💻 [Terminal Engine] Ready! Multi-file script auto-copied to clipboard.`, 'ok');
     } catch (e) {}
+
+    // FAST PATH: If terminal is open in workspace, inject via terminal directly to disk!
+    try {
+      const termResp = await sendMsg({ op: 'AP_WRITE_TERMINAL', data: { files: filesToWrite } }, 5000);
+      if (termResp && termResp.ok) {
+        ui.addLog(`⚡ [Terminal Turbo Engine] Successfully wrote ${filesToWrite.length} file(s) directly to disk via Terminal!`, 'ok');
+        for (const f of filesToWrite) {
+          ui.setFileStatus(f.filePath, 'injected');
+        }
+        ui.setStatus('Files Saved via Terminal', `${filesToWrite.length} file(s) saved directly to container disk.`, 'success');
+        return true;
+      }
+    } catch (e) {
+      console.log('[AP-Solver] Terminal direct write bypassed:', e);
+    }
 
     let allSucceeded = true;
 

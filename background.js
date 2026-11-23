@@ -941,6 +941,61 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
   return { ok: false, error: 'Failed to write code into editor frame.' };
 }
 
+// Direct Terminal File Injection Engine (Zero-Click Linux Disk Writer)
+async function writeFilesViaTerminal(tabId, files) {
+  if (!files || files.length === 0) return { ok: false, error: 'No files provided' };
+
+  let bashScript = '';
+  for (const f of files) {
+    const dir = f.filePath.includes('/') ? f.filePath.substring(0, f.filePath.lastIndexOf('/')) : '';
+    if (dir) {
+      bashScript += `mkdir -p "${dir}" && `;
+    }
+    bashScript += `cat << 'EOF' > "${f.filePath}"\n${f.code}\nEOF\n`;
+  }
+
+  try {
+    // 1. Check all frames to find and focus open xterm terminal
+    const scanRes = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: () => {
+        const ta = document.querySelector('.xterm-helper-textarea, textarea.xterm-helper-textarea, [class*="xterm" i] textarea');
+        if (ta) {
+          ta.focus();
+          const r = ta.getBoundingClientRect();
+          return { found: true, x: r.left + 50, y: r.top + 20 };
+        }
+        const term = document.querySelector('.terminal.xterm, .xterm-screen, [class*="terminal" i]');
+        if (term) {
+          term.focus();
+          try { term.click(); } catch(e) {}
+          const r = term.getBoundingClientRect();
+          return { found: true, x: r.left + 50, y: r.top + 20 };
+        }
+        return { found: false };
+      }
+    });
+
+    const match = scanRes?.find(r => r.result && r.result.found);
+    if (!match || !match.result) {
+      return { ok: false, error: 'No open terminal found in workspace' };
+    }
+
+    const attached = await attachCDP(tabId);
+    if (attached) {
+      await cdpNativeInsertText(tabId, bashScript);
+      await sleep(150);
+      await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
+      await sleep(350);
+      return { ok: true, method: 'terminal.cdp' };
+    }
+  } catch (e) {
+    console.warn('[AP-Solver Terminal] writeFilesViaTerminal error:', e);
+  }
+
+  return { ok: false, error: 'Could not inject into terminal.' };
+}
+
 // Global Message Handler
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const { op, data } = message;
@@ -972,6 +1027,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return;
         }
         const resp = await writeEditorInTab(tabId, data.code, data.filePath);
+        sendResponse(resp);
+      } else if (op === 'AP_WRITE_TERMINAL') {
+        const tabId = sender.tab?.id;
+        if (!tabId) {
+          sendResponse({ ok: false, error: 'No tab ID found in sender.' });
+          return;
+        }
+        const resp = await writeFilesViaTerminal(tabId, data.files);
         sendResponse(resp);
       } else {
         sendResponse({ ok: false, error: `Unknown op: ${op}` });

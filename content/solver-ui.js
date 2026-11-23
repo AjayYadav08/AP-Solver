@@ -207,12 +207,12 @@ window.APSolverUI = class APSolverUI {
             </div>
           </div>
 
-          <!-- Multi-File Solution Manager (Shows each file with instant ⚡ Inject & 📋 Copy) -->
+          <!-- Multi-File Solution Manager (Shows each file with instant ⚡ Inject & 📋 Copy & 💻 Terminal Script) -->
           ${this.generatedFiles && this.generatedFiles.length > 0 ? `
             <div class="ap-multi-files-box">
               <div class="ap-multi-files-head">
                 <span class="ap-multi-files-title">📂 Solution Files (${this.generatedFiles.length})</span>
-                <span class="ap-multi-files-hint">Click Inject or Copy per file</span>
+                <button class="ap-btn-copy-terminal-script" title="Copy 1-line bash script for all files to paste into Terminal">💻 Copy Terminal Script</button>
               </div>
               <div class="ap-file-cards">
                 ${this.generatedFiles.map((f, idx) => `
@@ -351,6 +351,34 @@ window.APSolverUI = class APSolverUI {
       solveBtn.onclick = () => {
         console.log('[AP-Solver] Solve button clicked!');
         if (this.callbacks.onOneClickSolve) this.callbacks.onOneClickSolve();
+      };
+    }
+
+    // Multi-File Copy All-in-One Terminal Script button
+    const copyTermBtn = this.host.querySelector('.ap-btn-copy-terminal-script');
+    if (copyTermBtn) {
+      copyTermBtn.onclick = async () => {
+        let bashScript = '';
+        for (const f of this.generatedFiles) {
+          const dir = f.filePath.includes('/') ? f.filePath.substring(0, f.filePath.lastIndexOf('/')) : '';
+          if (dir) {
+            bashScript += `mkdir -p "${dir}" && `;
+          }
+          bashScript += `cat << 'EOF' > "${f.filePath}"\n${f.code}\nEOF\n`;
+        }
+        try {
+          await navigator.clipboard.writeText(bashScript);
+          const orig = copyTermBtn.textContent;
+          copyTermBtn.textContent = '✓ Copied Script!';
+          copyTermBtn.style.color = '#4ade80';
+          setTimeout(() => {
+            copyTermBtn.textContent = orig;
+            copyTermBtn.style.color = '';
+          }, 2500);
+          this.addLog(`💻 All-in-one terminal script copied! Open VS Code terminal and press Cmd+V + Enter.`, 'ok');
+        } catch (e) {
+          this.addLog(`Failed to copy script: ${e.message}`, 'warn');
+        }
       };
     }
 
