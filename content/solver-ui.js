@@ -90,20 +90,13 @@ window.APSolverUI = class APSolverUI {
     if (solveBtn) {
       solveBtn.disabled = running;
       solveBtn.innerHTML = running
-        ? '<span class="ap-spinner"></span> Solving Question...'
-        : '⚡ Solve & Submit Solution';
+        ? '<span class="ap-spinner"></span> Solving...'
+        : '⚡ Solve';
     }
-
-    const secBtns = this.host.querySelectorAll('.ap-btn-sec');
-    secBtns.forEach((b) => (b.disabled = running));
   }
 
   setGeneratedCode(code) {
     this.generatedCode = code;
-    const viewBtn = this.host.querySelector('.ap-btn-view-code');
-    if (viewBtn) {
-      viewBtn.style.display = code ? 'inline-flex' : 'none';
-    }
   }
 
   toggleMinimize(min) {
@@ -131,16 +124,18 @@ window.APSolverUI = class APSolverUI {
 
     this.host.innerHTML = `
       <div class="ap-card">
-        <!-- Header -->
+        <!-- Header: Top-Left Minimise (< facing downward) & Top-Right Settings (⚙️) -->
         <div class="ap-header">
+          <button class="ap-btn-icon ap-btn-min" title="Minimize">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+          </button>
           <div class="ap-title-wrap">
-            <button class="ap-btn-icon ap-btn-settings" title="Change API Keys (Gemini & Groq)">⚙️</button>
             <span class="ap-badge">AP-Solver</span>
-            <span class="ap-title">3-Section Copilot</span>
+            <span class="ap-title">Newton Copilot</span>
           </div>
-          <div class="ap-actions-top">
-            <button class="ap-btn-icon ap-btn-min" title="Minimize">─</button>
-          </div>
+          <button class="ap-btn-icon ap-btn-settings" title="Configure API Keys (Gemini & Groq)">⚙️</button>
         </div>
 
         <!-- Inline API Keys Panel (Directly on Portal) -->
@@ -172,7 +167,7 @@ window.APSolverUI = class APSolverUI {
             <div class="ap-status-header">
               <span class="ap-status-title">Ready</span>
             </div>
-            <div class="ap-status-detail">Click "Solve & Submit Solution" to solve automatically.</div>
+            <div class="ap-status-detail">Click "Solve" to solve and submit automatically.</div>
           </div>
 
           <!-- Problem & Editor Detected Box -->
@@ -195,45 +190,10 @@ window.APSolverUI = class APSolverUI {
             </div>
           </div>
 
-          <!-- Primary One-Click Action -->
+          <!-- One Single Solve Button -->
           <button class="ap-btn-primary ap-btn-solve-main" ${this.isRunning ? 'disabled' : ''}>
-            ${this.isRunning ? '<span class="ap-spinner"></span> Solving...' : '⚡ Solve & Submit Solution'}
+            ${this.isRunning ? '<span class="ap-spinner"></span> Solving...' : '⚡ Solve'}
           </button>
-
-          <!-- Secondary Step-by-Step Grid -->
-          <div class="ap-btn-grid">
-            <button class="ap-btn-sec ap-btn-read">📖 Read Context</button>
-            <button class="ap-btn-sec ap-btn-gen">🧠 Generate</button>
-            <button class="ap-btn-sec ap-btn-write">✍️ Inject Code</button>
-            <button class="ap-btn-sec ap-btn-submit">🚀 Submit</button>
-          </div>
-
-          <div class="ap-btn-grid">
-            <button class="ap-btn-sec ap-btn-copy" style="grid-column: span 1;">📋 Copy Code</button>
-            <button class="ap-btn-sec ap-btn-view-code" style="grid-column: span 1; ${this.generatedCode ? '' : 'display:none;'}">👁️ Preview Code</button>
-          </div>
-
-          <!-- Options -->
-          <div class="ap-options-box">
-            <label class="ap-option-label">
-              <input type="checkbox" class="ap-opt-auto-submit" ${this.options.autoSubmit ? 'checked' : ''}>
-              Auto-Submit after injecting code
-            </label>
-            <label class="ap-option-label">
-              <input type="checkbox" class="ap-opt-auto-retry" ${this.options.autoRetry ? 'checked' : ''}>
-              Auto-Retry on failed test cases
-            </label>
-          </div>
-
-          <!-- Provider Select -->
-          <div class="ap-select-row">
-            <span>AI Model:</span>
-            <select class="ap-select ap-select-provider">
-              <option value="gemini" ${this.options.provider === 'gemini' ? 'selected' : ''}>Google Gemini (3.8 Flash)</option>
-              <option value="groq" ${this.options.provider === 'groq' ? 'selected' : ''}>Groq Llama 3.3 70B (Free)</option>
-              <option value="openai" ${this.options.provider === 'openai' ? 'selected' : ''}>OpenAI / Custom</option>
-            </select>
-          </div>
 
           <!-- Real-Time Log Console -->
           <div class="ap-log-container">
@@ -269,22 +229,14 @@ window.APSolverUI = class APSolverUI {
       fileEl.textContent = this.problemInfo.activeFile;
       fileEl.title = this.problemInfo.activeFile;
     }
-
-    const autoSubmitCb = this.host.querySelector('.ap-opt-auto-submit');
-    if (autoSubmitCb) autoSubmitCb.checked = !!this.options.autoSubmit;
-
-    const autoRetryCb = this.host.querySelector('.ap-opt-auto-retry');
-    if (autoRetryCb) autoRetryCb.checked = !!this.options.autoRetry;
-
-    const providerSel = this.host.querySelector('.ap-select-provider');
-    if (providerSel) providerSel.value = this.options.provider || 'gemini';
   }
 
   bindEvents() {
+    // Minimise button in top left
     const minBtn = this.host.querySelector('.ap-btn-min');
     if (minBtn) minBtn.onclick = () => this.toggleMinimize(true);
 
-    // Settings icon in top left
+    // Settings icon in top right
     const settingsBtn = this.host.querySelector('.ap-btn-settings');
     if (settingsBtn) {
       settingsBtn.onclick = () => {
@@ -350,69 +302,12 @@ window.APSolverUI = class APSolverUI {
       };
     }
 
+    // Primary Solve button
     const solveBtn = this.host.querySelector('.ap-btn-solve-main');
     if (solveBtn) {
       solveBtn.onclick = () => {
         console.log('[AP-Solver] Solve button clicked!');
         if (this.callbacks.onOneClickSolve) this.callbacks.onOneClickSolve();
-      };
-    }
-
-    const readBtn = this.host.querySelector('.ap-btn-read');
-    if (readBtn) readBtn.onclick = () => this.callbacks.onReadContext && this.callbacks.onReadContext();
-
-    const genBtn = this.host.querySelector('.ap-btn-gen');
-    if (genBtn) genBtn.onclick = () => this.callbacks.onGenerate && this.callbacks.onGenerate();
-
-    const writeBtn = this.host.querySelector('.ap-btn-write');
-    if (writeBtn) writeBtn.onclick = () => this.callbacks.onWriteCode && this.callbacks.onWriteCode();
-
-    const submitBtn = this.host.querySelector('.ap-btn-submit');
-    if (submitBtn) submitBtn.onclick = () => this.callbacks.onSubmit && this.callbacks.onSubmit();
-
-    const copyBtn = this.host.querySelector('.ap-btn-copy');
-    if (copyBtn) {
-      copyBtn.onclick = () => {
-        const codeToCopy = this.generatedCode || this.currentCode;
-        if (!codeToCopy) {
-          alert('No code to copy yet! Please generate solution first.');
-          return;
-        }
-        navigator.clipboard.writeText(codeToCopy).then(() => {
-          this.addLog('Code copied to clipboard!', 'ok');
-          const orig = copyBtn.textContent;
-          copyBtn.textContent = '✓ Copied!';
-          setTimeout(() => (copyBtn.textContent = orig), 2000);
-        });
-      };
-    }
-
-    const viewBtn = this.host.querySelector('.ap-btn-view-code');
-    if (viewBtn) {
-      viewBtn.onclick = () => this.showCodeModal(this.generatedCode);
-    }
-
-    const autoSubmitCb = this.host.querySelector('.ap-opt-auto-submit');
-    if (autoSubmitCb) {
-      autoSubmitCb.onchange = (e) => {
-        this.options.autoSubmit = e.target.checked;
-        if (this.callbacks.onOptionsChange) this.callbacks.onOptionsChange(this.options);
-      };
-    }
-
-    const autoRetryCb = this.host.querySelector('.ap-opt-auto-retry');
-    if (autoRetryCb) {
-      autoRetryCb.onchange = (e) => {
-        this.options.autoRetry = e.target.checked;
-        if (this.callbacks.onOptionsChange) this.callbacks.onOptionsChange(this.options);
-      };
-    }
-
-    const providerSel = this.host.querySelector('.ap-select-provider');
-    if (providerSel) {
-      providerSel.onchange = (e) => {
-        this.options.provider = e.target.value;
-        if (this.callbacks.onOptionsChange) this.callbacks.onOptionsChange(this.options);
       };
     }
   }
