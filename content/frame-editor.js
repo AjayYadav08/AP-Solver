@@ -51,6 +51,26 @@
     return !!document.querySelector('.monaco-editor, textarea.inputarea, .view-lines');
   }
 
+  // Try to open index.js if VS Code Web is showing the Welcome tab
+  function tryOpenTargetFileInExplorer() {
+    try {
+      const items = [...document.querySelectorAll('.monaco-list-row, [role="treeitem"], .label-name, .monaco-icon-label')];
+      // Expand 'src' folder if present
+      const srcFolder = items.find((el) => el.textContent.trim() === 'src');
+      if (srcFolder) srcFolder.click();
+
+      // Click 'index.js'
+      const targetFile = items.find((el) => /^(index|app|server)\.(js|ts)$/i.test(el.textContent.trim()));
+      if (targetFile) {
+        targetFile.click();
+        return true;
+      }
+    } catch (e) {
+      // Continue
+    }
+    return false;
+  }
+
   // Fallback: Read code directly from DOM if bridge fails
   function readCodeFromDOM() {
     const viewLines = document.querySelector('.monaco-editor .view-lines');
@@ -66,8 +86,17 @@
     if (msg.op === 'AP_GET_EDITOR_STATUS') {
       (async () => {
         // Try bridge first
-        const bridgeResp = await askBridge('AP_READ_CODE');
-        if (bridgeResp.ok && bridgeResp.code) {
+        let bridgeResp = await askBridge('AP_READ_CODE');
+
+        // If Welcome screen or empty, try opening index.js from explorer
+        if (!bridgeResp.ok || !bridgeResp.code || /Get Started with VS Code/i.test(bridgeResp.code)) {
+          if (tryOpenTargetFileInExplorer()) {
+            await new Promise((r) => setTimeout(r, 600));
+            bridgeResp = await askBridge('AP_READ_CODE');
+          }
+        }
+
+        if (bridgeResp.ok && bridgeResp.code && !/Get Started with VS Code/i.test(bridgeResp.code)) {
           sendResponse({
             ok: true,
             code: bridgeResp.code,
@@ -82,7 +111,7 @@
         // Check DOM fallback
         if (hasEditor()) {
           const domCode = readCodeFromDOM();
-          if (domCode) {
+          if (domCode && !/Get Started with VS Code/i.test(domCode)) {
             sendResponse({
               ok: true,
               code: domCode,

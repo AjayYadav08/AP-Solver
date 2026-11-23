@@ -28,11 +28,11 @@
 
   // --- Section 1: Question Scraper ---
   function extractQuestion() {
-    // 1. Try finding title from header or question pane
+    // 1. Try finding title from header (< Back | Question Title ... Total XP)
     let title = '';
-    const headerTitleMatch = document.body.innerText.match(/< Back\s*\|\s*([^\n\r]+)/);
+    const headerTitleMatch = document.body.innerText.match(/(?:<|\bBack\b)\s*\|\s*([^\n\r]+)/i);
     if (headerTitleMatch && headerTitleMatch[1]) {
-      title = headerTitleMatch[1].trim();
+      title = headerTitleMatch[1].split(/(?:Total XP|\s{3,})/i)[0].trim();
     }
 
     // Try finding QUESTION pane
@@ -40,16 +40,24 @@
       const text = el.innerText || '';
       return (
         isVisible(el) &&
-        /QUESTION/i.test(text.slice(0, 150)) &&
+        /QUESTION/i.test(text.slice(0, 200)) &&
         /Requirements|Test Cases|Build|Implement/i.test(text)
       );
     });
 
     const qPanel = questionPanels.sort((a, b) => a.innerText.length - b.innerText.length)[0] || document.body;
 
-    if (!title) {
-      const heading = qPanel.querySelector('h1, h2, h3, div[class*="title" i], div[class*="header" i]');
-      title = heading ? heading.innerText.trim() : 'Fullstack / API Challenge';
+    const lines = qPanel.innerText.split('\n').map((l) => l.trim()).filter(Boolean);
+
+    // Fallback title from question panel lines before 'Hard'/'Medium'/'Easy'
+    if (!title || title.length < 3) {
+      const diffIdx = lines.findIndex((l) => /^(Easy|Medium|Hard)$/i.test(l));
+      if (diffIdx > 0 && lines[diffIdx - 1] && !/^QUESTION$/i.test(lines[diffIdx - 1])) {
+        title = lines[diffIdx - 1];
+      } else {
+        const heading = qPanel.querySelector('h1, h2, h3, div[class*="title" i], div[class*="header" i]');
+        title = heading ? heading.innerText.trim() : (document.title.split('-')[0].trim() || 'Fullstack Challenge');
+      }
     }
 
     // Extract difficulty and points
@@ -62,10 +70,9 @@
 
     // Extract Test Cases
     const testCases = [];
-    const lines = qPanel.innerText.split('\n').map((l) => l.trim()).filter(Boolean);
     for (const line of lines) {
       const tcMatch = line.match(/^\d+\.\s+(.+)$/);
-      if (tcMatch && tcMatch[1].length > 5) {
+      if (tcMatch && tcMatch[1].length > 4) {
         testCases.push(tcMatch[1].trim());
       }
     }
