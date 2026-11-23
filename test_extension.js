@@ -2,7 +2,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { extractCodeBlock, buildPrompt } from './utils/llm.js';
+import { extractCodeBlock, buildPrompt, formatCodeIndentation } from './utils/llm.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -163,5 +163,30 @@ if (!feedbackPrompt.includes('CRITICAL: PREVIOUS SUBMISSION FAILED') || !feedbac
   throw new Error('Feedback prompt failed to incorporate terminal traces properly');
 }
 console.log('   ✓ Terminal failure feedback properly incorporated into AI prompt');
+
+// 8. Test Clean 2-Space Code Indentation
+console.log('8. Testing Clean 2-Space Code Indentation...');
+const unformattedCode = `
+const server = http.createServer((req, res) => {
+res.setHeader('Content-Type', 'text/plain');
+if (req.method !== 'GET') {
+res.statusCode = 405;
+res.end('Method Not Allowed');
+return;
+}
+if (routes[req.url]) {
+res.statusCode = 200;
+res.end(routes[req.url]);
+} else {
+res.statusCode = 404;
+res.end('Not Found');
+}
+});
+`;
+const formatted = formatCodeIndentation(unformattedCode);
+if (!formatted.includes('  res.setHeader') || !formatted.includes('    res.statusCode = 405;') || !formatted.includes('  } else {')) {
+  throw new Error('Code indentation formatting failed:\n' + formatted);
+}
+console.log('   ✓ Code indentation successfully formatted with clean 2-space alignment');
 
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');

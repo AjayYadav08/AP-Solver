@@ -1,5 +1,5 @@
 // background.js - AP-Solver Service Worker
-import { generateSolution, getSettings, saveSettings } from './utils/llm.js';
+import { generateSolution, getSettings, saveSettings, formatCodeIndentation } from './utils/llm.js';
 
 console.log('[AP-Solver] Background service worker initialized.');
 
@@ -121,10 +121,11 @@ async function queryEditorInTab(tabId) {
 
 async function writeEditorInTab(tabId, newCode) {
   try {
+    const cleanCode = formatCodeIndentation(newCode);
     const results = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       world: 'MAIN',
-      args: [newCode],
+      args: [cleanCode],
       func: async (codeToWrite) => {
         try {
           const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -371,7 +372,27 @@ async function writeEditorInTab(tabId, newCode) {
             input.dispatchEvent(pasteEvt);
             if (editorDom) editorDom.dispatchEvent(pasteEvt);
 
-            // Step 4: Save file
+            // Trigger Format Document (Shift+Option+F / Shift+Alt+F)
+            function triggerFormatDocument() {
+              const formatEvt = new KeyboardEvent('keydown', {
+                key: 'F',
+                code: 'KeyF',
+                keyCode: 70,
+                which: 70,
+                shiftKey: true,
+                altKey: true,
+                bubbles: true,
+                cancelable: true
+              });
+              input.dispatchEvent(formatEvt);
+              if (editorDom) editorDom.dispatchEvent(formatEvt);
+              window.dispatchEvent(formatEvt);
+              document.dispatchEvent(formatEvt);
+            }
+
+            // Step 4: Format & Save file
+            await sleep(100);
+            triggerFormatDocument();
             await sleep(150);
             triggerFileSave();
             await sleep(250);

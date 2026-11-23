@@ -62,25 +62,87 @@ STRICT GUIDELINES:
    - Return the ENTIRE replacement file ready to run from top imports to exports.
    - Do NOT omit any parts with comments like "// ... rest of code".
    - Your code will completely wipe and replace the starter file.
-5. OUTPUT FORMAT:
+5. CLEAN READABLE CODE & INDENTATION:
+   - Use strict, standard 2-space indentation for every nested block, function, if-else, and object.
+   - Do NOT use tab characters.
+   - Keep code clean, elegant, and readable.
+6. OUTPUT FORMAT:
    - Output ONLY the clean replacement code enclosed in a single markdown code block:
    \`\`\`javascript
    // complete code here
    \`\`\`
    - Absolutely NO explanations, markdown or conversational text outside the code block.`;
 
+export function formatCodeIndentation(code) {
+  if (!code) return '';
+  const lines = code.split('\n');
+  let currentIndent = 0;
+  const indentSize = 2;
+  const result = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      result.push('');
+      continue;
+    }
+
+    // Check how many closing braces/brackets start this line
+    let leadingCloses = 0;
+    const m = trimmed.match(/^(\}|\)|\])+/);
+    if (m) {
+      leadingCloses = m[0].length;
+    } else if (/^(else|catch|finally)\b/.test(trimmed)) {
+      leadingCloses = 1;
+    }
+
+    const printIndent = Math.max(0, currentIndent - leadingCloses);
+    result.push(' '.repeat(printIndent * indentSize) + trimmed);
+
+    // Calculate net brace change across the line
+    let net = 0;
+    let inStr = false;
+    let quote = '';
+    for (let i = 0; i < trimmed.length; i++) {
+      const c = trimmed[i];
+      const prev = i > 0 ? trimmed[i - 1] : '';
+      if (inStr) {
+        if (c === quote && prev !== '\\') inStr = false;
+        continue;
+      }
+      if (c === "'" || c === '"' || c === '`') {
+        inStr = true;
+        quote = c;
+        continue;
+      }
+      if (c === '/' && trimmed[i + 1] === '/') break; // line comment
+      if (c === '{' || c === '(' || c === '[') net++;
+      if (c === '}' || c === ')' || c === ']') net--;
+    }
+
+    currentIndent = Math.max(0, currentIndent + net);
+  }
+
+  return result.join('\n');
+}
+
 export function extractCodeBlock(rawText) {
   if (!rawText) return '';
+  let extracted = '';
   const match = rawText.match(/```(?:javascript|js|typescript|ts|node)?\s*\n([\s\S]*?)```/i);
   if (match && match[1]) {
-    return match[1].trim();
+    extracted = match[1].trim();
+  } else {
+    // If wrapped in generic code block
+    const genericMatch = rawText.match(/```\s*\n([\s\S]*?)```/);
+    if (genericMatch && genericMatch[1]) {
+      extracted = genericMatch[1].trim();
+    } else {
+      extracted = rawText.trim();
+    }
   }
-  // If wrapped in generic code block
-  const genericMatch = rawText.match(/```\s*\n([\s\S]*?)```/);
-  if (genericMatch && genericMatch[1]) {
-    return genericMatch[1].trim();
-  }
-  return rawText.trim();
+
+  return formatCodeIndentation(extracted);
 }
 
 export function buildPrompt({ questionTitle, questionDetails, testCases, currentCode, language = 'javascript', feedback = null }) {
