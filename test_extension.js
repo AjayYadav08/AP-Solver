@@ -538,4 +538,35 @@ if (!currentNavBgJs.includes('one|two') || !currentNavBgJs.includes('Skipped inv
 }
 console.log('   ✓ Numbered Header Parsing & Existing File Check Priority verified');
 
+// Test 20: Verify "File 1" Header Stripping, Semantic Mapping, and Flawed Synthetic DOM Click Removal
+console.log('20. Testing "File 1" Header Stripping & Synthetic DOM Click Elimination...');
+const { stripFileCommentHeaders } = await import('./utils/llm.js');
+
+const messyCode1 = `// File 1\nfunction validateName(req, res, next) { return next(); }`;
+const messyCode2 = `// File 1: src/middleware.js\nfunction validateName(req, res, next) { return next(); }`;
+const messyCode3 = `/* File 1 */\nfunction validateName(req, res, next) { return next(); }`;
+
+if (stripFileCommentHeaders(messyCode1).includes('File 1') ||
+    stripFileCommentHeaders(messyCode2).includes('File 1') ||
+    stripFileCommentHeaders(messyCode3).includes('File 1')) {
+  throw new Error('stripFileCommentHeaders must completely remove "File 1" comments!');
+}
+
+// Test generic File 1 / File 2 mapping against workspaceFiles
+const genericTwoBlocks = `File 1:\n\`\`\`javascript\nfunction validate(req, res, next) { next(); }\n\`\`\`\n\nFile 2:\n\`\`\`javascript\nconst app = express();\n\`\`\``;
+const resolvedGeneric = parseMultiFileSolution(genericTwoBlocks, 'src/index.js', ['src/middleware.js', 'src/index.js']);
+if (resolvedGeneric[0].filePath !== 'src/middleware.js' || resolvedGeneric[1].filePath !== 'src/index.js') {
+  throw new Error('Generic multi-file blocks must be semantically mapped to workspaceFiles (middleware.js & index.js), got: ' + JSON.stringify(resolvedGeneric));
+}
+
+// Verify that synthetic DOM newFileBtn clicks in MAIN world are completely removed
+const bgJsClean = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
+const bridgeJsClean = fs.readFileSync(path.join(__dirname, 'content/main-world-bridge.js'), 'utf8');
+
+if (bgJsClean.includes('findExplorerItem(\'src\');\n              if (srcItem) simulateClick(srcItem);') ||
+    bridgeJsClean.includes('findExplorerItem(\'src\');\n      if (srcItem) simulateClick(srcItem);')) {
+  throw new Error('Synthetic DOM newFileBtn clicks must be eliminated from MAIN world to prevent creating untitled/1.js files!');
+}
+console.log('   ✓ "File 1" Header Stripping & Synthetic DOM Click Elimination verified');
+
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');

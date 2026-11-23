@@ -814,23 +814,6 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
               return true;
             }
 
-            // 7. If file not found in tree, create it using New File button!
-            const newFileBtn = document.querySelector('.codicon-new-file, [aria-label*="New File" i], [title*="New File" i]');
-            if (newFileBtn) {
-              const srcItem = findExplorerItem('src');
-              if (srcItem) simulateClick(srcItem);
-              simulateClick(newFileBtn);
-              await sleep(250);
-              const input = document.querySelector('.monaco-inputbox input, .inputArea input, input.monaco-inputbox');
-              if (input) {
-                input.value = basename;
-                input.dispatchEvent(new Event('input', { bubbles: true }));
-                input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-                await sleep(400);
-                return true;
-              }
-            }
-
             return false;
           }
 

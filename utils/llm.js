@@ -150,7 +150,15 @@ export function formatCodeIndentation(code) {
   return result.join('\n');
 }
 
-export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.js') {
+export function stripFileCommentHeaders(code) {
+  if (!code) return '';
+  return code
+    .replace(/^\s*(?:\/\/|\/\*|#+)\s*file\s*\d+[^\n]*(?:\*\/)?\s*\n?/gim, '')
+    .replace(/^\s*(?:\/\/|\/\*|#+)\s*(?:(?:\d+|step\s*\d+)[\.:\-\)]\s*)?(?:src\/)?[a-zA-Z0-9_\-]+\.(?:js|ts|json|txt)[^\n]*(?:\*\/)?\s*\n?/gi, '')
+    .trim();
+}
+
+export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.js', workspaceFiles = []) {
   if (!rawText) return [];
 
   const normPath = (fn) => {
@@ -164,8 +172,30 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
   const isValidFilename = (fn) => {
     if (!fn) return false;
     fn = fn.trim();
-    if (/^(1|2|3|4|5|one|two|file1|file2)(\.(js|ts))?$/i.test(fn)) return false;
+    if (/^(1|2|3|4|5|one|two|file1|file2|file_1|file_2)(\.(js|ts))?$/i.test(fn)) return false;
     return /\.(js|ts|json|txt)$/i.test(fn);
+  };
+
+  const resolveTargetFile = (fn, codeSnippet, idx) => {
+    if (fn && isValidFilename(fn)) return normPath(fn);
+    if (workspaceFiles && workspaceFiles.length > 0) {
+      const codeFiles = workspaceFiles.filter(f => /\.(js|ts)$/i.test(f) && !/nodemon|package|config/i.test(f));
+      if (/validate|middleware/i.test(codeSnippet)) {
+        const m = codeFiles.find(f => /middleware|validate/i.test(f));
+        if (m) return normPath(m);
+      }
+      if (/express|createServer|app\.listen/i.test(codeSnippet)) {
+        const idxF = codeFiles.find(f => /index\.(js|ts)/i.test(f));
+        if (idxF) return normPath(idxF);
+      }
+      if (idx === 0 && codeFiles.find(f => !/index/i.test(f))) {
+        return normPath(codeFiles.find(f => !/index/i.test(f)));
+      }
+      if (idx === 1 && codeFiles.find(f => /index/i.test(f))) {
+        return normPath(codeFiles.find(f => /index/i.test(f)));
+      }
+    }
+    return normPath(defaultActiveFile);
   };
 
   const fileHeaderPattern = /^(?:\/\/\s*|\/\*\s*|#+\s*)?(?:file:?\s*|---\s*)?(?:(?:\d+|step\s*\d+|file\s*\d+)[\.:\-\)]\s*)?(?:src\/)?([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt))(?:\s*---|\s*\*\/)?\s*(?:\n|$)/i;
@@ -179,7 +209,7 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
     for (let i = 0; i < blocks.length; i++) {
       const b = blocks[i];
       const langExtra = (b[1] || '') + ' ' + (b[2] || '');
-      let code = b[3].trim();
+      let code = stripFileCommentHeaders(b[3]);
 
       const prevEnd = (i > 0) ? (blocks[i - 1].index + blocks[i - 1][0].length) : 0;
       const precedingText = rawText.substring(prevEnd, b.index).trim();
@@ -187,10 +217,9 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
       let detectedFilename = '';
 
       // 1. Check first line inside code
-      const firstLineMatch = code.match(fileHeaderPattern);
+      const firstLineMatch = b[3].trim().match(fileHeaderPattern);
       if (firstLineMatch && isValidFilename(firstLineMatch[1])) {
         detectedFilename = firstLineMatch[1];
-        code = code.replace(/^[^\n]*\n/, '').trim();
       }
 
       // 2. Check lang tag / extra
@@ -207,11 +236,9 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
         if (m && isValidFilename(m[1])) detectedFilename = m[1];
       }
 
-      if (detectedFilename && code) {
-        parsedBlocks.push({ filePath: normPath(detectedFilename), code: formatCodeIndentation(code) });
-      } else if (blocks.length === 1 && code) {
-        // Single block without explicit filename in header/preceding
-        parsedBlocks.push({ filePath: normPath(defaultActiveFile), code: formatCodeIndentation(code) });
+      const finalPath = resolveTargetFile(detectedFilename, code, i);
+      if (finalPath && code) {
+        parsedBlocks.push({ filePath: finalPath, code: formatCodeIndentation(code) });
       }
     }
 
@@ -232,6 +259,7 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
       const end = (i + 1 < headers.length) ? headers[i + 1].index : rawText.length;
       let rawCode = rawText.substring(start, end).trim();
       rawCode = rawCode.replace(/^```[a-z]*\s*\n?/i, '').replace(/```+$/g, '').trim();
+      rawCode = stripFileCommentHeaders(rawCode);
       if (rawCode.length > 5) {
         inlineFiles.push({ filePath: normPath(fn), code: formatCodeIndentation(rawCode) });
       }
@@ -244,15 +272,16 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
   // Strategy 3: Check if raw text starts with a file header line
   let cleaned = rawText.replace(/^```[a-z]*\s*\n?/i, '').replace(/```+$/g, '').trim();
   const topMatch = cleaned.match(fileHeaderPattern);
-  if (topMatch) {
+  if (topMatch && isValidFilename(topMatch[1])) {
     const fn = topMatch[1];
-    cleaned = cleaned.replace(/^[^\n]*\n/, '').trim();
+    cleaned = stripFileCommentHeaders(cleaned);
     return [{ filePath: normPath(fn), code: formatCodeIndentation(cleaned) }];
   }
 
-  const singleCode = extractCodeBlock(rawText);
+  const singleCode = stripFileCommentHeaders(extractCodeBlock(rawText));
+  const finalSinglePath = resolveTargetFile('', singleCode, 0);
   return [{
-    filePath: normPath(defaultActiveFile),
+    filePath: finalSinglePath,
     code: formatCodeIndentation(singleCode)
   }];
 }
@@ -273,9 +302,7 @@ export function extractCodeBlock(rawText) {
     }
   }
 
-  // Strip leading file comment/header if present (e.g. // validateMiddleware.js or // FILE: ...)
-  extracted = extracted.replace(/^(?:\/\/\s*|\/\*\s*|#+\s*)?(?:FILE:?\s*|---\s*)?(?:src\/)?[a-zA-Z0-9_\-]+\.(?:js|ts|json|txt)(?:\s*---|\s*\*\/)?\s*\n?/i, '').trim();
-
+  extracted = stripFileCommentHeaders(extracted);
   return formatCodeIndentation(extracted);
 }
 
@@ -329,13 +356,12 @@ Carefully re-read requirements and ensure all edge cases, files, and status code
 
   parts.push(`## Instructions:
 1. Implement the complete, bug-free solution for the question.
-2. ALWAYS place a comment header on line 1 of every code block naming the exact target file, for example:
-   \`\`\`${language}
-   // src/validateMiddleware.js
-   ...code...
-   \`\`\`
-3. If multiple files must be created or edited (e.g. middleware file and index.js), provide EACH file in its own distinct code block with its file header line.
-4. Return ONLY the code blocks. No conversational explanation or markdown outside the code blocks.`);
+2. CRITICAL FILE NAMING RULES:
+   - NEVER write generic names or numbered labels like "File 1", "file 1", "1.js", "file1.js", "part 1".
+   - You MUST match the exact filename from the Project Workspace Files (e.g. "src/middleware.js", "src/validateMiddleware.js", "src/index.js").
+   - Place ONLY the direct file path on Line 1 of each code block (e.g. \`// src/middleware.js\`). Do NOT include "File 1" in comments or anywhere!
+3. If multiple files must be created or edited, provide EACH file in its own distinct code block with its file header line.
+4. Return ONLY the code blocks. Absolutely NO conversational explanation, "File 1" labels, or markdown outside the code blocks.`);
 
   return parts.join('\n\n');
 }
@@ -445,7 +471,7 @@ export async function callGemini(prompt, settings) {
           throw new Error('Gemini returned an empty response.');
         }
 
-        const files = parseMultiFileSolution(text, settings.activeFile);
+        const files = parseMultiFileSolution(text, settings.activeFile, settings.workspaceFiles);
         return {
           raw: text,
           code: files.length > 0 ? files[0].code : extractCodeBlock(text),
@@ -541,7 +567,7 @@ export async function callGroq(prompt, settings) {
         throw new Error('Groq returned an empty response.');
       }
 
-      const files = parseMultiFileSolution(text, settings.activeFile);
+      const files = parseMultiFileSolution(text, settings.activeFile, settings.workspaceFiles);
       return {
         raw: text,
         code: files.length > 0 ? files[0].code : extractCodeBlock(text),
@@ -607,7 +633,7 @@ export async function callOpenAI(prompt, settings) {
     throw new Error('OpenAI returned an empty response.');
   }
 
-  const files = parseMultiFileSolution(text, settings.activeFile);
+  const files = parseMultiFileSolution(text, settings.activeFile, settings.workspaceFiles);
   return {
     raw: text,
     code: files.length > 0 ? files[0].code : extractCodeBlock(text),
@@ -630,6 +656,7 @@ export async function generateSolution(promptData, settingsOverride = null) {
     }
   }
   settings.activeFile = promptData.activeFile || 'src/index.js';
+  settings.workspaceFiles = promptData.workspaceFiles || [];
 
   const prompt = buildPrompt(promptData);
 
