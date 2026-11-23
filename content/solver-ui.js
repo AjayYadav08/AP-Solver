@@ -304,6 +304,84 @@ window.APSolverUI = class APSolverUI {
     }
   }
 
+  showApiKeyPromptModal(onSaved) {
+    const existing = document.getElementById('ap-modal-overlay');
+    if (existing) existing.remove();
+
+    const modal = document.createElement('div');
+    modal.id = 'ap-modal-overlay';
+    modal.className = 'ap-modal-overlay';
+    modal.innerHTML = `
+      <div class="ap-modal-content" style="max-width: 480px;">
+        <div class="ap-modal-header">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="color:#38bdf8;font-size:18px;">⚡</span>
+            <span>First-Time Setup: Enter Free API Key</span>
+          </div>
+          <button class="ap-btn-icon ap-modal-close" style="font-size:16px;">✕</button>
+        </div>
+        <div class="ap-modal-body" style="display:flex;flex-direction:column;gap:12px;">
+          <div style="background:rgba(56,189,248,0.1);border:1px solid rgba(56,189,248,0.25);border-radius:8px;padding:10px 12px;font-size:12.5px;color:#cbd5e1;">
+            Bas ek baar apni free API key enter kar do. Iske baad yeh hamesha bina ruke sabhi questions solve karega!
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:4px;">
+            <label style="font-size:12px;font-weight:600;color:#f8fafc;">Google Gemini API Key (Recommended):</label>
+            <input type="password" id="ap-setup-gemini" placeholder="AIzaSy..." style="background:#020617;border:1px solid rgba(255,255,255,0.15);color:#fff;padding:8px 10px;border-radius:6px;font-size:12.5px;outline:none;">
+            <small style="font-size:11px;color:#64748b;">Get free key in 30 seconds: <a href="https://aistudio.google.com/apikey" target="_blank" style="color:#38bdf8;text-decoration:none;">Google AI Studio ↗</a></small>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:4px;">
+            <label style="font-size:12px;font-weight:600;color:#f8fafc;">Groq Cloud API Key (Optional Fallback):</label>
+            <input type="password" id="ap-setup-groq" placeholder="gsk_..." style="background:#020617;border:1px solid rgba(255,255,255,0.15);color:#fff;padding:8px 10px;border-radius:6px;font-size:12.5px;outline:none;">
+            <small style="font-size:11px;color:#64748b;">Ultra-fast 300 tok/sec key: <a href="https://console.groq.com/keys" target="_blank" style="color:#38bdf8;text-decoration:none;">Groq Console ↗</a></small>
+          </div>
+
+          <div id="ap-setup-err" style="display:none;color:#f87171;font-size:11.5px;background:rgba(239,68,68,0.15);padding:6px 10px;border-radius:6px;"></div>
+        </div>
+        <div class="ap-modal-footer">
+          <button class="ap-btn-primary ap-setup-save-btn" style="width:100%;justify-content:center;">
+            🚀 Save & Start Auto-Solving Now
+          </button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    modal.querySelector('.ap-modal-close').onclick = () => modal.remove();
+
+    const saveBtn = modal.querySelector('.ap-setup-save-btn');
+    const errBox = modal.querySelector('#ap-setup-err');
+
+    saveBtn.onclick = async () => {
+      const geminiVal = modal.querySelector('#ap-setup-gemini').value.trim();
+      const groqVal = modal.querySelector('#ap-setup-groq').value.trim();
+
+      if (!geminiVal && !groqVal) {
+        errBox.style.display = 'block';
+        errBox.textContent = 'Please enter at least one API key to proceed.';
+        return;
+      }
+
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'Saving key...';
+
+      const updates = {
+        provider: geminiVal ? 'gemini' : 'groq'
+      };
+      if (geminiVal) updates.geminiKey = geminiVal;
+      if (groqVal) updates.groqKey = groqVal;
+
+      await chrome.runtime.sendMessage({ op: 'AP_SAVE_SETTINGS', data: updates });
+
+      this.addLog('✓ API key configured successfully! Permanent setup complete.', 'ok');
+      modal.remove();
+
+      if (onSaved) onSaved(updates);
+    };
+  }
+
   showCodeModal(code) {
     const existing = document.getElementById('ap-modal-overlay');
     if (existing) existing.remove();

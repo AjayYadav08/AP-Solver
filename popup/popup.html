@@ -19,39 +19,66 @@
       <button id="openOptionsBtn" class="icon-btn" title="Open Full Settings">⚙️</button>
     </div>
 
-    <div class="popup-body">
-      <!-- Status Box -->
-      <div class="status-card">
-        <div class="status-title">Active AI Provider</div>
-        <select id="providerSelect" class="provider-dropdown">
-          <option value="gemini">Google Gemini (Recommended)</option>
-          <option value="groq">Groq (Ultra-Fast LLaMA 3.3)</option>
-          <option value="openai">OpenAI / OpenRouter / Custom</option>
-        </select>
-        <div id="keyStatus" class="key-status-badge">Checking API key...</div>
+    <!-- 1. First-Time Onboarding Screen (Shown if no key configured) -->
+    <div id="onboardingView" class="onboarding-box" style="display: none;">
+      <div class="onboard-badge">👋 Welcome! One-Time Setup</div>
+      <h3 class="onboard-title">Enter your Free API Key</h3>
+      <p class="onboard-desc">Bas ek baar apni free key daal do. Iske baad yeh hamesha bina ruke sabhi questions solve karega!</p>
+
+      <div class="onboard-field">
+        <label>Google Gemini API Key (Recommended):</label>
+        <input type="password" id="onboardGeminiKey" placeholder="Paste AIzaSy... key" class="input-text">
+        <small><a href="https://aistudio.google.com/apikey" target="_blank">Get Free Gemini Key (1 click) ↗</a></small>
       </div>
 
-      <!-- Quick Toggles -->
-      <div class="toggles-card">
-        <label class="toggle-row">
-          <span>Auto-Submit after code injection</span>
-          <input type="checkbox" id="autoSubmitCheck">
-        </label>
-        <label class="toggle-row">
-          <span>Auto-Retry on failed test cases</span>
-          <input type="checkbox" id="autoRetryCheck">
-        </label>
+      <div class="onboard-field">
+        <label>Groq API Key (Optional Fallback):</label>
+        <input type="password" id="onboardGroqKey" placeholder="Paste gsk_... key" class="input-text">
+        <small><a href="https://console.groq.com/keys" target="_blank">Get Free Groq Key (Fast LLaMA 70B) ↗</a></small>
       </div>
 
-      <!-- Action Buttons -->
-      <div class="actions-card">
-        <button id="testApiBtn" class="btn btn-secondary">⚡ Test API Connection</button>
-        <div id="testResult" class="test-result-box" style="display: none;"></div>
-      </div>
+      <button id="onboardSaveBtn" class="btn btn-primary" style="margin-top: 12px;">
+        🚀 Save & Start Auto-Solving
+      </button>
+      <div id="onboardError" class="onboard-err" style="display: none;"></div>
     </div>
 
-    <div class="popup-footer">
-      <a href="#" id="docsLink">How to use & Get Free API Keys ↗</a>
+    <!-- 2. Main Dashboard View (Shown once keys are set) -->
+    <div id="mainView">
+      <div class="popup-body">
+        <!-- Status Box -->
+        <div class="status-card">
+          <div class="status-title">Active AI Provider</div>
+          <select id="providerSelect" class="provider-dropdown">
+            <option value="gemini">Google Gemini (Recommended)</option>
+            <option value="groq">Groq (Ultra-Fast LLaMA 3.3)</option>
+            <option value="openai">OpenAI / OpenRouter / Custom</option>
+          </select>
+          <div id="keyStatus" class="key-status-badge">Checking API key...</div>
+        </div>
+
+        <!-- Quick Toggles -->
+        <div class="toggles-card">
+          <label class="toggle-row">
+            <span>Auto-Submit after code injection</span>
+            <input type="checkbox" id="autoSubmitCheck">
+          </label>
+          <label class="toggle-row">
+            <span>Auto-Retry on failed test cases</span>
+            <input type="checkbox" id="autoRetryCheck">
+          </label>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="actions-card">
+          <button id="testApiBtn" class="btn btn-secondary">⚡ Test API Connection</button>
+          <div id="testResult" class="test-result-box" style="display: none;"></div>
+        </div>
+      </div>
+
+      <div class="popup-footer">
+        <a href="#" id="docsLink">Settings & Manage API Keys ↗</a>
+      </div>
     </div>
   </div>
 

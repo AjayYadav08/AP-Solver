@@ -355,6 +355,21 @@
   }
 
   async function handleOneClickSolve() {
+    // Check if API key is configured
+    const settingsResp = await new Promise((resolve) => {
+      chrome.runtime.sendMessage({ op: 'AP_GET_SETTINGS' }, (r) => resolve(r));
+    });
+    const s = settingsResp?.settings || {};
+    const hasKey = !!(s.geminiKey?.trim() || s.groqKey?.trim() || s.openaiKey?.trim());
+
+    if (!hasKey) {
+      ui.showApiKeyPromptModal((newSettings) => {
+        ui.options = { ...ui.options, ...newSettings };
+        handleOneClickSolve();
+      });
+      return;
+    }
+
     ui.setRunning(true);
     try {
       // 1. Read context
@@ -428,6 +443,16 @@
       autoRetry: settings.autoRetry ?? true,
       provider: settings.provider || 'gemini'
     });
+
+    // If first time (no key configured), prompt user immediately
+    const hasKey = !!(settings.geminiKey?.trim() || settings.groqKey?.trim() || settings.openaiKey?.trim());
+    if (!hasKey) {
+      setTimeout(() => {
+        ui.showApiKeyPromptModal((newSettings) => {
+          ui.options = { ...ui.options, ...newSettings };
+        });
+      }, 1200);
+    }
 
     // Auto-scan initial question after slight delay for DOM to populate
     setTimeout(async () => {

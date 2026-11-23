@@ -1,5 +1,13 @@
-// popup/popup.js - Popup Controller
+// popup/popup.js - Popup Controller with First-Time Onboarding
 document.addEventListener('DOMContentLoaded', async () => {
+  const onboardingView = document.getElementById('onboardingView');
+  const mainView = document.getElementById('mainView');
+
+  const onboardGeminiKey = document.getElementById('onboardGeminiKey');
+  const onboardGroqKey = document.getElementById('onboardGroqKey');
+  const onboardSaveBtn = document.getElementById('onboardSaveBtn');
+  const onboardError = document.getElementById('onboardError');
+
   const providerSelect = document.getElementById('providerSelect');
   const keyStatus = document.getElementById('keyStatus');
   const autoSubmitCheck = document.getElementById('autoSubmitCheck');
@@ -16,6 +24,50 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   const settings = resp?.settings || {};
 
+  // Check if any key is already configured
+  const hasConfiguredKey = !!(settings.geminiKey?.trim() || settings.groqKey?.trim() || settings.openaiKey?.trim());
+
+  if (!hasConfiguredKey) {
+    // Show onboarding screen on first open
+    onboardingView.style.display = 'flex';
+    mainView.style.display = 'none';
+  } else {
+    onboardingView.style.display = 'none';
+    mainView.style.display = 'block';
+  }
+
+  // Handle Onboarding Save
+  onboardSaveBtn.addEventListener('click', async () => {
+    const geminiVal = onboardGeminiKey.value.trim();
+    const groqVal = onboardGroqKey.value.trim();
+
+    if (!geminiVal && !groqVal) {
+      onboardError.style.display = 'block';
+      onboardError.textContent = 'Please enter at least one API key (Gemini or Groq) to continue.';
+      return;
+    }
+
+    onboardSaveBtn.disabled = true;
+    onboardSaveBtn.textContent = 'Saving...';
+
+    const updates = {
+      provider: geminiVal ? 'gemini' : 'groq'
+    };
+    if (geminiVal) updates.geminiKey = geminiVal;
+    if (groqVal) updates.groqKey = groqVal;
+
+    await chrome.runtime.sendMessage({ op: 'AP_SAVE_SETTINGS', data: updates });
+
+    // Update local settings object
+    Object.assign(settings, updates);
+
+    // Switch to main view
+    onboardingView.style.display = 'none';
+    mainView.style.display = 'block';
+    updateKeyBadge();
+  });
+
+  // Setup Main View
   providerSelect.value = settings.provider || 'gemini';
   autoSubmitCheck.checked = !!settings.autoSubmit;
   autoRetryCheck.checked = settings.autoRetry !== false;

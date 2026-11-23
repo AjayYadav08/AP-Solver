@@ -6,7 +6,7 @@
 }
 
 body {
-  width: 330px;
+  width: 340px;
   background: #0f172a;
   color: #f8fafc;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -64,6 +64,90 @@ body {
   background: rgba(255, 255, 255, 0.1);
 }
 
+/* Onboarding Screen */
+.onboarding-box {
+  padding: 18px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.onboard-badge {
+  display: inline-block;
+  align-self: flex-start;
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.onboard-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.onboard-desc {
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.4;
+  margin-bottom: 4px;
+}
+
+.onboard-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.onboard-field label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #cbd5e1;
+}
+
+.onboard-field small a {
+  color: #38bdf8;
+  text-decoration: none;
+  font-size: 11px;
+}
+
+.onboard-field small a:hover {
+  text-decoration: underline;
+}
+
+.input-text {
+  width: 100%;
+  background: #090d16;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #f8fafc;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.input-text:focus {
+  border-color: #38bdf8;
+}
+
+.onboard-err {
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+/* Main Dashboard */
 .popup-body {
   padding: 14px 16px;
   display: flex;
@@ -148,7 +232,7 @@ body {
 
 .btn {
   width: 100%;
-  padding: 8px 12px;
+  padding: 9px 12px;
   border-radius: 8px;
   font-size: 12.5px;
   font-weight: 600;
@@ -159,6 +243,16 @@ body {
   align-items: center;
   justify-content: center;
   gap: 6px;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #0284c7, #2563eb);
+  color: #ffffff;
+  box-shadow: 0 4px 14px rgba(2, 132, 199, 0.4);
+}
+
+.btn-primary:hover {
+  background: linear-gradient(135deg, #0369a1, #1d4ed8);
 }
 
 .btn-secondary {

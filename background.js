@@ -10,6 +10,12 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   if (!current.provider) {
     await saveSettings({ provider: 'gemini' });
   }
+
+  // If first time install or no key configured, open options page immediately
+  const hasKey = !!(current.geminiKey?.trim() || current.groqKey?.trim() || current.openaiKey?.trim());
+  if (details.reason === 'install' || !hasKey) {
+    chrome.runtime.openOptionsPage();
+  }
 });
 
 // Broadcast or request data across frames in a specific tab
