@@ -224,7 +224,15 @@
       }
     } catch(e) {}
 
-    const resp = await sendMsg({ op: 'AP_WRITE_EDITOR', data: { code: newCode } }, 15000);
+    // Focus editor iframes from top frame to ensure active focus
+    try {
+      const iframes = [...document.querySelectorAll('iframe')];
+      for (const ifr of iframes) {
+        try { ifr.focus(); } catch(e) {}
+      }
+    } catch(e) {}
+
+    const resp = await sendMsg({ op: 'AP_WRITE_EDITOR', data: { code: newCode } }, 20000);
 
     if (resp && resp.ok && resp.verified) {
       return { ok: true, verified: true, method: resp.method };
@@ -336,7 +344,7 @@
     return { ok: !!resp?.ok, verified: !!resp?.verified, method: resp?.method || 'unknown' };
   }
 
-  // --- Section 3: Submissions & Grader Tracking ---
+  // --- Section 3: Submissions & Fast Grader Tracking ---
   function getSubmitButton() {
     return findButton(/^submit solution$/i) || findButton(/^submit$/i);
   }
@@ -384,26 +392,34 @@
     };
   }
 
-  async function submitAndMonitor(timeoutMs = 90000) {
+  async function submitAndMonitor(timeoutMs = 45000) {
     const btn = getSubmitButton();
     if (!btn) throw new Error('"Submit Solution" button not found on page.');
 
     ui.addLog('Clicking "Submit Solution" button...', 'ok');
     btn.click();
 
-    ui.setStatus('Evaluating Submission...', 'Waiting for test grader to run all test cases...', 'running', true);
+    ui.setStatus('Evaluating Submission...', 'Grader running test cases...', 'running', true);
+
+    // Switch to Submissions tab (Tab 2) so live test results are actively rendered
+    await sleep(600);
+    switchToSubmissionsTab();
 
     const start = Date.now();
     let sawRunning = false;
 
     while (Date.now() - start < timeoutMs) {
-      await sleep(1500);
+      await sleep(800);
 
-      const submitBtnText = (getSubmitButton()?.innerText || '').trim();
-      if (/Running Test Cases/i.test(submitBtnText)) {
+      const submitBtn = getSubmitButton();
+      const submitBtnText = (submitBtn?.innerText || '').trim();
+      const isBtnRunning = /Running Test Cases|Checking|Evaluating/i.test(submitBtnText) || submitBtn?.disabled;
+
+      if (isBtnRunning) {
         sawRunning = true;
       }
 
+      // Check Submissions Tab
       const results = readSubmissionResults();
       if (results) {
         if (results.isRunning) {
@@ -413,7 +429,6 @@
         }
 
         if (sawRunning && !results.isRunning && results.totalCount > 0) {
-          // Finished
           const allPassed = results.passedCount === results.totalCount;
           return {
             ok: allPassed,
@@ -424,13 +439,48 @@
         }
       }
 
+      // Fast Exit: Once button finishes running, check Terminal Tab (Tab 3) immediately!
+      if (sawRunning && !isBtnRunning) {
+        await sleep(400);
+        const terminalLog = await readTerminalOutput(2500);
+        if (terminalLog) {
+          const passMatch = terminalLog.match(/(\d+)\s+passing/i);
+          const failMatch = terminalLog.match(/(\d+)\s+failing/i);
+          const passedCount = passMatch ? parseInt(passMatch[1], 10) : 0;
+          const failedCount = failMatch ? parseInt(failMatch[1], 10) : 0;
+
+          if (passedCount > 0 && failedCount === 0) {
+            return { ok: true, passed: passedCount, total: passedCount, summary: 'All test cases passed!' };
+          }
+          if (failedCount > 0) {
+            return {
+              ok: false,
+              passed: passedCount,
+              total: passedCount + failedCount,
+              failedTests: [`${failedCount} test case(s) failed in Mocha runner`],
+              terminalLog
+            };
+          }
+        }
+
+        const finalSub = readSubmissionResults();
+        if (finalSub && finalSub.totalCount > 0) {
+          return {
+            ok: finalSub.passedCount === finalSub.totalCount,
+            passed: finalSub.passedCount,
+            total: finalSub.totalCount,
+            failedTests: finalSub.tests.filter((t) => !t.pass).map((t) => t.name)
+          };
+        }
+      }
+
       // Check success banner in main text
       if (/Latest Submission is Successful|All test cases passed/i.test(document.body.innerText)) {
         return { ok: true, summary: 'All test cases passed successfully!' };
       }
     }
 
-    return { ok: false, error: 'Grading timed out after 90 seconds. Please check results manually.' };
+    return { ok: false, error: 'Grading timed out. Please check Terminal (Tab 3) for details.' };
   }
 
   // --- High-Level User Actions ---
