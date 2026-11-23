@@ -415,10 +415,10 @@
     const hasKey = !!(s.geminiKey?.trim() || s.groqKey?.trim() || s.openaiKey?.trim());
 
     if (!hasKey) {
-      ui.showApiKeyPromptModal((newSettings) => {
-        ui.options = { ...ui.options, ...newSettings };
-        handleOneClickSolve();
-      });
+      ui.showSettings = true;
+      ui.render();
+      ui.setStatus('API Key Required', 'Please enter your Gemini or Groq key above and click "Save Keys".', 'warn');
+      ui.addLog('Please enter your Gemini or Groq key in the settings above.', 'warn');
       return;
     }
 
@@ -497,21 +497,16 @@
       activeProvider = 'groq';
     }
 
+    ui.setApiKeys({
+      geminiKey: settings.geminiKey || '',
+      groqKey: settings.groqKey || ''
+    });
+
     ui.updateOptions({
       autoSubmit: settings.autoSubmit ?? false,
       autoRetry: settings.autoRetry ?? true,
       provider: activeProvider
     });
-
-    // If first time (no key configured), prompt user immediately
-    const hasKey = !!(settings.geminiKey?.trim() || settings.groqKey?.trim() || settings.openaiKey?.trim());
-    if (!hasKey) {
-      setTimeout(() => {
-        ui.showApiKeyPromptModal((newSettings) => {
-          ui.options = { ...ui.options, ...newSettings };
-        });
-      }, 1200);
-    }
 
     // Polling scan: check every 800ms up to 12 times to catch SPA rendered question & test cases
     let scanCount = 0;

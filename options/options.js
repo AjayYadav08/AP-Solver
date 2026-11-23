@@ -34,7 +34,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (radio) radio.checked = true;
 
   geminiKeyInput.value = settings.geminiKey || '';
-  geminiModelSelect.value = settings.geminiModel || 'gemini-2.5-flash';
+  geminiModelSelect.value = (settings.geminiModel && settings.geminiModel !== 'gemini-2.5-flash') ? settings.geminiModel : 'gemini-3.8-flash';
 
   groqKeyInput.value = settings.groqKey || '';
   groqModelSelect.value = settings.groqModel || 'llama-3.3-70b-versatile';

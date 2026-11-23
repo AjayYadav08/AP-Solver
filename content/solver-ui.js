@@ -6,6 +6,11 @@ window.APSolverUI = class APSolverUI {
     this.host = null;
     this.isMinimized = false;
     this.isRunning = false;
+    this.showSettings = false; // toggle for inline API keys panel
+    this.apiKeys = {
+      geminiKey: '',
+      groqKey: ''
+    };
     this.problemInfo = {
       title: 'Detecting...',
       difficulty: '-',
@@ -32,6 +37,16 @@ window.APSolverUI = class APSolverUI {
     this.host.id = 'ap-solver-host';
     document.documentElement.appendChild(this.host);
 
+    this.render();
+  }
+
+  setApiKeys(keys) {
+    this.apiKeys = { ...this.apiKeys, ...keys };
+    // If no keys are set, open inline settings drawer by default
+    const hasAny = !!(this.apiKeys.geminiKey?.trim() || this.apiKeys.groqKey?.trim());
+    if (!hasAny) {
+      this.showSettings = true;
+    }
     this.render();
   }
 
@@ -110,17 +125,44 @@ window.APSolverUI = class APSolverUI {
       return;
     }
 
+    const testDisplay = this.problemInfo.testCasesCount > 0
+      ? `${this.problemInfo.testCasesCount} detected`
+      : 'Extracted from Requirements';
+
     this.host.innerHTML = `
       <div class="ap-card">
         <!-- Header -->
         <div class="ap-header">
           <div class="ap-title-wrap">
+            <button class="ap-btn-icon ap-btn-settings" title="Change API Keys (Gemini & Groq)">⚙️</button>
             <span class="ap-badge">AP-Solver</span>
-            <span class="ap-title">3-Section Challenge Copilot</span>
+            <span class="ap-title">3-Section Copilot</span>
           </div>
           <div class="ap-actions-top">
             <button class="ap-btn-icon ap-btn-min" title="Minimize">─</button>
           </div>
+        </div>
+
+        <!-- Inline API Keys Panel (Directly on Portal) -->
+        <div class="ap-inline-settings" style="display: ${this.showSettings ? 'flex' : 'none'};">
+          <div class="ap-inline-head">
+            <span>⚙️ Configure API Keys</span>
+            <button class="ap-btn-icon ap-close-settings" title="Close Settings">✕</button>
+          </div>
+          <div class="ap-inline-field">
+            <label>Google Gemini API Key (Recommended):</label>
+            <input type="password" class="ap-input ap-inp-gemini" placeholder="AIzaSy..." value="${this.escapeHtml(this.apiKeys.geminiKey || '')}">
+            <small><a href="https://aistudio.google.com/apikey" target="_blank">Get Free Gemini Key ↗</a></small>
+          </div>
+          <div class="ap-inline-field">
+            <label>Groq Cloud API Key (Fast LLaMA 70B):</label>
+            <input type="password" class="ap-input ap-inp-groq" placeholder="gsk_..." value="${this.escapeHtml(this.apiKeys.groqKey || '')}">
+            <small><a href="https://console.groq.com/keys" target="_blank">Get Free Groq Key ↗</a></small>
+          </div>
+          <button class="ap-btn-primary ap-btn-save-inline-keys" style="padding: 7px 12px; font-size: 12px; margin-top: 4px;">
+            💾 Save Keys
+          </button>
+          <div class="ap-inline-msg" style="display:none;font-size:11px;padding:4px 8px;border-radius:4px;"></div>
         </div>
 
         <!-- Body -->
@@ -145,7 +187,7 @@ window.APSolverUI = class APSolverUI {
             </div>
             <div class="ap-info-row">
               <span class="ap-info-label">Test Cases:</span>
-              <span class="ap-info-val ap-val-tests">${this.problemInfo.testCasesCount > 0 ? `${this.problemInfo.testCasesCount} detected` : 'Detecting...'}</span>
+              <span class="ap-info-val ap-val-tests">${testDisplay}</span>
             </div>
             <div class="ap-info-row">
               <span class="ap-info-label">Active File:</span>
@@ -187,7 +229,7 @@ window.APSolverUI = class APSolverUI {
           <div class="ap-select-row">
             <span>AI Model:</span>
             <select class="ap-select ap-select-provider">
-              <option value="gemini" ${this.options.provider === 'gemini' ? 'selected' : ''}>Gemini 2.5 Flash (Free)</option>
+              <option value="gemini" ${this.options.provider === 'gemini' ? 'selected' : ''}>Google Gemini (3.8 Flash)</option>
               <option value="groq" ${this.options.provider === 'groq' ? 'selected' : ''}>Groq Llama 3.3 70B (Free)</option>
               <option value="openai" ${this.options.provider === 'openai' ? 'selected' : ''}>OpenAI / Custom</option>
             </select>
@@ -216,7 +258,11 @@ window.APSolverUI = class APSolverUI {
     if (diffEl) diffEl.textContent = `${this.problemInfo.difficulty} (${this.problemInfo.points})`;
 
     const testsEl = this.host.querySelector('.ap-val-tests');
-    if (testsEl) testsEl.textContent = this.problemInfo.testCasesCount > 0 ? `${this.problemInfo.testCasesCount} detected` : 'Detecting...';
+    if (testsEl) {
+      testsEl.textContent = this.problemInfo.testCasesCount > 0
+        ? `${this.problemInfo.testCasesCount} detected`
+        : 'Extracted from Requirements';
+    }
 
     const fileEl = this.host.querySelector('.ap-val-file');
     if (fileEl) {
@@ -237,6 +283,62 @@ window.APSolverUI = class APSolverUI {
   bindEvents() {
     const minBtn = this.host.querySelector('.ap-btn-min');
     if (minBtn) minBtn.onclick = () => this.toggleMinimize(true);
+
+    // Settings icon in top left
+    const settingsBtn = this.host.querySelector('.ap-btn-settings');
+    if (settingsBtn) {
+      settingsBtn.onclick = () => {
+        this.showSettings = !this.showSettings;
+        this.render();
+      };
+    }
+
+    // Close settings icon
+    const closeSettingsBtn = this.host.querySelector('.ap-close-settings');
+    if (closeSettingsBtn) {
+      closeSettingsBtn.onclick = () => {
+        this.showSettings = false;
+        this.render();
+      };
+    }
+
+    // Save inline keys
+    const saveInlineBtn = this.host.querySelector('.ap-btn-save-inline-keys');
+    if (saveInlineBtn) {
+      saveInlineBtn.onclick = async () => {
+        const geminiVal = (this.host.querySelector('.ap-inp-gemini')?.value || '').trim();
+        const groqVal = (this.host.querySelector('.ap-inp-groq')?.value || '').trim();
+
+        if (!geminiVal && !groqVal) {
+          const msgEl = this.host.querySelector('.ap-inline-msg');
+          if (msgEl) {
+            msgEl.style.display = 'block';
+            msgEl.style.background = 'rgba(239,68,68,0.2)';
+            msgEl.style.color = '#f87171';
+            msgEl.textContent = 'Please enter at least one API key (Gemini or Groq).';
+          }
+          return;
+        }
+
+        saveInlineBtn.disabled = true;
+        saveInlineBtn.textContent = 'Saving...';
+
+        const updates = {
+          provider: geminiVal ? 'gemini' : 'groq'
+        };
+        if (geminiVal) updates.geminiKey = geminiVal;
+        if (groqVal) updates.groqKey = groqVal;
+
+        await chrome.runtime.sendMessage({ op: 'AP_SAVE_SETTINGS', data: updates });
+
+        this.apiKeys = { ...this.apiKeys, ...updates };
+        this.options.provider = updates.provider;
+        this.showSettings = false;
+
+        this.addLog('✓ API keys saved successfully! Ready to solve.', 'ok');
+        this.render();
+      };
+    }
 
     const primaryBtn = this.host.querySelector('.ap-btn-primary');
     if (primaryBtn) {
@@ -302,84 +404,6 @@ window.APSolverUI = class APSolverUI {
         if (this.callbacks.onOptionsChange) this.callbacks.onOptionsChange(this.options);
       };
     }
-  }
-
-  showApiKeyPromptModal(onSaved) {
-    const existing = document.getElementById('ap-modal-overlay');
-    if (existing) existing.remove();
-
-    const modal = document.createElement('div');
-    modal.id = 'ap-modal-overlay';
-    modal.className = 'ap-modal-overlay';
-    modal.innerHTML = `
-      <div class="ap-modal-content" style="max-width: 480px;">
-        <div class="ap-modal-header">
-          <div style="display:flex;align-items:center;gap:8px;">
-            <span style="color:#38bdf8;font-size:18px;">⚡</span>
-            <span>First-Time Setup: Enter Free API Key</span>
-          </div>
-          <button class="ap-btn-icon ap-modal-close" style="font-size:16px;">✕</button>
-        </div>
-        <div class="ap-modal-body" style="display:flex;flex-direction:column;gap:12px;">
-          <div style="background:rgba(56,189,248,0.1);border:1px solid rgba(56,189,248,0.25);border-radius:8px;padding:10px 12px;font-size:12.5px;color:#cbd5e1;">
-            Bas ek baar apni free API key enter kar do. Iske baad yeh hamesha bina ruke sabhi questions solve karega!
-          </div>
-
-          <div style="display:flex;flex-direction:column;gap:4px;">
-            <label style="font-size:12px;font-weight:600;color:#f8fafc;">Google Gemini API Key (Recommended):</label>
-            <input type="password" id="ap-setup-gemini" placeholder="AIzaSy..." style="background:#020617;border:1px solid rgba(255,255,255,0.15);color:#fff;padding:8px 10px;border-radius:6px;font-size:12.5px;outline:none;">
-            <small style="font-size:11px;color:#64748b;">Get free key in 30 seconds: <a href="https://aistudio.google.com/apikey" target="_blank" style="color:#38bdf8;text-decoration:none;">Google AI Studio ↗</a></small>
-          </div>
-
-          <div style="display:flex;flex-direction:column;gap:4px;">
-            <label style="font-size:12px;font-weight:600;color:#f8fafc;">Groq Cloud API Key (Optional Fallback):</label>
-            <input type="password" id="ap-setup-groq" placeholder="gsk_..." style="background:#020617;border:1px solid rgba(255,255,255,0.15);color:#fff;padding:8px 10px;border-radius:6px;font-size:12.5px;outline:none;">
-            <small style="font-size:11px;color:#64748b;">Ultra-fast 300 tok/sec key: <a href="https://console.groq.com/keys" target="_blank" style="color:#38bdf8;text-decoration:none;">Groq Console ↗</a></small>
-          </div>
-
-          <div id="ap-setup-err" style="display:none;color:#f87171;font-size:11.5px;background:rgba(239,68,68,0.15);padding:6px 10px;border-radius:6px;"></div>
-        </div>
-        <div class="ap-modal-footer">
-          <button class="ap-btn-primary ap-setup-save-btn" style="width:100%;justify-content:center;">
-            🚀 Save & Start Auto-Solving Now
-          </button>
-        </div>
-      </div>
-    `;
-
-    document.body.appendChild(modal);
-
-    modal.querySelector('.ap-modal-close').onclick = () => modal.remove();
-
-    const saveBtn = modal.querySelector('.ap-setup-save-btn');
-    const errBox = modal.querySelector('#ap-setup-err');
-
-    saveBtn.onclick = async () => {
-      const geminiVal = modal.querySelector('#ap-setup-gemini').value.trim();
-      const groqVal = modal.querySelector('#ap-setup-groq').value.trim();
-
-      if (!geminiVal && !groqVal) {
-        errBox.style.display = 'block';
-        errBox.textContent = 'Please enter at least one API key to proceed.';
-        return;
-      }
-
-      saveBtn.disabled = true;
-      saveBtn.textContent = 'Saving key...';
-
-      const updates = {
-        provider: geminiVal ? 'gemini' : 'groq'
-      };
-      if (geminiVal) updates.geminiKey = geminiVal;
-      if (groqVal) updates.groqKey = groqVal;
-
-      await chrome.runtime.sendMessage({ op: 'AP_SAVE_SETTINGS', data: updates });
-
-      this.addLog('✓ API key configured successfully! Permanent setup complete.', 'ok');
-      modal.remove();
-
-      if (onSaved) onSaved(updates);
-    };
   }
 
   showCodeModal(code) {
