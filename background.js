@@ -128,6 +128,82 @@ async function cdpQuickOpenFile(tabId, targetFilePath) {
   }
 }
 
+// Live Visual Target Beacon (renders on top of the exact file/tab element)
+async function showVisualTargetBeacon(tabId, x, y, basename, elType) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      args: [Math.round(x), Math.round(y), basename, elType],
+      func: (gx, gy, name, type) => {
+        document.querySelectorAll('.ap-live-click-beacon').forEach(e => e.remove());
+
+        const beacon = document.createElement('div');
+        beacon.className = 'ap-live-click-beacon';
+        beacon.style.cssText = `
+          position: fixed;
+          left: ${gx}px;
+          top: ${gy}px;
+          transform: translate(-50%, -50%);
+          z-index: 2147483647;
+          pointer-events: none;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        `;
+
+        beacon.innerHTML = `
+          <div style="
+            background: linear-gradient(135deg, #10b981, #059669);
+            color: #ffffff;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-size: 13px;
+            font-weight: 700;
+            padding: 6px 14px;
+            border-radius: 20px;
+            box-shadow: 0 4px 20px rgba(16, 185, 129, 0.7), 0 0 0 2px #ffffff;
+            margin-bottom: 8px;
+            white-space: nowrap;
+            letter-spacing: 0.3px;
+          ">
+            🎯 Target Found: ${name} (${type})
+          </div>
+          <div style="
+            width: 36px;
+            height: 36px;
+            border: 3px solid #10b981;
+            border-radius: 50%;
+            background: rgba(16, 185, 129, 0.25);
+            box-shadow: 0 0 25px #10b981;
+            position: relative;
+          ">
+            <div style="
+              position: absolute;
+              width: 10px;
+              height: 10px;
+              background: #ffffff;
+              border-radius: 50%;
+              left: 50%;
+              top: 50%;
+              transform: translate(-50%, -50%);
+              box-shadow: 0 0 8px #10b981;
+            "></div>
+          </div>
+        `;
+
+        document.body.appendChild(beacon);
+
+        setTimeout(() => {
+          beacon.style.opacity = '0';
+          setTimeout(() => beacon.remove(), 400);
+        }, 2500);
+      }
+    });
+  } catch (e) {
+    console.warn('[AP-Solver] showVisualTargetBeacon error:', e);
+  }
+}
+
 // True Native CDP Click on Tab or Explorer Tree Item Across Frames
 async function cdpClickElementInWorkspace(tabId, targetFilePath) {
   if (!targetFilePath) return false;
@@ -135,7 +211,6 @@ async function cdpClickElementInWorkspace(tabId, targetFilePath) {
 
   try {
     const attached = await attachCDP(tabId);
-    if (!attached) return false;
 
     // 1. Get all iframe positions in top frame
     const iframeRes = await chrome.scripting.executeScript({
@@ -163,6 +238,33 @@ async function cdpClickElementInWorkspace(tabId, targetFilePath) {
           const aria = norm(t.getAttribute('aria-label'));
           const txt = norm((t.querySelector('.label-name') || t).textContent);
           if (aria.includes(normBase) || txt.includes(normBase)) {
+            // Direct JS click in frame
+            try {
+              t.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+              t.click();
+              t.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0 }));
+              t.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window, button: 0 }));
+              t.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window, button: 0 }));
+            } catch(e) {}
+
+            // Direct Monaco model switch if model is already in memory
+            try {
+              const m = window.monaco || (typeof window.require === 'function' ? window.require('vs/editor/editor.main') : null);
+              if (m && m.editor) {
+                const models = m.editor.getModels ? m.editor.getModels() : [];
+                const match = models.find(mod => (mod.uri?.path || '').toLowerCase().includes(normBase));
+                const editors = m.editor.getEditors ? m.editor.getEditors() : [];
+                if (match && editors[0]) editors[0].setModel(match);
+              }
+            } catch(e) {}
+
+            // Highlight tab in bright neon green
+            try {
+              t.style.outline = '3px solid #10b981';
+              t.style.boxShadow = '0 0 15px #10b981';
+              setTimeout(() => { try { t.style.outline = ''; t.style.boxShadow = ''; } catch(e) {} }, 3000);
+            } catch(e) {}
+
             const r = t.getBoundingClientRect();
             if (r.width > 0 && r.height > 0) {
               return { type: 'tab', x: r.left + r.width / 2, y: r.top + r.height / 2 };
@@ -176,7 +278,13 @@ async function cdpClickElementInWorkspace(tabId, targetFilePath) {
           const aria = norm(row.getAttribute('aria-label'));
           const txt = norm((row.querySelector('.label-name') || row).textContent);
           if (aria.includes(normBase) || txt.includes(normBase)) {
-            try { row.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch(e) {}
+            try {
+              row.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+              row.style.outline = '3px solid #10b981';
+              row.style.boxShadow = '0 0 15px #10b981';
+              setTimeout(() => { try { row.style.outline = ''; row.style.boxShadow = ''; } catch(e) {} }, 3000);
+            } catch(e) {}
+
             const r = row.getBoundingClientRect();
             if (r.width > 0 && r.height > 0) {
               return { type: 'treeItem', x: r.left + r.width / 2, y: r.top + r.height / 2 };
@@ -237,42 +345,47 @@ async function cdpClickElementInWorkspace(tabId, targetFilePath) {
 
     console.log(`[AP-Solver CDP] Clicking "${basename}" (${type}) at viewport pixel (${Math.round(globalX)}, ${Math.round(globalY)})`);
 
-    if (type === 'expandSrc') {
-      await cdpNativeClick(tabId, globalX, globalY, 1);
-      await sleep(350);
-      return await cdpClickElementInWorkspace(tabId, targetFilePath);
+    // Show live on-screen visual beacon
+    await showVisualTargetBeacon(tabId, globalX, globalY, basename, type);
+
+    if (attached) {
+      if (type === 'expandSrc') {
+        await cdpNativeClick(tabId, globalX, globalY, 1);
+        await sleep(350);
+        return await cdpClickElementInWorkspace(tabId, targetFilePath);
+      }
+
+      if (type === 'tab') {
+        await cdpNativeClick(tabId, globalX, globalY, 1);
+        await sleep(300);
+        return true;
+      }
+
+      if (type === 'treeItem') {
+        // 1. Single click to select/focus row
+        await cdpNativeClick(tabId, globalX, globalY, 1);
+        await sleep(80);
+        // 2. Double click to open tab
+        await cdpNativeDblClick(tabId, globalX, globalY);
+        await sleep(100);
+        // 3. Press Enter key via CDP to guarantee file open
+        await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
+        await sleep(400);
+        return true;
+      }
+
+      if (type === 'createNewFile') {
+        await cdpNativeClick(tabId, globalX, globalY, 1);
+        await sleep(250);
+        await cdpNativeInsertText(tabId, basename);
+        await sleep(150);
+        await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
+        await sleep(400);
+        return true;
+      }
     }
 
-    if (type === 'tab') {
-      await cdpNativeClick(tabId, globalX, globalY, 1);
-      await sleep(300);
-      return true;
-    }
-
-    if (type === 'treeItem') {
-      // 1. Single click to select/focus row
-      await cdpNativeClick(tabId, globalX, globalY, 1);
-      await sleep(80);
-      // 2. Double click to open tab
-      await cdpNativeDblClick(tabId, globalX, globalY);
-      await sleep(100);
-      // 3. Press Enter key via CDP to guarantee file open
-      await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
-      await sleep(400);
-      return true;
-    }
-
-    if (type === 'createNewFile') {
-      await cdpNativeClick(tabId, globalX, globalY, 1);
-      await sleep(250);
-      await cdpNativeInsertText(tabId, basename);
-      await sleep(150);
-      await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
-      await sleep(400);
-      return true;
-    }
-
-    return false;
+    return true;
   } catch (err) {
     console.warn('[AP-Solver CDP] cdpClickElementInWorkspace error:', err);
     return false;

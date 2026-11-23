@@ -887,15 +887,16 @@
     let allSucceeded = true;
 
     for (const f of filesToWrite) {
-      ui.addLog(`Injecting clean code into "${f.filePath}"...`);
+      ui.setStatus(`Targeting: ${f.filePath}`, 'Locating file in workspace tabs and explorer...', 'running', true);
+      ui.addLog(`🎯 [Target Navigator] Switching to "${f.filePath}"...`);
       const res = await writeCodeToEditor(f.code, f.filePath);
       if (res && res.ok) {
         ui.setFileStatus(f.filePath, 'injected');
-        ui.addLog(`✓ Wiped & saved "${f.filePath}" (${f.code.split('\n').length} lines, ${res.method || 'saved'})!`, 'ok');
+        ui.addLog(`✓ Saved & verified "${f.filePath}" (${f.code.split('\n').length} lines, ${res.method || 'saved'})!`, 'ok');
       } else {
         allSucceeded = false;
         ui.setFileStatus(f.filePath, 'error');
-        ui.addLog(`⚠️ Automated injection into "${f.filePath}" failed. Code copied to clipboard.`, 'warn');
+        ui.addLog(`⚠️ Automated navigation into "${f.filePath}" failed. Code copied to clipboard.`, 'warn');
       }
       await sleep(300);
     }
