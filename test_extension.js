@@ -2,6 +2,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { execSync } from 'child_process';
 import { extractCodeBlock, buildPrompt, formatCodeIndentation, parseMultiFileSolution } from './utils/llm.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -49,8 +50,15 @@ for (const f of files) {
   if (!fs.existsSync(p)) throw new Error(`Missing file: ${f}`);
   const stats = fs.statSync(p);
   if (stats.size === 0) throw new Error(`File is empty: ${f}`);
+  if (f.endsWith('.js')) {
+    try {
+      execSync(`node --check "${p}"`, { stdio: 'pipe' });
+    } catch (e) {
+      throw new Error(`Syntax error in ${f}: ${e.message}`);
+    }
+  }
 }
-console.log(`   ✓ All ${files.length} files exist and are non-empty`);
+console.log(`   ✓ All ${files.length} files exist, are non-empty, and have valid JS syntax`);
 
 // 3. Test code extraction
 console.log('3. Testing code extraction from LLM response...');

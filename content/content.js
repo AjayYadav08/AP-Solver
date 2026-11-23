@@ -735,10 +735,6 @@
       passedTests: fallbackResults?.passedTests || []
     };
   }
-    }
-
-    return { ok: false, error: 'Submission evaluation timed out after 45s.' };
-  }
 
   // --- High-Level User Actions ---
   async function handleReadContext() {
