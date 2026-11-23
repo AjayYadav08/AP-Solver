@@ -69,12 +69,27 @@ STRICT GUIDELINES:
    - Use strict, standard 2-space indentation for every nested block, function, if-else, and object.
    - Do NOT use tab characters.
    - Keep code clean, elegant, and readable.
-6. OUTPUT FORMAT:
-   - Output ONLY the clean replacement code enclosed in a single markdown code block:
+6. MULTI-FILE WORKSPACE & TARGET FILE AWARENESS:
+   - The project workspace may contain multiple files and folders (e.g. 'src/orderManager.js', 'src/logReader.js', 'src/index.js', 'customers.json', 'orders.json', etc.).
+   - Carefully inspect the problem requirements to determine which file(s) must be created or modified.
+   - DO NOT assume everything goes into index.js! If the challenge specifies 'orderManager.js' or another file, generate the solution for that exact file.
+   - If multiple files are required, output each file clearly with a file path comment header:
+     \`\`\`javascript
+     // FILE: src/orderManager.js
+     ...code for orderManager.js...
+     \`\`\`
+     \`\`\`javascript
+     // FILE: src/logReader.js
+     ...code for logReader.js...
+     \`\`\`
+   - If only one file is modified, you can still include \`// FILE: <filepath>\` or write the complete code for the target active file.
+   - Always ensure required imports, exports, and module connections are complete and bug-free.
+7. OUTPUT FORMAT:
+   - Output ONLY the clean replacement code enclosed in markdown code block(s):
    \`\`\`javascript
    // complete code here
    \`\`\`
-   - Absolutely NO explanations, markdown or conversational text outside the code block.`;
+   - Absolutely NO explanations, markdown or conversational text outside the code block(s).`;
 
 export function formatCodeIndentation(code) {
   if (!code) return '';
@@ -128,6 +143,38 @@ export function formatCodeIndentation(code) {
   return result.join('\n');
 }
 
+export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.js') {
+  if (!rawText) return [];
+  const blocks = [...rawText.matchAll(/```(?:javascript|js|typescript|ts|node|json)?\s*\n([\s\S]*?)```/gi)].map(m => m[1].trim());
+  const content = blocks.length > 0 ? blocks.join('\n\n') : rawText.trim();
+
+  // Pattern matching file headers: // FILE: src/orderManager.js or /* FILE: src/orderManager.js */
+  const fileRegex = /(?:^|\n)\s*(?:\/\/\s*FILE:?\s*|\/\*\s*FILE:?\s*)([^\s\*\/]+(?:\/[^\s\*\/]+)*)(?:\s*\*\/)?\s*\n/gi;
+  const matches = [...content.matchAll(fileRegex)];
+
+  if (matches.length === 0) {
+    const singleCode = extractCodeBlock(rawText);
+    return [{
+      filePath: defaultActiveFile || 'src/index.js',
+      code: formatCodeIndentation(singleCode)
+    }];
+  }
+
+  const files = [];
+  for (let i = 0; i < matches.length; i++) {
+    const filePath = matches[i][1].trim();
+    const startIndex = matches[i].index + matches[i][0].length;
+    const endIndex = (i + 1 < matches.length) ? matches[i + 1].index : content.length;
+    const rawCode = content.substring(startIndex, endIndex).trim();
+    files.push({
+      filePath,
+      code: formatCodeIndentation(rawCode)
+    });
+  }
+
+  return files;
+}
+
 export function extractCodeBlock(rawText) {
   if (!rawText) return '';
   let extracted = '';
@@ -144,13 +191,41 @@ export function extractCodeBlock(rawText) {
     }
   }
 
+  // Strip leading // FILE: ... header if present in extracted block
+  extracted = extracted.replace(/^(?:\/\/\s*FILE:?.*|\/\*\s*FILE:?.*?\*\/)\s*\n?/i, '').trim();
+
   return formatCodeIndentation(extracted);
 }
 
-export function buildPrompt({ questionTitle, questionDetails, testCases, currentCode, language = 'javascript', feedback = null }) {
+export function buildPrompt({
+  questionTitle,
+  questionDetails,
+  testCases,
+  currentCode,
+  activeFile = 'src/index.js',
+  workspaceFiles = [],
+  referenceFiles = {},
+  language = 'javascript',
+  feedback = null
+}) {
   const parts = [];
   parts.push(`# PROBLEM: ${questionTitle || 'Coding Challenge'}`);
   
+  if (activeFile) {
+    parts.push(`## Target Active File in Editor: \`${activeFile}\``);
+  }
+
+  if (workspaceFiles && workspaceFiles.length > 0) {
+    parts.push(`## Project Workspace Files:\n${workspaceFiles.map(f => `- ${f}`).join('\n')}`);
+  }
+
+  if (referenceFiles && Object.keys(referenceFiles).length > 0) {
+    const refs = Object.entries(referenceFiles).map(([fname, content]) => {
+      return `### File: ${fname}\n\`\`\`json\n${content}\n\`\`\``;
+    }).join('\n\n');
+    parts.push(`## Reference Project Files & Schemas:\n${refs}`);
+  }
+
   if (questionDetails) {
     parts.push(`## Problem Description & Requirements:\n${questionDetails}`);
   }
@@ -160,18 +235,29 @@ export function buildPrompt({ questionTitle, questionDetails, testCases, current
   }
 
   if (currentCode) {
-    parts.push(`## Current Starter Code in Editor (${language}):\n\`\`\`${language}\n${currentCode}\n\`\`\``);
+    parts.push(`## Current Starter Code in \`${activeFile}\` (${language}):\n\`\`\`${language}\n${currentCode}\n\`\`\``);
   }
 
   if (feedback) {
     parts.push(`## CRITICAL: PREVIOUS SUBMISSION FAILED
 Earlier attempt resulted in test failures. Fix these issues immediately:
 ${feedback}
-Carefully re-read requirements and ensure all edge cases and status codes are handled.`);
+Carefully re-read requirements and ensure all edge cases, files, and status codes are handled.`);
   }
 
-  parts.push(`## Instruction:
-Implement the complete solution. Return ONLY the full code inside a \`\`\`${language} code block.`);
+  parts.push(`## Instructions:
+1. Implement the complete solution for the target file(s).
+2. If only one file is modified, output the code inside a \`\`\`${language} block.
+3. If multiple files must be created or edited, prefix each with a comment header like:
+   \`\`\`${language}
+   // FILE: ${activeFile || 'src/index.js'}
+   ...code...
+   \`\`\`
+   \`\`\`${language}
+   // FILE: src/anotherFile.js
+   ...code...
+   \`\`\`
+4. Return ONLY the code blocks.`);
 
   return parts.join('\n\n');
 }
@@ -281,9 +367,11 @@ export async function callGemini(prompt, settings) {
           throw new Error('Gemini returned an empty response.');
         }
 
+        const files = parseMultiFileSolution(text, settings.activeFile);
         return {
           raw: text,
-          code: extractCodeBlock(text),
+          code: files.length > 0 ? files[0].code : extractCodeBlock(text),
+          files,
           model
         };
       } catch (err) {
@@ -375,9 +463,11 @@ export async function callGroq(prompt, settings) {
         throw new Error('Groq returned an empty response.');
       }
 
+      const files = parseMultiFileSolution(text, settings.activeFile);
       return {
         raw: text,
-        code: extractCodeBlock(text),
+        code: files.length > 0 ? files[0].code : extractCodeBlock(text),
+        files,
         model
       };
     } catch (err) {
@@ -439,9 +529,11 @@ export async function callOpenAI(prompt, settings) {
     throw new Error('OpenAI returned an empty response.');
   }
 
+  const files = parseMultiFileSolution(text, settings.activeFile);
   return {
     raw: text,
-    code: extractCodeBlock(text),
+    code: files.length > 0 ? files[0].code : extractCodeBlock(text),
+    files,
     model
   };
 }
@@ -459,6 +551,7 @@ export async function generateSolution(promptData, settingsOverride = null) {
       }
     }
   }
+  settings.activeFile = promptData.activeFile || 'src/index.js';
 
   const prompt = buildPrompt(promptData);
 

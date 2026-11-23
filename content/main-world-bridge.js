@@ -1,9 +1,9 @@
-// content/main-world-bridge.js - Injected into MAIN world to access window.monaco directly
+// content/main-world-bridge.js - Injected into MAIN world to access window.monaco directly & navigate multi-file workspace
 (() => {
   if (window.__apBridgeLoaded) return;
   window.__apBridgeLoaded = true;
 
-  console.log('[AP-Solver Bridge] Main world bridge initialized.');
+  console.log('[AP-Solver Bridge] Main world multi-file bridge initialized.');
 
   function getMonacoInstance() {
     if (window.monaco && window.monaco.editor) {
@@ -40,7 +40,233 @@
     return active || editors[0];
   }
 
-  window.addEventListener('message', (event) => {
+  // Helper: Trigger Ctrl+S / Cmd+S save
+  function triggerSave() {
+    const isMac = /mac/i.test(navigator.platform);
+    const saveEvt = new KeyboardEvent('keydown', {
+      key: 's',
+      code: 'KeyS',
+      keyCode: 83,
+      which: 83,
+      ctrlKey: !isMac,
+      metaKey: isMac,
+      bubbles: true,
+      cancelable: true
+    });
+    window.dispatchEvent(saveEvt);
+    document.dispatchEvent(saveEvt);
+    const ta = document.querySelector('.monaco-editor textarea.inputarea');
+    if (ta) ta.dispatchEvent(saveEvt);
+  }
+
+  // Helper: Extract active filename from breadcrumbs or active tab
+  function detectActiveFileName(monaco) {
+    // 1. Check breadcrumbs (e.g. "src > JS orderManager.js")
+    const breadcrumbs = [...document.querySelectorAll('.breadcrumbs-widget .monaco-breadcrumb-item')].map(b => b.textContent.trim()).filter(Boolean);
+    if (breadcrumbs.length > 0) {
+      const last = breadcrumbs[breadcrumbs.length - 1].replace(/^[A-Z]+\s+/, '');
+      if (last.includes('.')) {
+        if (breadcrumbs.length >= 2 && breadcrumbs[0] === 'src') {
+          return 'src/' + last;
+        }
+        return last;
+      }
+    }
+
+    // 2. Check active tab in editor tabs bar
+    const tabs = [...document.querySelectorAll('.tab, [role="tab"]')];
+    const activeTab = tabs.find(t => t.classList.contains('active') || t.getAttribute('aria-selected') === 'true');
+    if (activeTab) {
+      const label = (activeTab.querySelector('.label-name') || activeTab).textContent.trim();
+      if (label && !/welcome/i.test(label)) {
+        return label;
+      }
+    }
+
+    // 3. Check active Monaco editor model URI
+    if (monaco && monaco.editor) {
+      const ed = getActiveEditor(monaco);
+      const m = ed?.getModel();
+      if (m && m.uri) {
+        const p = m.uri.path || m.uri.toString();
+        const parts = p.split('/');
+        const fname = parts[parts.length - 1];
+        if (fname && !/welcome/i.test(fname)) {
+          return p.includes('src/') ? 'src/' + fname : fname;
+        }
+      }
+    }
+
+    // 4. Fallback: check open non-welcome tab
+    const openTab = tabs.find(t => {
+      const txt = (t.querySelector('.label-name') || t).textContent.trim();
+      return txt.includes('.') && !/welcome/i.test(txt);
+    });
+    if (openTab) {
+      return (openTab.querySelector('.label-name') || openTab).textContent.trim();
+    }
+
+    return 'src/index.js';
+  }
+
+  // Helper: Scan all files visible in Explorer tree & Monaco models
+  function scanAllWorkspaceFiles(monaco) {
+    const files = new Set();
+
+    // From Monaco loaded models
+    if (monaco && monaco.editor) {
+      const models = monaco.editor.getModels ? monaco.editor.getModels() : [];
+      for (const m of models) {
+        const p = m.uri?.path || m.uri?.toString() || '';
+        const fname = p.split('/').pop();
+        if (fname && fname.includes('.') && !/welcome|settings|workbench/i.test(fname)) {
+          files.add(p.includes('src/') ? 'src/' + fname : fname);
+        }
+      }
+    }
+
+    // From Explorer tree DOM
+    const treeRows = [...document.querySelectorAll('.monaco-list-row, [role="treeitem"]')];
+    for (const row of treeRows) {
+      const labelEl = row.querySelector('.label-name') || row;
+      const text = labelEl.textContent.trim();
+      if (text && text.includes('.') && !/^\s*$/.test(text)) {
+        files.add(text);
+      }
+    }
+
+    // From Tabs
+    const tabs = [...document.querySelectorAll('.tab, [role="tab"]')];
+    for (const tab of tabs) {
+      const text = (tab.querySelector('.label-name') || tab).textContent.trim();
+      if (text && text.includes('.') && !/welcome/i.test(text)) {
+        files.add(text);
+      }
+    }
+
+    return [...files];
+  }
+
+  // Helper: Navigate to or open a target file in VS Code
+  async function navigateToTargetFile(targetFilePath, monaco) {
+    const basename = targetFilePath.split('/').pop();
+    const isSrc = targetFilePath.includes('src/');
+
+    // 1. Check if already open and active
+    const curActive = detectActiveFileName(monaco);
+    if (curActive === targetFilePath || curActive.endsWith('/' + basename) || curActive === basename) {
+      return true;
+    }
+
+    // 2. Check if open in tabs
+    const tabs = [...document.querySelectorAll('.tab, [role="tab"]')];
+    const matchingTab = tabs.find(t => {
+      const txt = (t.querySelector('.label-name') || t).textContent.trim();
+      return txt === basename || txt === targetFilePath;
+    });
+    if (matchingTab) {
+      matchingTab.click();
+      await new Promise(r => setTimeout(r, 100));
+      return true;
+    }
+
+    // 3. Monaco Model Switch (Instant API switch)
+    if (monaco && monaco.editor) {
+      const models = monaco.editor.getModels ? monaco.editor.getModels() : [];
+      const matchModel = models.find(m => {
+        const p = m.uri?.path || m.uri?.toString() || '';
+        return p.endsWith('/' + basename) || p.endsWith(targetFilePath);
+      });
+      const editor = getActiveEditor(monaco);
+      if (matchModel && editor) {
+        editor.setModel(matchModel);
+        await new Promise(r => setTimeout(r, 100));
+        return true;
+      }
+    }
+
+    // 4. Explorer Tree Navigation
+    const treeRows = [...document.querySelectorAll('.monaco-list-row, [role="treeitem"]')];
+
+    // If target is in src/, ensure src folder is expanded
+    if (isSrc) {
+      const srcFolder = treeRows.find(r => {
+        const text = (r.querySelector('.label-name') || r).textContent.trim();
+        return /^src$/i.test(text);
+      });
+      if (srcFolder) {
+        const isCollapsed = srcFolder.getAttribute('aria-expanded') === 'false' ||
+          !!srcFolder.querySelector('.collapsed, .codicon-chevron-right');
+        if (isCollapsed) {
+          srcFolder.click();
+          const twistie = srcFolder.querySelector('.monaco-tl-twistie, .codicon');
+          if (twistie) twistie.click();
+          await new Promise(r => setTimeout(r, 200));
+        }
+      }
+    }
+
+    // Re-query rows after potential folder expansion
+    const updatedRows = [...document.querySelectorAll('.monaco-list-row, [role="treeitem"], .label-name, .monaco-icon-label')];
+    const fileRow = updatedRows.find(r => {
+      const text = (r.querySelector('.label-name') || r).textContent.trim();
+      return text === basename || text === targetFilePath;
+    });
+
+    if (fileRow) {
+      fileRow.click();
+      fileRow.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+      await new Promise(r => setTimeout(r, 200));
+      return true;
+    }
+
+    return false;
+  }
+
+  // Helper: Create a new file in workspace
+  async function createNewFileInWorkspace(filePath, monaco, initialCode = '') {
+    const basename = filePath.split('/').pop();
+    const isSrc = filePath.includes('src/');
+
+    // 1. If folder row exists (e.g. src), click it to select target directory
+    if (isSrc) {
+      const treeRows = [...document.querySelectorAll('.monaco-list-row, [role="treeitem"]')];
+      const srcFolder = treeRows.find(r => /^src$/i.test((r.querySelector('.label-name') || r).textContent.trim()));
+      if (srcFolder) srcFolder.click();
+    }
+
+    // 2. Click "New File" icon on Explorer title bar
+    const newFileBtn = document.querySelector('.codicon-new-file, [aria-label*="New File" i], [title*="New File" i]');
+    if (newFileBtn) {
+      newFileBtn.click();
+      await new Promise(r => setTimeout(r, 200));
+
+      const input = document.querySelector('.monaco-inputbox input, .inputArea input, input.monaco-inputbox');
+      if (input) {
+        input.value = basename;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+        await new Promise(r => setTimeout(r, 300));
+        return true;
+      }
+    }
+
+    // 3. Monaco API Model Creation
+    if (monaco && monaco.editor && monaco.Uri) {
+      const uri = monaco.Uri.file('/workspace/' + (filePath.startsWith('/') ? filePath.slice(1) : filePath));
+      const model = monaco.editor.createModel(initialCode, 'javascript', uri);
+      const editor = getActiveEditor(monaco);
+      if (editor && model) {
+        editor.setModel(model);
+        triggerSave();
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  window.addEventListener('message', async (event) => {
     if (!event.data || typeof event.data !== 'object') return;
     const { action, id, payload } = event.data;
 
@@ -51,31 +277,49 @@
       window.postMessage({ action: 'AP_PONG', id, hasMonaco, editorCount }, '*');
     }
 
-    if (action === 'AP_READ_CODE') {
+    if (action === 'AP_READ_CODE' || action === 'AP_SCAN_WORKSPACE') {
       try {
         const monaco = getMonacoInstance();
-        if (!monaco) {
-          // Check DOM fallback
+        const activeFile = detectActiveFileName(monaco);
+        const allFiles = scanAllWorkspaceFiles(monaco);
+
+        let code = '';
+        let language = 'javascript';
+        let uri = '';
+
+        if (monaco) {
+          const editor = getActiveEditor(monaco);
+          if (editor) {
+            code = editor.getValue();
+            const model = editor.getModel();
+            language = model?.getLanguageId ? model.getLanguageId() : 'javascript';
+            uri = model?.uri ? model.uri.toString() : '';
+          }
+        }
+
+        if (!code) {
           const monacoDom = document.querySelector('.monaco-editor');
           if (monacoDom) {
             const lines = [...monacoDom.querySelectorAll('.view-lines .view-line')].map(l => l.textContent).join('\n');
-            window.postMessage({ action: 'AP_READ_CODE_RESULT', id, ok: true, code: lines, fromDom: true }, '*');
-            return;
+            code = lines;
           }
-          window.postMessage({ action: 'AP_READ_CODE_RESULT', id, ok: false, error: 'Monaco not available in main world' }, '*');
-          return;
         }
 
-        const editor = getActiveEditor(monaco);
-        if (!editor) {
-          window.postMessage({ action: 'AP_READ_CODE_RESULT', id, ok: false, error: 'No active Monaco editor instance found' }, '*');
-          return;
+        // Also extract snippets of JSON or helper files if loaded
+        const referenceFiles = {};
+        if (monaco && monaco.editor) {
+          const models = monaco.editor.getModels ? monaco.editor.getModels() : [];
+          for (const m of models) {
+            const p = m.uri?.path || '';
+            const fname = p.split('/').pop();
+            if (fname && (fname.endsWith('.json') || fname.endsWith('.txt')) && !fname.includes('package-lock')) {
+              const val = m.getValue();
+              if (val && val.length < 5000) {
+                referenceFiles[fname] = val;
+              }
+            }
+          }
         }
-
-        const model = editor.getModel();
-        const code = editor.getValue();
-        const language = model && model.getLanguageId ? model.getLanguageId() : 'javascript';
-        const uri = model && model.uri ? model.uri.toString() : '';
 
         window.postMessage({
           action: 'AP_READ_CODE_RESULT',
@@ -83,58 +327,87 @@
           ok: true,
           code,
           language,
-          uri
+          uri,
+          activeFile,
+          allFiles,
+          referenceFiles
         }, '*');
       } catch (err) {
         window.postMessage({ action: 'AP_READ_CODE_RESULT', id, ok: false, error: err.message }, '*');
       }
     }
 
+    if (action === 'AP_NAVIGATE_FILE') {
+      const targetFilePath = payload?.filePath || '';
+      try {
+        const monaco = getMonacoInstance();
+        const ok = await navigateToTargetFile(targetFilePath, monaco);
+        window.postMessage({ action: 'AP_NAVIGATE_FILE_RESULT', id, ok, filePath: targetFilePath }, '*');
+      } catch (err) {
+        window.postMessage({ action: 'AP_NAVIGATE_FILE_RESULT', id, ok: false, error: err.message }, '*');
+      }
+    }
+
+    if (action === 'AP_CREATE_FILE') {
+      const filePath = payload?.filePath || '';
+      const initialCode = payload?.initialCode || '';
+      try {
+        const monaco = getMonacoInstance();
+        const ok = await createNewFileInWorkspace(filePath, monaco, initialCode);
+        window.postMessage({ action: 'AP_CREATE_FILE_RESULT', id, ok, filePath }, '*');
+      } catch (err) {
+        window.postMessage({ action: 'AP_CREATE_FILE_RESULT', id, ok: false, error: err.message }, '*');
+      }
+    }
+
     if (action === 'AP_WRITE_CODE') {
       const newCode = payload?.code || '';
+      const targetFilePath = payload?.filePath || '';
+
       try {
-        function triggerSave() {
-          const isMac = /mac/i.test(navigator.platform);
-          const saveEvt = new KeyboardEvent('keydown', {
-            key: 's',
-            code: 'KeyS',
-            keyCode: 83,
-            which: 83,
-            ctrlKey: !isMac,
-            metaKey: isMac,
-            bubbles: true,
-            cancelable: true
-          });
-          window.dispatchEvent(saveEvt);
-          document.dispatchEvent(saveEvt);
-          const ta = document.querySelector('.monaco-editor textarea.inputarea');
-          if (ta) ta.dispatchEvent(saveEvt);
-        }
-
         const monaco = getMonacoInstance();
+
+        // 1. If target file specified, navigate to it first
+        if (targetFilePath) {
+          const navSuccess = await navigateToTargetFile(targetFilePath, monaco);
+          if (!navSuccess) {
+            // File might not exist yet -> create it!
+            await createNewFileInWorkspace(targetFilePath, monaco, newCode);
+            await new Promise(r => setTimeout(r, 150));
+          }
+        }
+
+        // 2. Set value via Monaco API
         if (monaco && monaco.editor) {
-          // Check all models for index.js
           const models = monaco.editor.getModels ? monaco.editor.getModels() : [];
-          const indexModel = models.find((m) => /index\.(js|ts)/i.test(m.uri?.path || m.uri?.toString() || ''));
-          if (indexModel) {
-            indexModel.setValue(newCode);
-            triggerSave();
-            window.postMessage({ action: 'AP_WRITE_CODE_RESULT', id, ok: true, method: 'model.setValue' }, '*');
-            return;
+          let targetModel = null;
+
+          if (targetFilePath) {
+            const basename = targetFilePath.split('/').pop();
+            targetModel = models.find(m => {
+              const p = m.uri?.path || m.uri?.toString() || '';
+              return p.endsWith('/' + basename) || p.endsWith(targetFilePath);
+            });
           }
 
-          const editor = getActiveEditor(monaco);
-          if (editor && editor.getModel()) {
-            const model = editor.getModel();
-            editor.focus();
-            model.setValue(newCode);
+          if (!targetModel) {
+            const editor = getActiveEditor(monaco);
+            targetModel = editor?.getModel();
+          }
+
+          if (targetModel && typeof targetModel.setValue === 'function') {
+            targetModel.setValue(newCode);
+            const editor = getActiveEditor(monaco);
+            if (editor && editor.getModel() !== targetModel) {
+              editor.setModel(targetModel);
+            }
             triggerSave();
-            window.postMessage({ action: 'AP_WRITE_CODE_RESULT', id, ok: true, method: 'activeEditor.setValue' }, '*');
+            window.postMessage({ action: 'AP_WRITE_CODE_RESULT', id, ok: true, method: 'model.setValue', filePath: targetFilePath }, '*');
             return;
           }
         }
 
-        // DOM Fallback: Multi-tier Select All, Wipe and Paste
+        // 3. DOM Fallback: Multi-tier Select All, Wipe and Paste
         const editorDom = document.querySelector('.monaco-editor');
         const textarea = editorDom?.querySelector('textarea.inputarea') || document.querySelector('textarea.inputarea');
         if (textarea) {
@@ -142,7 +415,7 @@
 
           const isMac = /mac/i.test(navigator.platform);
 
-          // 1. Cursor to top: Cmd+Up / Ctrl+Home
+          // 1. Move cursor to start of file: Cmd+Up / Ctrl+Home
           const topEvt = new KeyboardEvent('keydown', {
             key: isMac ? 'ArrowUp' : 'Home',
             code: isMac ? 'ArrowUp' : 'Home',
@@ -194,7 +467,7 @@
           textarea.dispatchEvent(ctrlSelectAll);
           document.execCommand('selectAll', false, null);
 
-          // 4. Primary: Block Paste to avoid newline auto-indent staircase drift
+          // 4. Primary: Block Paste
           const dt = new DataTransfer();
           dt.setData('text/plain', newCode);
 
@@ -232,7 +505,7 @@
           }
 
           triggerSave();
-          window.postMessage({ action: 'AP_WRITE_CODE_RESULT', id, ok: true, method: 'dom.wipeAndPaste' }, '*');
+          window.postMessage({ action: 'AP_WRITE_CODE_RESULT', id, ok: true, method: 'dom.wipeAndPaste', filePath: targetFilePath }, '*');
           return;
         }
 

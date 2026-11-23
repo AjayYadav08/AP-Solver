@@ -52,18 +52,30 @@
     return !!document.querySelector('.monaco-editor, textarea.inputarea, .view-lines');
   }
 
-  // Try to open index.js if VS Code Web is showing the Welcome tab
-  function tryOpenTargetFileInExplorer() {
+  // Try to open a target file if VS Code Web is showing the Welcome tab or wrong file
+  function tryOpenTargetFileInExplorer(targetFilePath = null) {
     try {
       const items = [...document.querySelectorAll('.monaco-list-row, [role="treeitem"], .label-name, .monaco-icon-label')];
       // Expand 'src' folder if present
       const srcFolder = items.find((el) => el.textContent.trim() === 'src');
-      if (srcFolder) srcFolder.click();
+      if (srcFolder) {
+        const isCollapsed = srcFolder.getAttribute('aria-expanded') === 'false';
+        if (isCollapsed) srcFolder.click();
+      }
 
-      // Click 'index.js'
-      const targetFile = items.find((el) => /^(index|app|server)\.(js|ts)$/i.test(el.textContent.trim()));
-      if (targetFile) {
-        targetFile.click();
+      if (targetFilePath) {
+        const basename = targetFilePath.split('/').pop();
+        const target = items.find((el) => el.textContent.trim() === basename || el.textContent.trim() === targetFilePath);
+        if (target) {
+          target.click();
+          return true;
+        }
+      }
+
+      // Default: Find first non-welcome js file
+      const anyFile = items.find((el) => /\.(js|ts)$/i.test(el.textContent.trim()));
+      if (anyFile) {
+        anyFile.click();
         return true;
       }
     } catch (e) {
@@ -103,6 +115,9 @@
             code: bridgeResp.code,
             language: bridgeResp.language || 'javascript',
             uri: bridgeResp.uri || '',
+            activeFile: bridgeResp.activeFile || 'src/index.js',
+            allFiles: bridgeResp.allFiles || [],
+            referenceFiles: bridgeResp.referenceFiles || {},
             frameUrl: location.href,
             method: 'bridge'
           });
@@ -117,6 +132,7 @@
               ok: true,
               code: domCode,
               language: 'javascript',
+              activeFile: 'src/index.js',
               frameUrl: location.href,
               method: 'dom'
             });
@@ -132,12 +148,13 @@
     if (msg.op === 'AP_SET_EDITOR_CODE') {
       (async () => {
         const code = msg.code || '';
-        tryOpenTargetFileInExplorer();
+        const filePath = msg.filePath || null;
+        tryOpenTargetFileInExplorer(filePath);
 
         // Try bridge first
-        const bridgeResp = await askBridge('AP_WRITE_CODE', { code });
+        const bridgeResp = await askBridge('AP_WRITE_CODE', { code, filePath });
         if (bridgeResp.ok) {
-          sendResponse({ ok: true, verified: true, method: bridgeResp.method || 'bridge' });
+          sendResponse({ ok: true, verified: true, method: bridgeResp.method || 'bridge', filePath });
           return;
         }
 

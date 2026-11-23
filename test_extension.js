@@ -2,7 +2,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { extractCodeBlock, buildPrompt, formatCodeIndentation } from './utils/llm.js';
+import { extractCodeBlock, buildPrompt, formatCodeIndentation, parseMultiFileSolution } from './utils/llm.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -342,5 +342,66 @@ if (!updatedContentJs.includes('consecutivePassedChecks') ||
   throw new Error('Sub-second responsive evaluation checks missing from content.js');
 }
 console.log('   ✓ Responsive 300ms polling and instant completion exits verified');
+
+// 14. Test Multi-File Workspace Navigation, File Targeting & Multi-File Solution Parser
+console.log('14. Testing Multi-File Workspace Awareness & Multi-Block Solution Parser...');
+const sampleMultiLLMResponse = `
+Here is the solution modifying multiple files for the project:
+
+\`\`\`javascript
+// FILE: src/orderManager.js
+const fs = require('fs');
+const path = require('path');
+
+function processOrders(orders) {
+  return orders.filter(o => o.status === 'valid');
+}
+
+module.exports = { processOrders };
+\`\`\`
+
+\`\`\`javascript
+// FILE: src/logReader.js
+const fs = require('fs');
+
+function readLogs() {
+  return ['log1', 'log2'];
+}
+
+module.exports = { readLogs };
+\`\`\`
+`;
+
+const parsedMulti = parseMultiFileSolution(sampleMultiLLMResponse, 'src/orderManager.js');
+if (parsedMulti.length !== 2) {
+  throw new Error(`Expected 2 files in parsedMulti, got ${parsedMulti.length}`);
+}
+if (parsedMulti[0].filePath !== 'src/orderManager.js' || !parsedMulti[0].code.includes('processOrders')) {
+  throw new Error('Multi-file parsing failed on file 1: ' + JSON.stringify(parsedMulti[0]));
+}
+if (parsedMulti[1].filePath !== 'src/logReader.js' || !parsedMulti[1].code.includes('readLogs')) {
+  throw new Error('Multi-file parsing failed on file 2: ' + JSON.stringify(parsedMulti[1]));
+}
+
+// Single file fallback should inherit active file (e.g. orderManager.js)
+const sampleSingle = `\`\`\`javascript\nconst a = 100;\n\`\`\``;
+const parsedSingle = parseMultiFileSolution(sampleSingle, 'src/orderManager.js');
+if (parsedSingle.length !== 1 || parsedSingle[0].filePath !== 'src/orderManager.js') {
+  throw new Error('Single file fallback should match activeFile: ' + JSON.stringify(parsedSingle));
+}
+
+// Verify background and bridge scripts have multi-file awareness
+const bridgeJs = fs.readFileSync(path.join(__dirname, 'content/main-world-bridge.js'), 'utf8');
+const bgJs = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
+
+if (!bridgeJs.includes('detectActiveFileName') || !bridgeJs.includes('navigateToTargetFile') || !bridgeJs.includes('createNewFileInWorkspace')) {
+  throw new Error('Multi-file navigation & creation functions missing from main-world-bridge.js');
+}
+
+if (!bgJs.includes('detectActiveFile') || !bgJs.includes('scanWorkspaceFiles') || !bgJs.includes('targetPath')) {
+  throw new Error('Multi-file awareness or targetPath missing from background.js');
+}
+
+console.log('   ✓ Multi-file workspace scanner, file navigator, and multi-block parser verified');
 
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');
