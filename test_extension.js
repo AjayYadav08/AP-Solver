@@ -636,4 +636,42 @@ if (!contentJs22.includes('function findMochaErrorForTest') ||
 console.log('   ✓ Full 6-Step Autonomous Solving Lifecycle & Precision Side Bar Terminal Scraper verified');
 console.log('   ✓ Anti-Spam Single Submission, Code Completeness Check & Precision Error Extraction verified');
 
+// Test 23: Verify File Icon Targeting, Inline Rename Elimination, and Escape Dismissal
+console.log('23. Testing File Icon Targeting, Inline Rename Elimination, and Escape Dismissal...');
+const bgJs23 = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
+const bridgeJs23 = fs.readFileSync(path.join(__dirname, 'content/main-world-bridge.js'), 'utf8');
+const frameJs23 = fs.readFileSync(path.join(__dirname, 'content/frame-editor.js'), 'utf8');
+const contentJs23 = fs.readFileSync(path.join(__dirname, 'content/content.js'), 'utf8');
+
+// 1. Verify Escape dismissal for active inline rename boxes
+if (!bgJs23.includes("cdpNativeKey(tabId, 'Escape', 'Escape', 27, 0)") ||
+    !bgJs23.includes("activeInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape'") ||
+    !bridgeJs23.includes("activeInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape'") ||
+    !frameJs23.includes("activeInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape'")) {
+  throw new Error('All navigation layers must dismiss any active rename box with Escape key!');
+}
+
+// 2. Verify file icon coordinate targeting (never middle of text label)
+if (!bgJs23.includes("(iconR.left && iconR.left > r.left) ? (iconR.left + 8) : (r.left + 24)") ||
+    !bgJs23.includes("NEVER click the text label name, which triggers inline rename!") ||
+    !bridgeJs23.includes("isTreeRow") ||
+    !frameJs23.includes("isTreeRow")) {
+  throw new Error('Tree row clicks must target the file icon, never the text label!');
+}
+
+// 3. Verify complete elimination of Enter key events on tree items
+if (bgJs23.includes("src.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter'") ||
+    bgJs23.includes("srcItem.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter'") ||
+    bridgeJs23.includes("srcItem.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter'") ||
+    frameJs23.includes("srcFolder.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter'")) {
+  throw new Error('Enter key events on tree items must be completely eliminated to prevent triggering inline rename on macOS/VS Code!');
+}
+
+// 4. Verify HTTP tester editor isolation in top document
+if (!contentJs23.includes("!document.querySelector('iframe')") ||
+    bgJs23.includes("allEditors[0] || document.querySelector('.monaco-editor')")) {
+  throw new Error('Top document must never fall back to HTTP tester editors when iframe exists!');
+}
+console.log('   ✓ File Icon Targeting, Inline Rename Elimination & HTTP Tester Isolation verified');
+
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');

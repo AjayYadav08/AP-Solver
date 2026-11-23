@@ -160,9 +160,24 @@
     const list = el.closest?.('.monaco-list, .monaco-tree-view');
     if (list) { try { list.focus(); } catch(e) {} }
 
-    const target = el.querySelector?.('.label-name, .monaco-icon-label') || el;
+    // Dismiss any active inline rename input
+    const activeInput = document.querySelector('.monaco-list-row input, .monaco-inputbox input, input.monaco-inputbox');
+    if (activeInput) {
+      try {
+        activeInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
+        activeInput.blur();
+      } catch(e) {}
+    }
+
+    const isTreeRow = el.classList?.contains('monaco-list-row') || el.getAttribute?.('role') === 'treeitem';
+    // For tree items, target the icon specifically — NEVER click the text label name, which triggers inline rename!
+    const icon = isTreeRow ? (el.querySelector('.monaco-icon-label-icon, .codicon, .monaco-tl-twistie') || el) : null;
+    const target = icon || el.querySelector?.('.label-name, .monaco-icon-label') || el;
     const rect = target.getBoundingClientRect();
-    const clientX = (rect.left + rect.width / 2) || 150;
+    const elRect = el.getBoundingClientRect();
+    const clientX = isTreeRow
+      ? ((rect.left && rect.left > 0) ? (rect.left + 8) : (elRect.left + 24))
+      : ((rect.left + rect.width / 2) || 150);
     const clientY = (rect.top + rect.height / 2) || 150;
 
     const baseOpts = {
@@ -206,15 +221,7 @@
     try { el.click?.(); } catch (e) {}
     try { target.click?.(); } catch (e) {}
 
-    // Enter keydown / keyup to open item in VS Code tree
-    try {
-      target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
-      target.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
-      if (target !== el) {
-        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
-        el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
-      }
-    } catch (e) {}
+    // CRITICAL: NEVER dispatch Enter key on tree items! On macOS/VS Code, Enter triggers inline file rename!
 
     return true;
   }
@@ -300,7 +307,6 @@
           }
           try { srcItem.focus(); } catch(e) {}
           try { srcItem.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39, bubbles: true })); } catch(e) {}
-          try { srcItem.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true })); } catch(e) {}
           simulateClick(twistie || srcItem);
           await new Promise(r => setTimeout(r, 350));
         }

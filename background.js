@@ -294,7 +294,11 @@ async function cdpClickElementInWorkspace(tabId, targetFilePath) {
 
             const r = row.getBoundingClientRect();
             if (r.width > 0 && r.height > 0) {
-              return { type: 'treeItem', x: r.left + r.width / 2, y: r.top + r.height / 2 };
+              const icon = row.querySelector('.monaco-icon-label-icon, .codicon, .monaco-icon-label') || row;
+              const iconR = icon.getBoundingClientRect();
+              const targetX = (iconR.left && iconR.left > r.left) ? (iconR.left + 8) : (r.left + 24);
+              const targetY = r.top + r.height / 2;
+              return { type: 'treeItem', x: targetX, y: targetY };
             }
           }
         }
@@ -395,7 +399,7 @@ async function cdpClickElementInWorkspace(tabId, targetFilePath) {
 
     if (attached) {
       if (type === 'expandSrc') {
-        // 1. In-frame direct DOM trigger on twistie, ArrowRight and Enter
+        // 1. In-frame direct DOM trigger on twistie and ArrowRight (NEVER Enter on folders/files)
         await chrome.scripting.executeScript({
           target: { tabId, allFrames: true },
           func: () => {
@@ -412,7 +416,6 @@ async function cdpClickElementInWorkspace(tabId, targetFilePath) {
               }
               try { src.focus(); } catch(e) {}
               try { src.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39, bubbles: true })); } catch(e) {}
-              try { src.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true })); } catch(e) {}
             }
           }
         });
@@ -427,11 +430,7 @@ async function cdpClickElementInWorkspace(tabId, targetFilePath) {
 
         // 4. Hardware native ArrowRight key to expand folder in VS Code
         await cdpNativeKey(tabId, 'ArrowRight', 'ArrowRight', 39, 0);
-        await sleep(60);
-
-        // 5. Hardware native Enter key
-        await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
-        await sleep(400);
+        await sleep(250);
 
         return await cdpClickElementInWorkspace(tabId, targetFilePath);
       }
@@ -443,15 +442,16 @@ async function cdpClickElementInWorkspace(tabId, targetFilePath) {
       }
 
       if (type === 'treeItem') {
-        // 1. Single click to select/focus row
+        // 1. Dismiss any existing inline rename box with Escape
+        await cdpNativeKey(tabId, 'Escape', 'Escape', 27, 0);
+        await sleep(60);
+        // 2. Click the file icon (targetX is at left icon, never label text)
         await cdpNativeClick(tabId, globalX, globalY, 1);
         await sleep(80);
-        // 2. Double click to open tab
+        // 3. Native double-click on file icon to open permanently
         await cdpNativeDblClick(tabId, globalX, globalY);
-        await sleep(100);
-        // 3. Press Enter key via CDP to guarantee file open
-        await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
-        await sleep(400);
+        await sleep(200);
+        // CRITICAL: NEVER send Enter key! On macOS/VS Code, Enter triggers inline file rename!
         return true;
       }
 
@@ -696,9 +696,24 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
             const list = el.closest?.('.monaco-list, .monaco-tree-view');
             if (list) { try { list.focus(); } catch(e) {} }
 
-            const target = el.querySelector?.('.label-name, .monaco-icon-label') || el;
+            // Dismiss any active inline rename input
+            const activeInput = document.querySelector('.monaco-list-row input, .monaco-inputbox input, input.monaco-inputbox');
+            if (activeInput) {
+              try {
+                activeInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
+                activeInput.blur();
+              } catch(e) {}
+            }
+
+            const isTreeRow = el.classList?.contains('monaco-list-row') || el.getAttribute?.('role') === 'treeitem';
+            // For tree items, target the icon specifically — NEVER click the text label name, which triggers inline rename!
+            const icon = isTreeRow ? (el.querySelector('.monaco-icon-label-icon, .codicon, .monaco-tl-twistie') || el) : null;
+            const target = icon || el.querySelector?.('.label-name, .monaco-icon-label') || el;
             const rect = target.getBoundingClientRect();
-            const clientX = (rect.left + rect.width / 2) || 150;
+            const elRect = el.getBoundingClientRect();
+            const clientX = isTreeRow
+              ? ((rect.left && rect.left > 0) ? (rect.left + 8) : (elRect.left + 24))
+              : ((rect.left + rect.width / 2) || 150);
             const clientY = (rect.top + rect.height / 2) || 150;
 
             const baseOpts = {
@@ -742,15 +757,7 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
             try { el.click?.(); } catch (e) {}
             try { target.click?.(); } catch (e) {}
 
-            // Enter key event to open file in VS Code list
-            try {
-              target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
-              target.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
-              if (target !== el) {
-                el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
-                el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
-              }
-            } catch (e) {}
+            // CRITICAL: NEVER dispatch Enter key on tree items! On macOS/VS Code, Enter triggers inline file rename!
 
             return true;
           }
@@ -842,7 +849,6 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
                   }
                   try { srcItem.focus(); } catch(e) {}
                   try { srcItem.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39, bubbles: true })); } catch(e) {}
-                  try { srcItem.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true })); } catch(e) {}
                   simulateClick(twistie || srcItem);
                   await sleep(350);
                 }
@@ -979,10 +985,13 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
           // Strategy 2: DOM fallback: ONLY if active tab matches targetPath!
           if (isTargetActive) {
             const allEditors = [...document.querySelectorAll('.monaco-editor')].filter(el => {
-              return !el.closest('[class*="response" i], [class*="http-request" i], [class*="postman" i], [class*="preview" i], #ap-solver-host');
+              return !el.closest('[class*="response" i], [class*="http-request" i], [class*="postman" i], [class*="preview" i], [class*="request-body" i], [class*="response-body" i], #ap-solver-host');
             });
-            const editorDom = allEditors[0] || document.querySelector('.monaco-editor');
-            const input = editorDom?.querySelector('textarea.inputarea') || document.querySelector('textarea.inputarea');
+            const editorDom = allEditors[0];
+            if (!editorDom) {
+              return { success: false, error: 'No valid non-HTTP-tester workspace editor found in frame' };
+            }
+            const input = editorDom.querySelector('textarea.inputarea');
             if (input) {
               input.focus();
               const isMac = /mac/i.test(navigator.platform);

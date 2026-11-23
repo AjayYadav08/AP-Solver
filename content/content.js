@@ -203,9 +203,12 @@
       };
     }
 
-    // Fallback: look for monaco in top frame
-    const topViewLines = document.querySelector('.monaco-editor .view-lines');
-    if (topViewLines) {
+    // Fallback: look for monaco in top frame ONLY if not in HTTP tester and no iframe exists
+    const topEditors = [...document.querySelectorAll('.monaco-editor')].filter(el => {
+      return !el.closest('[class*="response" i], [class*="http-request" i], [class*="postman" i], [class*="preview" i], [class*="request-body" i], [class*="response-body" i], #ap-solver-host');
+    });
+    const topViewLines = topEditors[0]?.querySelector('.view-lines');
+    if (topViewLines && !document.querySelector('iframe')) {
       const code = [...topViewLines.querySelectorAll('.view-line')].map((l) => l.textContent).join('\n');
       return {
         code,
@@ -249,10 +252,14 @@
       return { ok: false, error: resp?.error || `Could not open and write to "${filePath}"` };
     }
 
-    // Fallback in top document ONLY if no specific targetFilePath was requested
-    const editorDom = document.querySelector('.monaco-editor');
-    const textarea = editorDom?.querySelector('textarea.inputarea');
-    if (textarea) {
+    // Fallback in top document ONLY if no specific targetFilePath was requested, no iframe exists, and not in HTTP tester!
+    if (!document.querySelector('iframe')) {
+      const allTopEditors = [...document.querySelectorAll('.monaco-editor')].filter(el => {
+        return !el.closest('[class*="response" i], [class*="http-request" i], [class*="postman" i], [class*="preview" i], [class*="request-body" i], [class*="response-body" i], #ap-solver-host');
+      });
+      const editorDom = allTopEditors[0];
+      const textarea = editorDom?.querySelector('textarea.inputarea');
+      if (textarea) {
       textarea.focus();
 
       const isMac = /mac/i.test(navigator.platform);
@@ -374,6 +381,7 @@
       const countHttp = (lines.match(/require\(['"](?:node:)?http['"]\)/g) || []).length;
       const verified = lines.length > 50 && !hasOld501 && countHttp <= 1;
       return { ok: true, verified, method: 'top-dom-wipeAndPaste' };
+      }
     }
 
     return { ok: !!resp?.ok, verified: !!resp?.verified, method: resp?.method || 'unknown' };
