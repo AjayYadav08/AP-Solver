@@ -733,6 +733,7 @@
     cachedGeneratedCode = resp.result.code;
     cachedGeneratedFiles = resp.result.files || [{ filePath: cachedEditor?.activeFile || 'src/index.js', code: cachedGeneratedCode }];
     ui.setGeneratedCode(cachedGeneratedCode);
+    ui.setGeneratedFiles(cachedGeneratedFiles);
 
     const winnerTag = resp.result.raceWinner ? ` [Won by ${resp.result.raceWinner} in ${resp.result.latencyMs}ms]` : '';
     const fileSummary = cachedGeneratedFiles.map(f => f.filePath).join(', ');
@@ -889,9 +890,11 @@
       ui.addLog(`Injecting clean code into "${f.filePath}"...`);
       const res = await writeCodeToEditor(f.code, f.filePath);
       if (res && res.ok) {
+        ui.setFileStatus(f.filePath, 'injected');
         ui.addLog(`✓ Wiped & saved "${f.filePath}" (${f.code.split('\n').length} lines, ${res.method || 'saved'})!`, 'ok');
       } else {
         allSucceeded = false;
+        ui.setFileStatus(f.filePath, 'error');
         ui.addLog(`⚠️ Automated injection into "${f.filePath}" failed. Code copied to clipboard.`, 'warn');
       }
       await sleep(300);
@@ -1091,6 +1094,19 @@
       onReadContext: handleReadContext,
       onGenerate: () => handleGenerate(),
       onWriteCode: handleWriteCode,
+      onInjectSingleFile: async (filePath, code) => {
+        ui.addLog(`Injecting single file "${filePath}"...`);
+        const res = await writeCodeToEditor(code, filePath);
+        if (res && res.ok) {
+          ui.setFileStatus(filePath, 'injected');
+          ui.addLog(`✓ Saved "${filePath}" successfully (${res.method || 'saved'})!`, 'ok');
+          return true;
+        } else {
+          ui.setFileStatus(filePath, 'error');
+          ui.addLog(`⚠️ Could not switch to "${filePath}". Please click "${filePath}" tab in VS Code and try again.`, 'warn');
+          return false;
+        }
+      },
       onSubmit: handleSubmit,
       onOptionsChange: (newOpts) => {
         try {

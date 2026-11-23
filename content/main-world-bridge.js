@@ -151,12 +151,16 @@
   function simulateClick(el) {
     if (!el) return false;
     try { el.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch(e) {}
-    const target = el.querySelector('.label-name, .monaco-icon-label') || el;
-    const rect = target.getBoundingClientRect();
-    const clientX = (rect.left + rect.width / 2) || 100;
-    const clientY = (rect.top + rect.height / 2) || 100;
+    try { el.focus(); } catch(e) {}
+    const list = el.closest?.('.monaco-list, .monaco-tree-view');
+    if (list) { try { list.focus(); } catch(e) {} }
 
-    const opts = {
+    const target = el.querySelector?.('.label-name, .monaco-icon-label') || el;
+    const rect = target.getBoundingClientRect();
+    const clientX = (rect.left + rect.width / 2) || 150;
+    const clientY = (rect.top + rect.height / 2) || 150;
+
+    const baseOpts = {
       bubbles: true,
       cancelable: true,
       view: window,
@@ -168,33 +172,43 @@
       buttons: 1
     };
 
-    try { target.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch (e) {}
-    try { target.dispatchEvent(new MouseEvent('mousedown', opts)); } catch (e) {}
-    try { target.dispatchEvent(new PointerEvent('pointerup', opts)); } catch (e) {}
-    try { target.dispatchEvent(new MouseEvent('mouseup', opts)); } catch (e) {}
-    try { target.dispatchEvent(new MouseEvent('click', opts)); } catch (e) {}
-    try { target.dispatchEvent(new MouseEvent('dblclick', opts)); } catch (e) {}
+    // Click 1 (detail: 1)
+    const clickOpts1 = { ...baseOpts, detail: 1 };
+    try { target.dispatchEvent(new PointerEvent('pointerdown', clickOpts1)); } catch (e) {}
+    try { target.dispatchEvent(new MouseEvent('mousedown', clickOpts1)); } catch (e) {}
+    try { target.dispatchEvent(new PointerEvent('pointerup', clickOpts1)); } catch (e) {}
+    try { target.dispatchEvent(new MouseEvent('mouseup', clickOpts1)); } catch (e) {}
+    try { target.dispatchEvent(new MouseEvent('click', clickOpts1)); } catch (e) {}
 
-    if (target !== el) {
-      try { el.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch (e) {}
-      try { el.dispatchEvent(new MouseEvent('mousedown', opts)); } catch (e) {}
-      try { el.dispatchEvent(new MouseEvent('click', opts)); } catch (e) {}
-      try { el.dispatchEvent(new MouseEvent('dblclick', opts)); } catch (e) {}
-    }
+    // Click 2 (detail: 2) -> Required by Monaco / VS Code for double click detection
+    const clickOpts2 = { ...baseOpts, detail: 2 };
+    try { target.dispatchEvent(new PointerEvent('pointerdown', clickOpts2)); } catch (e) {}
+    try { target.dispatchEvent(new MouseEvent('mousedown', clickOpts2)); } catch (e) {}
+    try { target.dispatchEvent(new PointerEvent('pointerup', clickOpts2)); } catch (e) {}
+    try { target.dispatchEvent(new MouseEvent('mouseup', clickOpts2)); } catch (e) {}
+    try { target.dispatchEvent(new MouseEvent('click', clickOpts2)); } catch (e) {}
+    try { target.dispatchEvent(new MouseEvent('dblclick', clickOpts2)); } catch (e) {}
+
+    // Enter keydown / keyup to open item in VS Code tree
+    try {
+      target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+      target.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+    } catch (e) {}
+
     return true;
   }
 
   function findExplorerItem(name) {
-    const base = name.split('/').pop().trim();
+    const base = name.split('/').pop().trim().toLowerCase();
     const rows = [...document.querySelectorAll('.monaco-list-row, [role="treeitem"]')];
     return rows.find(r => {
-      const aria = (r.getAttribute('aria-label') || '').trim();
-      if (aria === base || aria.startsWith(base) || aria.toLowerCase().includes(base.toLowerCase())) return true;
-      const title = (r.getAttribute('title') || '').trim();
-      if (title === base || title.endsWith(base) || title.toLowerCase().includes(base.toLowerCase())) return true;
+      const aria = (r.getAttribute('aria-label') || '').trim().toLowerCase();
+      if (aria === base || aria.startsWith(base)) return true;
+      const title = (r.getAttribute('title') || '').trim().toLowerCase();
+      if (title === base || title.endsWith(base) || title.includes(base)) return true;
       const labelEl = r.querySelector('.label-name, .monaco-icon-label');
-      const text = (labelEl?.textContent || r.textContent || '').trim();
-      return text === base || text.startsWith(base) || new RegExp(`(^|\\b)${base}(\\b|\\s|$)`, 'i').test(text);
+      const text = (labelEl?.textContent || r.textContent || '').trim().toLowerCase();
+      return text === base || text.startsWith(base) || text.split(/\s+/)[0] === base;
     });
   }
 
@@ -491,18 +505,20 @@
             return;
           }
 
-          // SAFETY GUARD: If targetFilePath was specified and model not in memory, create it directly in Monaco!
-          if (targetFilePath && monaco.Uri && monaco.editor.createModel) {
-            const normPath = targetFilePath.startsWith('/') ? targetFilePath : '/' + targetFilePath;
-            const fullUri = monaco.Uri.file('/workspace' + (normPath.startsWith('/src/') ? normPath : '/src' + normPath));
-            const createdModel = monaco.editor.createModel(newCode, 'javascript', fullUri);
+          // If targetFilePath is specified, check if active editor tab actually matches target
+          const activeFileName = detectActiveFileName(monaco);
+          const isTargetActuallyActive = !basename || activeFileName.toLowerCase().includes(basename.toLowerCase());
+
+          // If target is active in activeEd, write to its model
+          if (isTargetActuallyActive) {
             const editor = getActiveEditor(monaco);
-            if (editor && createdModel) {
-              editor.setModel(createdModel);
+            const activeModel = editor?.getModel();
+            if (activeModel && typeof activeModel.setValue === 'function') {
+              activeModel.setValue(newCode);
+              triggerSave();
+              window.postMessage({ action: 'AP_WRITE_CODE_RESULT', id, ok: true, method: 'monaco.activeModel.setValue', filePath: targetFilePath }, '*');
+              return;
             }
-            triggerSave();
-            window.postMessage({ action: 'AP_WRITE_CODE_RESULT', id, ok: true, method: 'monaco.createModel', filePath: targetFilePath }, '*');
-            return;
           }
 
           // If targetFilePath was NOT specified, write into active editor

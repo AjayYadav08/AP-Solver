@@ -20,6 +20,7 @@ window.APSolverUI = class APSolverUI {
     };
     this.currentCode = '';
     this.generatedCode = '';
+    this.generatedFiles = [];
     this.logs = [];
     this.options = {
       autoSubmit: false,
@@ -97,6 +98,22 @@ window.APSolverUI = class APSolverUI {
 
   setGeneratedCode(code) {
     this.generatedCode = code;
+  }
+
+  setGeneratedFiles(files) {
+    this.generatedFiles = Array.isArray(files) ? files : [];
+    if (this.generatedFiles.length > 0 && !this.generatedCode) {
+      this.generatedCode = this.generatedFiles[0].code;
+    }
+    this.render();
+  }
+
+  setFileStatus(filePath, status) {
+    const file = this.generatedFiles.find(f => f.filePath === filePath || f.filePath.endsWith(filePath));
+    if (file) {
+      file.status = status;
+      this.render();
+    }
   }
 
   toggleMinimize(min) {
@@ -189,6 +206,32 @@ window.APSolverUI = class APSolverUI {
               <span class="ap-info-val ap-val-file" title="${this.problemInfo.activeFile}">${this.problemInfo.activeFile}</span>
             </div>
           </div>
+
+          <!-- Multi-File Solution Manager (Shows each file with instant ⚡ Inject & 📋 Copy) -->
+          ${this.generatedFiles && this.generatedFiles.length > 0 ? `
+            <div class="ap-multi-files-box">
+              <div class="ap-multi-files-head">
+                <span class="ap-multi-files-title">📂 Solution Files (${this.generatedFiles.length})</span>
+                <span class="ap-multi-files-hint">Click Inject or Copy per file</span>
+              </div>
+              <div class="ap-file-cards">
+                ${this.generatedFiles.map((f, idx) => `
+                  <div class="ap-file-card" data-idx="${idx}">
+                    <div class="ap-file-meta">
+                      <span class="ap-file-path" title="${f.filePath}">📄 ${f.filePath}</span>
+                      <span class="ap-file-badge ${f.status || 'ready'}">
+                        ${f.status === 'injected' ? '✓ Saved' : (f.status === 'error' ? '❌ Failed' : `${f.code.split('\n').length} lines`)}
+                      </span>
+                    </div>
+                    <div class="ap-file-btns">
+                      <button class="ap-btn-file ap-btn-file-copy" data-idx="${idx}" title="Copy code for ${f.filePath}">📋 Copy</button>
+                      <button class="ap-btn-file ap-btn-file-inject" data-idx="${idx}" title="Switch to ${f.filePath} and inject code">⚡ Inject</button>
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          ` : ''}
 
           <!-- One Single Solve Button -->
           <button class="ap-btn-primary ap-btn-solve-main" ${this.isRunning ? 'disabled' : ''}>
@@ -310,6 +353,61 @@ window.APSolverUI = class APSolverUI {
         if (this.callbacks.onOneClickSolve) this.callbacks.onOneClickSolve();
       };
     }
+
+    // Multi-File Individual Copy buttons
+    const copyBtns = this.host.querySelectorAll('.ap-btn-file-copy');
+    copyBtns.forEach((btn) => {
+      btn.onclick = async () => {
+        const idx = parseInt(btn.getAttribute('data-idx'), 10);
+        const file = this.generatedFiles[idx];
+        if (file && file.code) {
+          try {
+            await navigator.clipboard.writeText(file.code);
+            const orig = btn.textContent;
+            btn.textContent = '✓ Copied!';
+            btn.style.color = '#4ade80';
+            setTimeout(() => {
+              btn.textContent = orig;
+              btn.style.color = '';
+            }, 2000);
+            this.addLog(`📋 Copied code for "${file.filePath}" to clipboard! Paste into VS Code and press Cmd+S.`, 'ok');
+          } catch (e) {
+            this.addLog(`Failed to copy code: ${e.message}`, 'warn');
+          }
+        }
+      };
+    });
+
+    // Multi-File Individual Inject buttons
+    const injectBtns = this.host.querySelectorAll('.ap-btn-file-inject');
+    injectBtns.forEach((btn) => {
+      btn.onclick = async () => {
+        const idx = parseInt(btn.getAttribute('data-idx'), 10);
+        const file = this.generatedFiles[idx];
+        if (file && file.code && this.callbacks.onInjectSingleFile) {
+          btn.disabled = true;
+          btn.textContent = 'Injecting...';
+          try {
+            const ok = await this.callbacks.onInjectSingleFile(file.filePath, file.code);
+            if (ok) {
+              file.status = 'injected';
+              btn.textContent = '✓ Injected';
+              btn.style.color = '#4ade80';
+            } else {
+              file.status = 'error';
+              btn.textContent = 'Retry';
+              btn.style.color = '#f87171';
+            }
+          } catch (e) {
+            file.status = 'error';
+            btn.textContent = 'Retry';
+          } finally {
+            btn.disabled = false;
+            this.render();
+          }
+        }
+      };
+    });
   }
 
   showCodeModal(code) {

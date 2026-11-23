@@ -52,30 +52,108 @@
     return !!document.querySelector('.monaco-editor, textarea.inputarea, .view-lines');
   }
 
+  // Helper: Simulate realistic user click and dblclick
+  function simulateClick(el) {
+    if (!el) return false;
+    try { el.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch(e) {}
+    try { el.focus(); } catch(e) {}
+    const list = el.closest?.('.monaco-list, .monaco-tree-view');
+    if (list) { try { list.focus(); } catch(e) {} }
+
+    const target = el.querySelector?.('.label-name, .monaco-icon-label') || el;
+    const rect = target.getBoundingClientRect();
+    const clientX = (rect.left + rect.width / 2) || 150;
+    const clientY = (rect.top + rect.height / 2) || 150;
+
+    const baseOpts = {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      clientX,
+      clientY,
+      screenX: clientX,
+      screenY: clientY,
+      button: 0,
+      buttons: 1
+    };
+
+    // Click 1
+    const clickOpts1 = { ...baseOpts, detail: 1 };
+    try { target.dispatchEvent(new PointerEvent('pointerdown', clickOpts1)); } catch (e) {}
+    try { target.dispatchEvent(new MouseEvent('mousedown', clickOpts1)); } catch (e) {}
+    try { target.dispatchEvent(new PointerEvent('pointerup', clickOpts1)); } catch (e) {}
+    try { target.dispatchEvent(new MouseEvent('mouseup', clickOpts1)); } catch (e) {}
+    try { target.dispatchEvent(new MouseEvent('click', clickOpts1)); } catch (e) {}
+
+    // Click 2 (detail: 2) -> Monaco / VS Code tree dblclick
+    const clickOpts2 = { ...baseOpts, detail: 2 };
+    try { target.dispatchEvent(new PointerEvent('pointerdown', clickOpts2)); } catch (e) {}
+    try { target.dispatchEvent(new MouseEvent('mousedown', clickOpts2)); } catch (e) {}
+    try { target.dispatchEvent(new PointerEvent('pointerup', clickOpts2)); } catch (e) {}
+    try { target.dispatchEvent(new MouseEvent('mouseup', clickOpts2)); } catch (e) {}
+    try { target.dispatchEvent(new MouseEvent('click', clickOpts2)); } catch (e) {}
+    try { target.dispatchEvent(new MouseEvent('dblclick', clickOpts2)); } catch (e) {}
+
+    // Enter keydown / keyup
+    try {
+      target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+      target.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+    } catch (e) {}
+
+    return true;
+  }
+
   // Try to open a target file if VS Code Web is showing the Welcome tab or wrong file
   function tryOpenTargetFileInExplorer(targetFilePath = null) {
     try {
-      const items = [...document.querySelectorAll('.monaco-list-row, [role="treeitem"], .label-name, .monaco-icon-label')];
-      // Expand 'src' folder if present
-      const srcFolder = items.find((el) => el.textContent.trim() === 'src');
-      if (srcFolder) {
-        const isCollapsed = srcFolder.getAttribute('aria-expanded') === 'false';
-        if (isCollapsed) srcFolder.click();
+      const basename = targetFilePath ? targetFilePath.split('/').pop().toLowerCase() : null;
+
+      // 1. Check open tabs first
+      const tabs = [...document.querySelectorAll('.tab, [role="tab"]')];
+      if (basename) {
+        const matchingTab = tabs.find(t => {
+          const aria = (t.getAttribute('aria-label') || '').toLowerCase();
+          const txt = (t.querySelector('.label-name') || t).textContent.trim().toLowerCase();
+          return aria.includes(basename) || txt === basename || txt.startsWith(basename);
+        });
+        if (matchingTab) {
+          simulateClick(matchingTab);
+          return true;
+        }
       }
 
-      if (targetFilePath) {
-        const basename = targetFilePath.split('/').pop();
-        const target = items.find((el) => el.textContent.trim() === basename || el.textContent.trim() === targetFilePath);
+      const items = [...document.querySelectorAll('.monaco-list-row, [role="treeitem"]')];
+      // Expand 'src' folder if present
+      const srcFolder = items.find((el) => {
+        const t = (el.querySelector('.label-name') || el).textContent.trim();
+        return /^src$/i.test(t);
+      });
+      if (srcFolder) {
+        const isCollapsed = srcFolder.getAttribute('aria-expanded') === 'false' ||
+          !!srcFolder.querySelector('.collapsed, .codicon-chevron-right');
+        if (isCollapsed) {
+          const twistie = srcFolder.querySelector('.monaco-tl-twistie, .codicon-chevron-right');
+          simulateClick(twistie || srcFolder);
+        }
+      }
+
+      if (basename) {
+        const target = items.find((el) => {
+          const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
+          if (aria === basename || aria.startsWith(basename)) return true;
+          const txt = (el.querySelector('.label-name') || el).textContent.trim().toLowerCase();
+          return txt === basename || txt.startsWith(basename) || txt.split(/\s+/)[0] === basename;
+        });
         if (target) {
-          target.click();
+          simulateClick(target);
           return true;
         }
       }
 
       // Default: Find first non-welcome js file
-      const anyFile = items.find((el) => /\.(js|ts)$/i.test(el.textContent.trim()));
+      const anyFile = items.find((el) => /\.(js|ts)$/i.test((el.querySelector('.label-name') || el).textContent.trim()));
       if (anyFile) {
-        anyFile.click();
+        simulateClick(anyFile);
         return true;
       }
     } catch (e) {
@@ -145,10 +223,11 @@
       return true; // async
     }
 
-    if (msg.op === 'AP_SET_EDITOR_CODE') {
+    if (msg.op === 'AP_SET_EDITOR_CODE' || msg.op === 'AP_WRITE_EDITOR') {
       (async () => {
-        const code = msg.code || '';
-        const filePath = msg.filePath || null;
+        const payloadData = msg.data || msg;
+        const code = payloadData.code || '';
+        const filePath = payloadData.filePath || null;
         tryOpenTargetFileInExplorer(filePath);
 
         // Try bridge first
@@ -156,6 +235,17 @@
         if (bridgeResp.ok) {
           sendResponse({ ok: true, verified: true, method: bridgeResp.method || 'bridge', filePath });
           return;
+        }
+
+        // Check if active tab matches filePath before DOM fallback
+        if (filePath) {
+          const basename = filePath.split('/').pop().toLowerCase();
+          const activeTab = document.querySelector('.tab.active, [role="tab"][aria-selected="true"]');
+          const activeTxt = (activeTab?.querySelector('.label-name') || activeTab)?.textContent?.trim()?.toLowerCase() || '';
+          if (activeTxt && !activeTxt.includes(basename)) {
+            sendResponse({ ok: false, error: `Active tab is "${activeTxt}", not target "${basename}"` });
+            return;
+          }
         }
 
         // Fallback: DOM events on textarea with multi-tier Select All & Wipe

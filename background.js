@@ -185,12 +185,16 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
           function simulateClick(el) {
             if (!el) return false;
             try { el.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch(e) {}
-            const target = el.querySelector('.label-name, .monaco-icon-label') || el;
-            const rect = target.getBoundingClientRect();
-            const clientX = (rect.left + rect.width / 2) || 100;
-            const clientY = (rect.top + rect.height / 2) || 100;
+            try { el.focus(); } catch(e) {}
+            const list = el.closest?.('.monaco-list, .monaco-tree-view');
+            if (list) { try { list.focus(); } catch(e) {} }
 
-            const opts = {
+            const target = el.querySelector?.('.label-name, .monaco-icon-label') || el;
+            const rect = target.getBoundingClientRect();
+            const clientX = (rect.left + rect.width / 2) || 150;
+            const clientY = (rect.top + rect.height / 2) || 150;
+
+            const baseOpts = {
               bubbles: true,
               cancelable: true,
               view: window,
@@ -202,19 +206,29 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
               buttons: 1
             };
 
-            try { target.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch (e) {}
-            try { target.dispatchEvent(new MouseEvent('mousedown', opts)); } catch (e) {}
-            try { target.dispatchEvent(new PointerEvent('pointerup', opts)); } catch (e) {}
-            try { target.dispatchEvent(new MouseEvent('mouseup', opts)); } catch (e) {}
-            try { target.dispatchEvent(new MouseEvent('click', opts)); } catch (e) {}
-            try { target.dispatchEvent(new MouseEvent('dblclick', opts)); } catch (e) {}
+            // Click 1 (detail: 1)
+            const clickOpts1 = { ...baseOpts, detail: 1 };
+            try { target.dispatchEvent(new PointerEvent('pointerdown', clickOpts1)); } catch (e) {}
+            try { target.dispatchEvent(new MouseEvent('mousedown', clickOpts1)); } catch (e) {}
+            try { target.dispatchEvent(new PointerEvent('pointerup', clickOpts1)); } catch (e) {}
+            try { target.dispatchEvent(new MouseEvent('mouseup', clickOpts1)); } catch (e) {}
+            try { target.dispatchEvent(new MouseEvent('click', clickOpts1)); } catch (e) {}
 
-            if (target !== el) {
-              try { el.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch (e) {}
-              try { el.dispatchEvent(new MouseEvent('mousedown', opts)); } catch (e) {}
-              try { el.dispatchEvent(new MouseEvent('click', opts)); } catch (e) {}
-              try { el.dispatchEvent(new MouseEvent('dblclick', opts)); } catch (e) {}
-            }
+            // Click 2 (detail: 2) -> Essential for VS Code tree dblclick detection
+            const clickOpts2 = { ...baseOpts, detail: 2 };
+            try { target.dispatchEvent(new PointerEvent('pointerdown', clickOpts2)); } catch (e) {}
+            try { target.dispatchEvent(new MouseEvent('mousedown', clickOpts2)); } catch (e) {}
+            try { target.dispatchEvent(new PointerEvent('pointerup', clickOpts2)); } catch (e) {}
+            try { target.dispatchEvent(new MouseEvent('mouseup', clickOpts2)); } catch (e) {}
+            try { target.dispatchEvent(new MouseEvent('click', clickOpts2)); } catch (e) {}
+            try { target.dispatchEvent(new MouseEvent('dblclick', clickOpts2)); } catch (e) {}
+
+            // Enter key event to open file in VS Code list
+            try {
+              target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+              target.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+            } catch (e) {}
+
             return true;
           }
 
@@ -419,17 +433,6 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
               triggerFileSave();
               await sleep(150);
               return { success: true, verified: true, method: 'monaco.activeModel.setValue', filePath: targetPath };
-            }
-
-            // C. Create model if targetPath specified
-            if (targetPath && m.Uri && m.editor?.createModel) {
-              const normPath = targetPath.startsWith('/') ? targetPath : '/' + targetPath;
-              const fullUri = m.Uri.file('/workspace' + (normPath.startsWith('/src/') ? normPath : '/src' + normPath));
-              const createdModel = m.editor.createModel(codeToWrite, 'javascript', fullUri);
-              if (activeEd && createdModel) activeEd.setModel(createdModel);
-              triggerFileSave();
-              await sleep(150);
-              return { success: true, verified: true, method: 'monaco.createModel', filePath: targetPath };
             }
           }
 

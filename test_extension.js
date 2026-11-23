@@ -445,4 +445,24 @@ if (!currentBridgeJs.includes('if (!targetFilePath)') || !currentBgJs.includes('
 
 console.log('   ✓ User 3-file snippet and target model safety guards verified');
 
+// Test 16: Verify Multi-File UI Manager, Pointer/Enter Event Navigation, and Injection Callbacks
+console.log('16. Testing Multi-File Solution Manager UI & Navigation Integration...');
+const solverUiJs = fs.readFileSync(path.join(__dirname, 'content/solver-ui.js'), 'utf8');
+const freshContentJs = fs.readFileSync(path.join(__dirname, 'content/content.js'), 'utf8');
+const stylesCss = fs.readFileSync(path.join(__dirname, 'content/styles.css'), 'utf8');
+
+if (!solverUiJs.includes('setGeneratedFiles') || !solverUiJs.includes('ap-multi-files-box') || !solverUiJs.includes('ap-btn-file-inject')) {
+  throw new Error('solver-ui.js must support setGeneratedFiles and render individual file inject/copy cards!');
+}
+if (!freshContentJs.includes('onInjectSingleFile') || !freshContentJs.includes('setFileStatus')) {
+  throw new Error('content.js must wire onInjectSingleFile and update file status in UI!');
+}
+if (!stylesCss.includes('.ap-multi-files-box') || !stylesCss.includes('.ap-btn-file-inject')) {
+  throw new Error('styles.css must include styles for .ap-multi-files-box and .ap-btn-file-inject!');
+}
+if (!currentBridgeJs.includes('KeyboardEvent') || !currentBridgeJs.includes('detail: 2')) {
+  throw new Error('main-world-bridge.js must simulate dblclick with detail: 2 and Enter key events!');
+}
+console.log('   ✓ Multi-File Solution Manager UI & bulletproof navigation verified');
+
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');
