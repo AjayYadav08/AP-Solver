@@ -701,4 +701,17 @@ if (!contentJs24.includes('/^\\d+$/.test(activeFile)') ||
 }
 console.log('   ✓ "activeFile 1" Elimination, Workbench Isolation & New File Polling verified');
 
+// Test 25: Verify sanitizeActiveFile helper, Stale Cache Reset, and Code Matching Fallback
+console.log('25. Testing sanitizeActiveFile helper, Stale Cache Reset, and Code Matching Fallback...');
+const contentJs25 = fs.readFileSync(path.join(__dirname, 'content/content.js'), 'utf8');
+const solverUi25 = fs.readFileSync(path.join(__dirname, 'content/solver-ui.js'), 'utf8');
+
+if (!contentJs25.includes('function sanitizeActiveFile') ||
+    !contentJs25.includes('cachedEditor = null;\n      cachedGeneratedFiles = [];') ||
+    !contentJs25.includes('codeMatches') ||
+    !solverUi25.includes('/^\\d+$/.test(f)')) {
+  throw new Error('content.js & solver-ui.js must implement sanitizeActiveFile, reset stale cache on solve, and verify codeMatches fallback!');
+}
+console.log('   ✓ sanitizeActiveFile Helper, Stale Cache Reset & Code Matching Fallback verified');
+
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');

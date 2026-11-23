@@ -705,6 +705,12 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
       args: [cleanCode, targetFilePath],
       func: async (codeToWrite, targetPath) => {
         try {
+          const isWorkbench = !!document.querySelector('.monaco-workbench, .part.editor, .editor-instance');
+          // If this frame contains an iframe AND has NO workbench, it's the top host window! SKIP IT!
+          if (!isWorkbench && document.querySelector('iframe')) {
+            return null;
+          }
+
           const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
           function simulateClick(el) {
@@ -922,11 +928,6 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
           const activeTabName = (activeTabEl?.querySelector('.label-name') || activeTabEl)?.textContent?.trim() || '';
           const normActive = normStr(activeTabName);
           const normBase = basename ? normStr(basename) : '';
-          const isTargetActive = !basename || (
-            normActive.length > 0 && normBase.length > 0 &&
-            (normActive.includes(normBase) || normBase.includes(normActive))
-          );
-
           // Strategy 1: Monaco instance or AMD loader search (Wipe & Replace with setValue)
           let m = window.monaco;
           if (!m && typeof window.require === 'function') {
@@ -942,6 +943,21 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
               } catch(e) {}
             }
           }
+
+          let isModelMatch = false;
+          if (m && m.editor && basename) {
+            const eds = m.editor.getEditors ? m.editor.getEditors() : [];
+            const ed0 = eds[0];
+            const p = ed0?.getModel()?.uri?.path || ed0?.getModel()?.uri?.toString() || '';
+            if (p.endsWith('/' + basename) || p.endsWith(targetPath)) {
+              isModelMatch = true;
+            }
+          }
+
+          const isTargetActive = isModelMatch || !basename || (
+            normActive.length > 0 && normBase.length > 0 &&
+            (normActive.includes(normBase) || normBase.includes(normActive))
+          );
 
           if (m && m.editor) {
             const editors = m.editor.getEditors ? m.editor.getEditors() : [];

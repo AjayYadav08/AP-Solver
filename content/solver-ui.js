@@ -52,6 +52,13 @@ window.APSolverUI = class APSolverUI {
   }
 
   updateProblemInfo(info) {
+    if (info && info.activeFile) {
+      let f = String(info.activeFile).trim();
+      if (/^\d+$/.test(f) || /^(1|2|one|two)$/i.test(f) || f === 'None') {
+        f = 'src/index.js';
+      }
+      info.activeFile = f;
+    }
     this.problemInfo = { ...this.problemInfo, ...info };
     this.renderBodyContent();
   }

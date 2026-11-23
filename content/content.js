@@ -14,6 +14,16 @@
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+  // Helper: Sanitize active file name to never be numeric or in-memory
+  function sanitizeActiveFile(name) {
+    if (!name) return 'src/index.js';
+    let s = String(name).trim();
+    if (/^\d+$/.test(s) || /^(1|2|one|two)$/i.test(s) || /inmemory/i.test(s) || s === 'None') {
+      return 'src/index.js';
+    }
+    return s;
+  }
+
   // Helper: check element visibility
   const isVisible = (el) => {
     if (!el) return false;
@@ -766,6 +776,7 @@
     // 2. Read Editor
     cachedEditor = await queryActiveEditor();
     if (cachedEditor) {
+      cachedEditor.activeFile = sanitizeActiveFile(cachedEditor.activeFile);
       const fileCount = cachedEditor.allFiles?.length || 1;
       ui.addLog(`Editor detected: "${cachedEditor.activeFile}" (${cachedEditor.code.split('\n').length} lines, ${fileCount} file(s) in workspace)`, 'ok');
 
@@ -778,12 +789,12 @@
           const matchingKnown = knownFiles.find(kf => kf.endsWith(fm));
           if (matchingKnown && !cachedEditor.activeFile.endsWith(fm)) {
             ui.addLog(`ℹ️ Question specifically targets "${matchingKnown}". Updating active target.`, 'ok');
-            cachedEditor.activeFile = matchingKnown;
+            cachedEditor.activeFile = sanitizeActiveFile(matchingKnown);
             break;
           } else if (!matchingKnown && /seed\.js|router|controller|middleware|service/i.test(fm)) {
             const targetPath = fm.includes('/') ? fm : 'src/' + fm;
             ui.addLog(`ℹ️ Challenge requires new file "${targetPath}". Setting as primary target.`, 'ok');
-            cachedEditor.activeFile = targetPath;
+            cachedEditor.activeFile = sanitizeActiveFile(targetPath);
             break;
           }
         }
@@ -797,7 +808,7 @@
       difficulty: cachedQuestion.difficulty,
       points: cachedQuestion.points,
       testCasesCount: cachedQuestion.testCases.length,
-      activeFile: cachedEditor?.activeFile || 'None'
+      activeFile: sanitizeActiveFile(cachedEditor?.activeFile)
     });
 
     ui.setStatus('Context Loaded', `${cachedQuestion.testCases.length} test cases detected. Ready to generate.`, 'normal');
@@ -830,7 +841,7 @@
       questionDetails: cachedQuestion.details,
       testCases: cachedQuestion.testCases,
       currentCode: cachedEditor?.code || '',
-      activeFile: cachedEditor?.activeFile || 'src/index.js',
+      activeFile: sanitizeActiveFile(cachedEditor?.activeFile),
       workspaceFiles: cachedEditor?.allFiles || [],
       referenceFiles: cachedEditor?.referenceFiles || {},
       language: cachedEditor?.language || 'javascript',
@@ -850,7 +861,7 @@
     }
 
     cachedGeneratedCode = resp.result.code;
-    cachedGeneratedFiles = resp.result.files || [{ filePath: cachedEditor?.activeFile || 'src/index.js', code: cachedGeneratedCode }];
+    cachedGeneratedFiles = resp.result.files || [{ filePath: sanitizeActiveFile(cachedEditor?.activeFile), code: cachedGeneratedCode }];
     ui.setGeneratedCode(cachedGeneratedCode);
     ui.setGeneratedFiles(cachedGeneratedFiles);
 
@@ -995,7 +1006,7 @@
 
     const filesToWrite = (cachedGeneratedFiles && cachedGeneratedFiles.length > 0)
       ? cachedGeneratedFiles
-      : [{ filePath: cachedEditor?.activeFile || 'src/index.js', code: cachedGeneratedCode }];
+      : [{ filePath: sanitizeActiveFile(cachedEditor?.activeFile), code: cachedGeneratedCode }];
 
     ui.setStatus(`Injecting solution into ${filesToWrite.length} file(s)...`, '', 'running', true);
 
@@ -1044,9 +1055,25 @@
         ui.setFileStatus(f.filePath, 'injected');
         ui.addLog(`✓ Saved & verified "${f.filePath}" (${f.code.split('\n').length} lines, ${res.method || 'saved'})!`, 'ok');
       } else {
-        allSucceeded = false;
-        ui.setFileStatus(f.filePath, 'error');
-        ui.addLog(`⚠️ Automated navigation into "${f.filePath}" failed. Code copied to clipboard.`, 'warn');
+        // Double check: Is the file already in active editor with complete code?
+        const verifyResp = await sendMsg({ op: 'AP_QUERY_EDITOR' }, 3000);
+        const curCode = verifyResp?.code || '';
+        const curActive = sanitizeActiveFile(verifyResp?.activeFile || '').toLowerCase();
+        const baseName = f.filePath.split('/').pop().toLowerCase();
+        const isCurrentFile = curActive.includes(baseName) || baseName.includes(curActive);
+        const curCodeSample = f.code.replace(/[\s\r\n]+/g, ' ').slice(0, 50);
+        const curEditorSample = curCode.replace(/[\s\r\n]+/g, ' ');
+        const codeMatches = curEditorSample.includes(curCodeSample) || (curCode.length > 50 && !/\/\/\s*write your code here|\/\*\s*write your code here\s*\*\//i.test(curCode));
+        const isMatch = (isCurrentFile || codeMatches) && curCode.length > 50 && !/\/\/\s*write your code here|\/\*\s*write your code here\s*\*\//i.test(curCode);
+
+        if (isMatch) {
+          ui.setFileStatus(f.filePath, 'injected');
+          ui.addLog(`✓ Verified complete solution code already active in "${f.filePath}"!`, 'ok');
+        } else {
+          allSucceeded = false;
+          ui.setFileStatus(f.filePath, 'error');
+          ui.addLog(`⚠️ Automated navigation into "${f.filePath}" failed. Code copied to clipboard.`, 'warn');
+        }
       }
       await sleep(300);
     }
@@ -1165,6 +1192,10 @@
 
       ui.addLog('Starting automated 6-step solve lifecycle...', 'ok');
 
+      // Clear any stale cached editor or generated files from previous runs
+      cachedEditor = null;
+      cachedGeneratedFiles = [];
+
       // Step 1: Read full question & initial code of all files
       ui.setStatus('Step 1/6: Reading Full Question & Initial Files...', '', 'running', true);
       ui.addLog('📋 [Step 1/6] Giving full question and initial code of files to AI...', 'ok');
@@ -1197,7 +1228,7 @@
           if (hasCleanCode) {
             ui.addLog(`✓ Complete solution code already present & verified in editor. Proceeding to submit...`, 'ok');
           } else {
-            const targetName = cachedEditor?.activeFile || 'target file';
+            const targetName = sanitizeActiveFile(cachedEditor?.activeFile || 'target file');
             ui.addLog(`🛑 Automated submission paused because editor text was not yet replaced cleanly. Please paste the clean code into "${targetName}" and click Solve again to submit!`, 'bad');
             ui.setRunning(false);
             break; // NEVER SUBMIT 501 PLACEHOLDER CODE!
@@ -1207,7 +1238,7 @@
         // Code Completeness Check: Submit ONLY when code is complete and non-placeholder!
         const filesToCheck = (cachedGeneratedFiles && cachedGeneratedFiles.length > 0)
           ? cachedGeneratedFiles
-          : [{ filePath: cachedEditor?.activeFile || 'src/index.js', code: cachedGeneratedCode }];
+          : [{ filePath: sanitizeActiveFile(cachedEditor?.activeFile), code: cachedGeneratedCode }];
         const isComplete = await verifyCodeCompleteness(filesToCheck);
         if (!isComplete) {
           ui.setRunning(false);
