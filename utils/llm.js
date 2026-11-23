@@ -36,28 +36,31 @@ STRICT GUIDELINES:
    - If the starter code uses Express ('express()'), follow Express idioms.
    - Preserve all exported identifiers (e.g. 'module.exports = server;' or 'module.exports = { app };').
    - Keep predefined variables (such as 'const tasks = [...]' or 'PORT') intact.
-3. REST API & NODE HTTP BEST PRACTICES:
-   - Always set 'Content-Type: application/json; charset=utf-8' on every response.
-   - For GET /tasks:
-     * Support '?completed=true' and '?completed=false'.
-     * If '?completed' is present with an invalid value (not 'true' or 'false'), return status 400 with { error: "Invalid completed filter" }.
-     * If no tasks match, return status 200 with an empty array [].
-   - For POST /tasks:
-     * Request body must be valid JSON; if malformed JSON, return status 400 with { error: "Invalid JSON" }.
-     * Validate 'title': must be a non-empty string. If missing, empty, or not a string, return status 400 with { error: "Title is required" }.
-     * Ignore client-supplied 'id' and 'completed' values.
-     * Auto-generate a unique numeric ID (e.g. tasks.length > 0 ? Math.max(...tasks.map(t => t.id)) + 1 : 1).
-     * Set completed to false.
-     * Push to tasks array and return status 201 with the created task object.
-   - For PATCH /tasks/:id:
-     * URL path parameter ':id' must be valid numeric integer digits. If non-numeric (e.g. /tasks/abc or /tasks/-1), return status 400 with { error: "Invalid task ID" }.
-     * Check if task exists in tasks array. If not found, return status 404 with { error: "Task not found" }.
-     * Request body must be valid JSON; if malformed JSON, return status 400 with { error: "Invalid JSON" }.
-     * Validate 'completed': must be a boolean (typeof body.completed === 'boolean'). If missing or not boolean, return status 400 with { error: "Invalid completed value" }.
-     * Update only 'completed' (task.completed = body.completed). Preserve 'title' and all other existing properties!
-     * Return status 200 with the updated task object.
-   - For unknown routes or unsupported methods:
-     * Return status 404 with { error: "Route not found" }.
+3. REST API & BACKEND PATTERNS:
+   - For Express / Prisma / PostgreSQL / Authentication (e.g. POST /register, POST /login):
+     * Input Validation: Validate required fields (such as 'email', 'password'). If missing, null, undefined, not a string, or empty string (after .trim()), return HTTP status 400 with { error: "Email and password are required" }. Return 400 immediately before performing database operations!
+     * Duplicate Check: Before creating a user, query the database using Prisma (e.g. 'await prisma.user.findUnique({ where: { email } })' or 'findFirst'). If an account with that email already exists, return HTTP status 400 with { error: "User already registered" } or duplicate email error.
+     * Bcrypt Hashing: Always hash passwords using bcrypt with EXACTLY the specified salt rounds (e.g. 'await bcrypt.hash(password, 10)' for 10 salt rounds). NEVER store plain text passwords in the database!
+     * Database Creation: Save the record to PostgreSQL using Prisma ('await prisma.user.create({ data: { email, password: hashedPassword } })').
+     * Response Security: NEVER return or expose the plain-text password or password hash in the response! Omit the password field from the returned object (e.g. 'const { password: _, ...safeUser } = user; return res.status(201).json(safeUser);' or '{ message: "User registered successfully", user: safeUser }').
+     * Async Route Handlers: Always declare route handlers as 'async (req, res) => { try { ... } catch (err) { res.status(500).json({ error: err.message }); } }'. Ensure EVERY code path calls 'res.status(...).json(...)' or 'res.send(...)' so requests NEVER time out or exceed Mocha timeout!
+   - For Native Node.js HTTP Server ('node:http'):
+     * Always set 'Content-Type: application/json; charset=utf-8' on every response.
+     * For GET /tasks:
+       - Support '?completed=true' and '?completed=false'.
+       - If '?completed' has an invalid value, return status 400 with { error: "Invalid completed filter" }.
+       - If no tasks match, return status 200 with [].
+     * For POST /tasks:
+       - Validate body is valid JSON; if malformed, return 400 with { error: "Invalid JSON" }.
+       - Validate 'title' is a non-empty string. If missing or empty, return 400.
+       - Auto-generate unique numeric ID and set completed: false. Return status 201 with created object.
+     * For PATCH /tasks/:id:
+       - Parameter ':id' must be valid numeric integer digits; if non-numeric, return 400.
+       - If task does not exist, return 404 with { error: "Task not found" }.
+       - Validate 'completed' is boolean; if invalid, return 400.
+       - Preserve 'title' and other fields. Return status 200 with updated object.
+     * For unknown routes or unsupported methods:
+       - Return status 404 with { error: "Route not found" }.
 4. WIPE & REPLACE COMPLETENESS:
    - Return the ENTIRE replacement file ready to run from top imports to exports.
    - Do NOT omit any parts with comments like "// ... rest of code".

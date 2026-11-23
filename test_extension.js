@@ -254,4 +254,27 @@ if (!netflixFormatted.includes('module.exports = { app, netflix };')) {
 }
 console.log('   ✓ Target image layout verified: exactly matching clean 2-space indentation');
 
+// 10. Test 3-Tab Rail Navigation and Continuous Autonomous Loop
+console.log('10. Testing 3-Tab Rail Navigation & Autonomous Debugging Loop...');
+const updatedContentJs = fs.readFileSync(path.join(__dirname, 'content/content.js'), 'utf8');
+const updatedLlmJs = fs.readFileSync(path.join(__dirname, 'utils/llm.js'), 'utf8');
+
+if (!updatedContentJs.includes('switchToQuestionTab') ||
+    !updatedContentJs.includes('switchToSubmissionsTab') ||
+    !updatedContentJs.includes('switchToTerminalTab') ||
+    !updatedContentJs.includes('clickRailTab')) {
+  throw new Error('3-tab rail navigation functions missing from content.js');
+}
+
+if (!updatedContentJs.includes('FAILED TEST CASES (FROM TAB 2') ||
+    !updatedContentJs.includes('TERMINAL & MOCHA ERROR TRACES (FROM TAB 3)')) {
+  throw new Error('Combined Tab 2 + Tab 3 debugging feedback missing from content.js');
+}
+
+if (!updatedLlmJs.includes('Prisma') || !updatedLlmJs.includes('bcrypt.hash') || !updatedLlmJs.includes('POST /register')) {
+  throw new Error('Prisma, bcrypt, and auth guidelines missing from utils/llm.js');
+}
+
+console.log('   ✓ 3-Tab rail navigation, scrapers, and autonomous feedback loop verified');
+
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');

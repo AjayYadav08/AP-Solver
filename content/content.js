@@ -387,20 +387,43 @@
     // Is it still running?
     const isRunning = /Running Test Cases|Checking Submission|evaluat(ing|e)|several minutes/i.test(text);
 
-    // Extract test statuses
+    // Extract test statuses from Tab 2 rows
     const rows = [...panel.querySelectorAll('div, tr, li')].filter((r) => {
       const t = r.innerText.trim();
       return /^\d+\.\s+/.test(t) && t.length > 5 && isVisible(r);
     });
 
     const tests = rows.map((row) => {
-      const name = row.innerText.trim();
-      // Check for green tick SVG or pass class
-      const hasGreenTick = !!row.querySelector('path[fill="#009965"], path[fill*="green"], svg.pass, .text-green-500');
-      const hasRedCross = !!row.querySelector('path[fill="#ef4444"], path[fill*="red"], svg.fail, .text-red-500');
+      const name = row.innerText.trim().replace(/\s+(pass|fail|pending)$/i, '');
+      // Check for green tick SVG or pass classes/colors
+      const svgs = [...row.querySelectorAll('svg')];
+      const paths = [...row.querySelectorAll('path, circle')];
+
+      const hasGreenTick = svgs.some(svg => {
+        const fill = (svg.getAttribute('fill') || '').toLowerCase();
+        const stroke = (svg.getAttribute('stroke') || '').toLowerCase();
+        const cls = (svg.getAttribute('class') || '').toLowerCase();
+        return fill.includes('#009965') || fill.includes('#10b981') || fill.includes('#22c55e') ||
+               fill.includes('green') || stroke.includes('green') || cls.includes('green') || cls.includes('pass');
+      }) || paths.some(p => {
+        const fill = (p.getAttribute('fill') || '').toLowerCase();
+        return fill === '#009965' || fill.includes('green');
+      }) || !!row.querySelector('.text-green-500, [class*="green" i]');
+
+      const hasRedCross = svgs.some(svg => {
+        const fill = (svg.getAttribute('fill') || '').toLowerCase();
+        const stroke = (svg.getAttribute('stroke') || '').toLowerCase();
+        const cls = (svg.getAttribute('class') || '').toLowerCase();
+        return fill.includes('#ef4444') || fill.includes('#dc2626') || fill.includes('#e11d48') ||
+               fill.includes('red') || stroke.includes('red') || cls.includes('red') || cls.includes('fail');
+      }) || paths.some(p => {
+        const fill = (p.getAttribute('fill') || '').toLowerCase();
+        return fill === '#ef4444' || fill.includes('red');
+      }) || !!row.querySelector('.text-red-500, [class*="red" i]');
+
       return {
         name,
-        pass: hasGreenTick,
+        pass: hasGreenTick && !hasRedCross,
         fail: hasRedCross,
         pending: !hasGreenTick && !hasRedCross
       };
@@ -443,7 +466,7 @@
         sawRunning = true;
       }
 
-      // Check Submissions Tab
+      // Check Submissions Tab (Tab 2)
       const results = readSubmissionResults();
       if (results) {
         if (results.isRunning) {
@@ -467,35 +490,33 @@
       if (sawRunning && !isBtnRunning) {
         await sleep(400);
         const terminalLog = await readTerminalOutput(2500);
+        let passedCount = 0;
+        let failedCount = 0;
         if (terminalLog) {
           const passMatch = terminalLog.match(/(\d+)\s+passing/i);
           const failMatch = terminalLog.match(/(\d+)\s+failing/i);
-          const passedCount = passMatch ? parseInt(passMatch[1], 10) : 0;
-          const failedCount = failMatch ? parseInt(failMatch[1], 10) : 0;
+          passedCount = passMatch ? parseInt(passMatch[1], 10) : 0;
+          failedCount = failMatch ? parseInt(failMatch[1], 10) : 0;
 
           if (passedCount > 0 && failedCount === 0) {
             return { ok: true, passed: passedCount, total: passedCount, summary: 'All test cases passed!' };
           }
-          if (failedCount > 0) {
-            return {
-              ok: false,
-              passed: passedCount,
-              total: passedCount + failedCount,
-              failedTests: [`${failedCount} test case(s) failed in Mocha runner`],
-              terminalLog
-            };
-          }
         }
 
+        // Return combined results from Tab 2 and Tab 3
         const finalSub = readSubmissionResults();
-        if (finalSub && finalSub.totalCount > 0) {
-          return {
-            ok: finalSub.passedCount === finalSub.totalCount,
-            passed: finalSub.passedCount,
-            total: finalSub.totalCount,
-            failedTests: finalSub.tests.filter((t) => !t.pass).map((t) => t.name)
-          };
-        }
+        const tab2Failed = finalSub?.tests?.filter(t => !t.pass).map(t => t.name) || [];
+        const total = finalSub?.totalCount || (passedCount + failedCount);
+        const passed = finalSub?.passedCount ?? passedCount;
+        const failed = finalSub?.failedCount ?? failedCount;
+
+        return {
+          ok: total > 0 && passed === total && failed === 0,
+          passed,
+          total,
+          failedTests: tab2Failed.length > 0 ? tab2Failed : (failedCount > 0 ? [`${failedCount} test case(s) failed in Mocha runner`] : []),
+          terminalLog: terminalLog || ''
+        };
       }
 
       // Check success banner in main text
@@ -503,6 +524,9 @@
         return { ok: true, summary: 'All test cases passed successfully!' };
       }
     }
+
+    return { ok: false, error: 'Submission evaluation timed out after 45s.' };
+  }
 
     return { ok: false, error: 'Grading timed out. Please check Terminal (Tab 3) for details.' };
   }
@@ -580,26 +604,26 @@
   // --- Section 4: Left Rail Tabs & Terminal Execution Log Scraper ---
   function getLeftRailTabs() {
     // Find clickable tab items on the vertical left bar (x < 80px)
-    const elements = [...document.querySelectorAll('button, [role="tab"], div, a, li')].filter((el) => {
+    const elements = [...document.querySelectorAll('button, [role="tab"], div, a, li, span')].filter((el) => {
       const r = el.getBoundingClientRect();
-      return (
-        isVisible(el) &&
-        r.left >= 0 &&
-        r.left < 80 &&
-        r.top > 30 &&
-        r.top < 400 &&
-        r.width >= 16 &&
-        r.height >= 16 &&
-        !el.closest('#ap-solver-host') &&
-        (el.querySelector('svg') || el.innerText.trim() === 'Q' || /tab/i.test(el.getAttribute('role') || ''))
-      );
+      if (!isVisible(el)) return false;
+      if (r.left < 0 || r.left > 80) return false;
+      if (r.top < 30 || r.top > 450) return false;
+      if (r.width < 14 || r.height < 14) return false;
+      if (r.width > 75 || r.height > 75) return false; // Leaf icon button, not the entire rail bar
+      if (el.closest('#ap-solver-host')) return false;
+
+      const text = el.innerText.trim();
+      const hasIcon = !!el.querySelector('svg, i, [class*="icon" i], [class*="codicon" i]') || text === 'Q';
+      const isRole = /tab|button/i.test(el.getAttribute('role') || el.tagName);
+      return hasIcon || isRole || text.length === 1;
     });
 
-    // Deduplicate elements located at similar vertical Y positions
+    // Deduplicate elements located at similar vertical Y positions (within 15px)
     const uniqueTabs = [];
     for (const el of elements) {
       const r = el.getBoundingClientRect();
-      const existing = uniqueTabs.find((u) => Math.abs(u.getBoundingClientRect().top - r.top) < 10);
+      const existing = uniqueTabs.find((u) => Math.abs(u.getBoundingClientRect().top - r.top) < 15);
       if (!existing) {
         uniqueTabs.push(el);
       }
@@ -609,22 +633,46 @@
     return uniqueTabs;
   }
 
-  function switchToQuestionTab() {
+  function clickRailTab(index) {
     const tabs = getLeftRailTabs();
-    if (tabs.length >= 1) {
-      tabs[0].click();
+    if (tabs.length > index) {
+      const target = tabs[index];
+      target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+      target.click();
       return true;
     }
     return false;
   }
 
-  function switchToSubmissionsTab() {
-    const tabs = getLeftRailTabs();
-    if (tabs.length >= 2) {
-      tabs[1].click();
+  function switchToQuestionTab() {
+    // 1. Look for explicit button/tab with aria-label or title matching question
+    const explicit = [...document.querySelectorAll('button, [role="tab"], div')].find((el) => {
+      const r = el.getBoundingClientRect();
+      const text = (el.getAttribute('aria-label') || el.getAttribute('title') || el.innerText || '').toLowerCase();
+      return isVisible(el) && r.left < 90 && /question|problem/i.test(text);
+    });
+    if (explicit) {
+      explicit.click();
       return true;
     }
-    return false;
+    // 2. Tab index 0 on left rail
+    return clickRailTab(0);
+  }
+
+  function switchToSubmissionsTab() {
+    // 1. Look for explicit button/tab with aria-label or title matching submission
+    const explicit = [...document.querySelectorAll('button, [role="tab"], div')].find((el) => {
+      const r = el.getBoundingClientRect();
+      const text = (el.getAttribute('aria-label') || el.getAttribute('title') || el.innerText || '').toLowerCase();
+      return isVisible(el) && r.left < 90 && /submission|test\s*case/i.test(text);
+    });
+    if (explicit) {
+      explicit.click();
+      return true;
+    }
+    // 2. Tab index 1 on left rail
+    return clickRailTab(1);
   }
 
   function switchToTerminalTab() {
@@ -638,14 +686,8 @@
       explicit.click();
       return true;
     }
-
-    // 2. 3rd tab on the left rail (Tab index 2: Question -> Submissions -> Terminal)
-    const tabs = getLeftRailTabs();
-    if (tabs.length >= 3) {
-      tabs[2].click();
-      return true;
-    }
-    return false;
+    // 2. Tab index 2 on left rail
+    return clickRailTab(2);
   }
 
   async function readTerminalOutput(maxWaitMs = 6000) {
@@ -664,8 +706,7 @@
           r.width > 200 &&
           r.height > 80 &&
           !el.closest('#ap-solver-host') &&
-          (/mocha|npm test|git clone|AssertionError|failing|passing/i.test(text) ||
-           /Build a Task Management API|node-20|timeout/i.test(text))
+          (/mocha|npm test|git clone|AssertionError|failing|passing|prisma|timeout|error|exit|node/i.test(text))
         );
       });
 
@@ -798,53 +839,78 @@
 
       ui.addLog('Starting automated solve flow...', 'ok');
 
-      // 2. Read context
+      // 2. Read context from Tab 1
+      switchToQuestionTab();
+      await sleep(300);
       await handleReadContext();
 
-      let maxAttempts = ui.options.autoRetry ? 3 : 1;
+      let maxAttempts = ui.options.autoRetry ? 5 : 1;
       let feedback = null;
 
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         if (attempt > 1) {
-          ui.addLog(`🔁 Auto-Retry Attempt ${attempt}/${maxAttempts}...`, 'warn');
+          ui.addLog(`🔁 [Loop Attempt ${attempt}/${maxAttempts}] Retrying with Tab 2 & Tab 3 feedback...`, 'warn');
         }
 
-        // 3. Generate clean complete replacement
+        // 3. Generate clean complete replacement using multi-tab feedback
+        ui.setStatus(`Attempt ${attempt}/${maxAttempts}: Generating Solution...`, feedback ? 'Refining solution using Tab 2 & Tab 3 failure traces...' : 'Generating initial test-compliant solution...', 'running', true);
         const code = await handleGenerate(feedback);
 
         // 4. Wipe editor completely and inject code
+        ui.setStatus(`Attempt ${attempt}/${maxAttempts}: Injecting Solution...`, 'Wiping editor and writing clean solution...', 'running', true);
         const writeOk = await handleWriteCode();
         if (!writeOk) {
           ui.addLog('🛑 Automated submission paused because editor text was not yet replaced cleanly. Please paste the clean code into index.js and click Solve again to submit!', 'bad');
           break; // NEVER SUBMIT 501 PLACEHOLDER CODE!
         }
 
-        // 5. Submit solution
-        ui.addLog('Submitting solution to test grader...');
+        // 5. Submit solution and track Tab 2
+        ui.setStatus(`Attempt ${attempt}/${maxAttempts}: Submitting Solution...`, 'Evaluating solution with test grader...', 'running', true);
+        ui.addLog(`Submitting solution to test grader (Attempt ${attempt}/${maxAttempts})...`);
         await sleep(1500);
         const subRes = await handleSubmit();
 
         if (subRes && subRes.ok) {
-          ui.addLog(`🎉 Challenge completed successfully on attempt ${attempt}!`, 'ok');
+          ui.addLog(`🎉 CHALLENGE SOLVED! All ${subRes.passed || 'all'} test cases passed on Attempt ${attempt}!`, 'ok');
+          ui.setStatus('Accepted 🎉', `All ${subRes.passed || 'all'} test cases passed!`, 'success');
           break;
         } else if (attempt < maxAttempts) {
-          ui.addLog('Checking Test Execution Terminal (Tab 3) for failure logs...', 'warn');
-          const terminalOutput = await readTerminalOutput(5000);
+          ui.addLog(`⚠️ Attempt ${attempt} finished: ${subRes?.passed || 0}/${subRes?.total || 0} test cases passed.`, 'warn');
+          ui.addLog('Switching to Terminal (Tab 3) to scrape exact runtime & Mocha failure logs...', 'warn');
 
-          if (terminalOutput && terminalOutput.length > 100) {
-            ui.addLog(`✓ Captured failure logs from Terminal (${terminalOutput.split('\n').length} lines). Passing to AI...`, 'ok');
-            feedback = `CRITICAL TEST FAILURE TRACE FROM TERMINAL:\n` +
-              `\`\`\`\n${terminalOutput.slice(-3500)}\n\`\`\`\n` +
-              `The Mocha test runner failed on the above tests. Fix every assertion error, status code, and response format. Ensure complete code replacement.`;
-          } else if (subRes?.failedTests?.length) {
-            feedback = `The following test cases failed on this attempt:\n` +
-              subRes.failedTests.map((t) => `- ${t}`).join('\n') +
-              `\nPlease re-analyze the logic and fix every failing requirement.`;
+          const terminalOutput = await readTerminalOutput(5500);
+
+          // Build rich combined feedback from BOTH Tab 2 (Failed tests) and Tab 3 (Terminal logs)
+          const feedbackBlocks = [];
+          feedbackBlocks.push(`=== PREVIOUS ATTEMPT ${attempt} FAILED (${subRes?.passed || 0}/${subRes?.total || 0} PASSED) ===`);
+
+          if (subRes?.failedTests && subRes.failedTests.length > 0) {
+            feedbackBlocks.push(`FAILED TEST CASES (FROM TAB 2 - ALL SUBMISSIONS TABLE):\n` + subRes.failedTests.map((t) => `- ❌ ${t}`).join('\n'));
           }
 
-          // Switch back to question tab for next round
+          if (terminalOutput && terminalOutput.length > 50) {
+            feedbackBlocks.push(`TERMINAL & MOCHA ERROR TRACES (FROM TAB 3):\n\`\`\`\n${terminalOutput.slice(-3500)}\n\`\`\``);
+          }
+
+          feedbackBlocks.push(
+            `CRITICAL DEBUGGING DIRECTIVES FOR NEXT ATTEMPT:\n` +
+            `1. Fix every failed test case listed above from Tab 2.\n` +
+            `2. If any timeouts occurred (e.g. "Timeout of 2000ms exceeded"), ensure EVERY route handler calls res.status(...).json(...) or res.send(...) so the request NEVER hangs.\n` +
+            `3. For user authentication / Prisma / bcrypt:\n` +
+            `   - Validate input: return 400 immediately if email or password is missing or empty string.\n` +
+            `   - Check duplicate email: query database first (findUnique/findFirst); return 400 if user exists.\n` +
+            `   - Hash password with bcrypt using EXACTLY salt rounds = 10 (await bcrypt.hash(password, 10)).\n` +
+            `   - Persist user to PostgreSQL via Prisma (prisma.user.create).\n` +
+            `   - NEVER return or expose the password or hash in the response (return user without password).\n` +
+            `4. Return the COMPLETE replacement file with clean 2-space indentation.`
+          );
+
+          feedback = feedbackBlocks.join('\n\n');
+          ui.addLog(`✓ Captured failure context from Tab 2 (${subRes?.failedTests?.length || 0} failed tests) & Tab 3 Terminal (${terminalOutput ? terminalOutput.split('\n').length : 0} log lines).`, 'ok');
+
+          // Switch back to Tab 1 (Question) for the next iteration
           switchToQuestionTab();
-          await sleep(2000);
+          await sleep(1500);
           continue;
         } else {
           ui.addLog(`Reached max attempts (${maxAttempts}). You can click "Solve" to try again with updated feedback.`, 'warn');
