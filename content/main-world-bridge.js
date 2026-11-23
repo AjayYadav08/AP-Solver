@@ -30,14 +30,18 @@
     const editors = monaco.editor.getEditors();
     if (!editors || editors.length === 0) return null;
 
-    // Prefer visible, non-readonly editor
+    // Prefer visible, non-readonly editor (excluding HTTP tester response panes)
     const active = editors.find((ed) => {
-      const node = ed.getContainerDomNode();
+      const node = ed.getContainerDomNode ? ed.getContainerDomNode() : null;
+      if (node && node.closest?.('[class*="response" i], [class*="http-request" i], [class*="postman" i], [class*="preview" i], #ap-solver-host')) return false;
       const rect = node ? node.getBoundingClientRect() : null;
       return rect && rect.width > 0 && rect.height > 40 && !ed.getOption(monaco.editor.EditorOption.readOnly);
     });
 
-    return active || editors[0];
+    return active || editors.find(ed => {
+      const node = ed.getContainerDomNode ? ed.getContainerDomNode() : null;
+      return !node?.closest?.('[class*="response" i], [class*="http-request" i], #ap-solver-host');
+    }) || editors[0];
   }
 
   // Helper: Trigger Ctrl+S / Cmd+S save

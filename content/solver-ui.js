@@ -230,6 +230,9 @@ window.APSolverUI = class APSolverUI {
                   </div>
                 `).join('')}
               </div>
+              <button class="ap-btn-copy-terminal-big" title="Copies a single bash command for all files. Paste into bottom terminal and press Enter!">
+                💻 Copy 1-Click Terminal Script (All Files)
+              </button>
             </div>
           ` : ''}
 
@@ -354,33 +357,33 @@ window.APSolverUI = class APSolverUI {
       };
     }
 
-    // Multi-File Copy All-in-One Terminal Script button
-    const copyTermBtn = this.host.querySelector('.ap-btn-copy-terminal-script');
-    if (copyTermBtn) {
-      copyTermBtn.onclick = async () => {
+    // Multi-File Copy All-in-One Terminal Script buttons
+    const termBtns = this.host.querySelectorAll('.ap-btn-copy-terminal-script, .ap-btn-copy-terminal-big');
+    termBtns.forEach((btn) => {
+      btn.onclick = async () => {
         let bashScript = '';
         for (const f of this.generatedFiles) {
           const dir = f.filePath.includes('/') ? f.filePath.substring(0, f.filePath.lastIndexOf('/')) : '';
           if (dir) {
             bashScript += `mkdir -p "${dir}" && `;
           }
-          bashScript += `cat << 'EOF' > "${f.filePath}"\n${f.code}\nEOF\n`;
+          bashScript += `cat << 'EOF' > "${f.filePath}"\n${f.code}\nEOF\n\n`;
         }
         try {
-          await navigator.clipboard.writeText(bashScript);
-          const orig = copyTermBtn.textContent;
-          copyTermBtn.textContent = '✓ Copied Script!';
-          copyTermBtn.style.color = '#4ade80';
+          await navigator.clipboard.writeText(bashScript.trim());
+          const orig = btn.textContent;
+          btn.textContent = '✓ Script Copied!';
+          btn.style.color = '#4ade80';
           setTimeout(() => {
-            copyTermBtn.textContent = orig;
-            copyTermBtn.style.color = '';
+            btn.textContent = orig;
+            btn.style.color = '';
           }, 2500);
-          this.addLog(`💻 All-in-one terminal script copied! Open VS Code terminal and press Cmd+V + Enter.`, 'ok');
+          this.addLog(`💻 All-in-one terminal script copied to clipboard! Paste into VS Code terminal and press Enter.`, 'ok');
         } catch (e) {
           this.addLog(`Failed to copy script: ${e.message}`, 'warn');
         }
       };
-    }
+    });
 
     // Multi-File Individual Copy buttons
     const copyBtns = this.host.querySelectorAll('.ap-btn-file-copy');

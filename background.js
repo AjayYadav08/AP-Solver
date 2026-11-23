@@ -497,11 +497,15 @@ async function queryEditorInTab(tabId) {
               activeModel = models.find(mod => (mod.uri?.path || '').endsWith(basename));
             }
 
-            // Otherwise, get model from active visible editor
+            // Otherwise, get model from active visible editor (excluding HTTP tester response pane)
             const editors = m.editor.getEditors ? m.editor.getEditors() : [];
             const activeEd = editors.find(e => {
-              const node = e.getContainerDomNode();
+              const node = e.getContainerDomNode ? e.getContainerDomNode() : null;
+              if (node && node.closest?.('[class*="response" i], [class*="http-request" i], [class*="postman" i], [class*="preview" i], #ap-solver-host')) return false;
               return node && node.getBoundingClientRect().width > 0 && !e.getOption(m.editor.EditorOption.readOnly);
+            }) || editors.find(e => {
+              const node = e.getContainerDomNode ? e.getContainerDomNode() : null;
+              return !node?.closest?.('[class*="response" i], [class*="http-request" i], #ap-solver-host');
             }) || editors[0];
 
             if (!activeModel && activeEd && activeEd.getModel()) {
@@ -824,8 +828,12 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
           if (m && m.editor) {
             const editors = m.editor.getEditors ? m.editor.getEditors() : [];
             const activeEd = editors.find(e => {
-              const node = e.getContainerDomNode();
+              const node = e.getContainerDomNode ? e.getContainerDomNode() : null;
+              if (node && node.closest?.('[class*="response" i], [class*="http-request" i], [class*="postman" i], [class*="preview" i], #ap-solver-host')) return false;
               return node && node.getBoundingClientRect().width > 0;
+            }) || editors.find(e => {
+              const node = e.getContainerDomNode ? e.getContainerDomNode() : null;
+              return !node?.closest?.('[class*="response" i], [class*="http-request" i], #ap-solver-host');
             }) || editors[0];
 
             // A. If targetModel exists in getModels, write to it directly!
@@ -859,7 +867,10 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
 
           // Strategy 2: DOM fallback: ONLY if active tab matches targetPath!
           if (isTargetActive) {
-            const editorDom = document.querySelector('.monaco-editor');
+            const allEditors = [...document.querySelectorAll('.monaco-editor')].filter(el => {
+              return !el.closest('[class*="response" i], [class*="http-request" i], [class*="postman" i], [class*="preview" i], #ap-solver-host');
+            });
+            const editorDom = allEditors[0] || document.querySelector('.monaco-editor');
             const input = editorDom?.querySelector('textarea.inputarea') || document.querySelector('textarea.inputarea');
             if (input) {
               input.focus();
