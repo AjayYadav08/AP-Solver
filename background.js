@@ -1132,7 +1132,7 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
         op: 'AP_WRITE_EDITOR',
         data: { code: cleanCode, filePath: targetFilePath }
       });
-      if (frameResps && frameResps.ok) {
+      if (frameResps && frameResps.ok && frameResps.verified && frameResps.method === 'bridge') {
         await cdpSaveFile(tabId);
         return { ok: true, verified: true, method: 'frame-editor.bridge+cdp', filePath: targetFilePath };
       }
@@ -1483,6 +1483,7 @@ export function buildBase64TerminalScript(files) {
   if (hasSeed) {
     cmd += `if [ -f src/seed.js ]; then node src/seed.js || true; elif [ -f seed.js ]; then node seed.js || true; fi && `;
   }
+  cmd += `(git add -A && git commit -m "solution" 2>/dev/null || true) && `;
   cmd += `echo "=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ==="`;
   return cmd;
 }
@@ -1606,9 +1607,11 @@ async function writeFilesViaTerminal(tabId, files, customScript = null) {
           await chrome.scripting.executeScript({
             target: { tabId, frameIds: [match.frameId] },
             func: () => {
+              const monacoTas = document.querySelectorAll('.monaco-editor textarea.inputarea');
+              monacoTas.forEach(t => { try { t.blur(); } catch(e) {} });
               const ta = document.querySelector('textarea.xterm-helper-textarea, .terminal textarea, .integrated-terminal textarea, [class*="xterm" i] textarea');
               if (ta && !ta.closest('.monaco-editor')) {
-                try { ta.focus(); } catch(e) {}
+                try { ta.focus(); ta.click(); } catch(e) {}
               }
             }
           });
@@ -1631,6 +1634,7 @@ async function writeFilesViaTerminal(tabId, files, customScript = null) {
 
       if (isMonacoFocused) {
         console.warn('[AP-Solver] Focus guard: Active element is inside Monaco editor! Aborting CDP insertText to prevent editor corruption.');
+        return { ok: false, error: 'Could not divert focus from editor to terminal' };
       } else {
         // Clean the current terminal prompt line: Ctrl+C
         await cdpNativeKey(tabId, 'c', 'KeyC', 67, 2); // Ctrl+C

@@ -51,7 +51,7 @@
 
 /* Expanded Card */
 .ap-card {
-  width: 440px;
+  width: 540px;
   max-width: 95vw;
   max-height: 90vh;
   background: rgba(15, 23, 42, 0.96);
@@ -385,8 +385,8 @@
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 8px;
   padding: 10px 12px;
-  max-height: 180px;
-  min-height: 85px;
+  max-height: 250px;
+  min-height: 100px;
   overflow-y: auto;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 11px;

@@ -376,11 +376,14 @@
           textarea.dispatchEvent(saveEvt);
 
           const lines = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')].map(l => l.textContent).join('\n');
-          const hasOld501 = /res\.statusCode\s*=\s*501/i.test(lines);
-          const countHttp = (lines.match(/require\(['"](?:node:)?http['"]\)/g) || []).length;
-          const verified = lines.length > 50 && !hasOld501 && countHttp <= 1;
-
-          sendResponse({ ok: true, verified, method: 'frame-dom-wipeAndPaste' });
+          const codeSnippet = code.replace(/[\s\r\n]+/g, ' ').slice(0, 40);
+          const linesClean = lines.replace(/[\s\r\n]+/g, ' ');
+          const verified = linesClean.includes(codeSnippet);
+          if (verified) {
+            sendResponse({ ok: true, verified: true, method: 'frame-dom-wipeAndPaste' });
+          } else {
+            sendResponse({ ok: false, error: 'DOM textarea write unverified; requires CDP hardware wipe', method: 'frame-dom-unverified' });
+          }
           return;
         }
 

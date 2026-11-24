@@ -1053,6 +1053,7 @@
     if (hasSeed) {
       bashScript += `if [ -f src/seed.js ]; then node src/seed.js || true; elif [ -f seed.js ]; then node seed.js || true; fi && `;
     }
+    bashScript += `(git add -A && git commit -m "solution" 2>/dev/null || true) && `;
     bashScript += `echo "=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ==="`;
 
     // Auto-copy terminal script to clipboard as an instant superpower
@@ -1113,9 +1114,10 @@
         const isCurrentFile = curActive.includes(baseName) || baseName.includes(curActive);
         const curCodeSample = f.code.replace(/[\s\r\n]+/g, ' ').slice(0, 50);
         const curEditorSample = curCode.replace(/[\s\r\n]+/g, ' ');
-        const hasCleanCode = curCode.length > 50 && !/\/\/\s*write your code here|\/\*\s*write your code here\s*\*\//i.test(curCode);
-        const codeMatches = curEditorSample.includes(curCodeSample);
-        const isMatch = isCurrentFile && (codeMatches || hasCleanCode);
+        const hasTerminalArtifact = /base64\s*-d|mkdir\s*-p|=== AP-SOLVER/i.test(curCode);
+        const hasCleanCode = curCode.length > 50 && !/\/\/\s*write your code here|\/\*\s*write your code here\s*\*\//i.test(curCode) && !hasTerminalArtifact;
+        const codeMatches = !hasTerminalArtifact && curEditorSample.includes(curCodeSample);
+        const isMatch = isCurrentFile && codeMatches;
 
         if (isMatch) {
           updatedFiles.push(f.filePath);
@@ -1508,8 +1510,9 @@
           const isCurrentFile = curActive.includes(baseName) || baseName.includes(curActive);
           const curCodeSample = code.replace(/[\s\r\n]+/g, ' ').slice(0, 50);
           const curEditorSample = curCode.replace(/[\s\r\n]+/g, ' ');
-          const codeMatches = curEditorSample.includes(curCodeSample) || (curCode.length > 50 && !/\/\/\s*write your code here|\/\*\s*write your code here\s*\*\//i.test(curCode));
-          if ((isCurrentFile || codeMatches) && curCode.length > 50 && !/\/\/\s*write your code here|\/\*\s*write your code here\s*\*\//i.test(curCode)) {
+          const hasTerminalArtifact = /base64\s*-d|mkdir\s*-p|=== AP-SOLVER/i.test(curCode);
+          const codeMatches = !hasTerminalArtifact && curEditorSample.includes(curCodeSample);
+          if (isCurrentFile && codeMatches) {
             ui.setFileStatus(filePath, 'injected');
             ui.addLog(`✓ Verified complete solution code already active in "${filePath}"!`, 'ok');
             return true;
