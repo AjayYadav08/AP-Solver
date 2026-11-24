@@ -51,8 +51,9 @@
 
 /* Expanded Card */
 .ap-card {
-  width: 380px;
-  max-width: 90vw;
+  width: 440px;
+  max-width: 95vw;
+  max-height: 90vh;
   background: rgba(15, 23, 42, 0.96);
   backdrop-filter: blur(16px);
   border: 1px solid rgba(56, 189, 248, 0.25);
@@ -184,7 +185,7 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  max-height: 520px;
+  max-height: calc(90vh - 55px);
   overflow-y: auto;
 }
 
@@ -261,7 +262,7 @@
 .ap-info-val {
   color: #e2e8f0;
   font-weight: 600;
-  max-width: 220px;
+  max-width: 280px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -380,11 +381,12 @@
 
 /* Log Console */
 .ap-log-container {
-  background: rgba(10, 15, 26, 0.8);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(10, 15, 26, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 8px;
-  padding: 8px 10px;
-  max-height: 120px;
+  padding: 10px 12px;
+  max-height: 180px;
+  min-height: 85px;
   overflow-y: auto;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 11px;
