@@ -374,8 +374,13 @@ window.APSolverUI = class APSolverUI {
           if (dir) {
             bashScript += `mkdir -p "${dir}" && `;
           }
-          bashScript += `cat << 'EOF' > "${f.filePath}"\n${f.code}\nEOF\n\n`;
+          bashScript += `cat << '__AP_SOLVER_EOF__' > "${f.filePath}"\n${f.code}\n__AP_SOLVER_EOF__\n\n`;
         }
+        const hasSeed = this.generatedFiles.some(f => f.filePath.endsWith('seed.js'));
+        if (hasSeed) {
+          bashScript += `if [ -f src/seed.js ]; then node src/seed.js || true; fi\n`;
+        }
+        bashScript += `echo "=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ==="\n`;
         try {
           await navigator.clipboard.writeText(bashScript.trim());
           const orig = btn.textContent;

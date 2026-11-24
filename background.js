@@ -1236,42 +1236,157 @@ async function writeFilesViaTerminal(tabId, files) {
     if (dir) {
       bashScript += `mkdir -p "${dir}" && `;
     }
-    bashScript += `cat << 'EOF' > "${f.filePath}"\n${f.code}\nEOF\n`;
+    bashScript += `cat << '__AP_SOLVER_EOF__' > "${f.filePath}"\n${f.code}\n__AP_SOLVER_EOF__\n`;
   }
 
+  // If question requires seeding (e.g. src/seed.js exists), automatically run it!
+  const hasSeed = files.some(f => f.filePath.endsWith('seed.js'));
+  if (hasSeed) {
+    bashScript += `if [ -f src/seed.js ]; then node src/seed.js || true; fi\n`;
+  }
+  bashScript += `echo "=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ==="\n`;
+
   try {
-    // 1. Check all frames to find and focus open xterm terminal
-    const scanRes = await chrome.scripting.executeScript({
+    // 1. Check all frames to find visible xterm terminal
+    let scanRes = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       func: () => {
+        // Search for visible xterm terminal canvas / screen / wrapper
+        const candidates = [
+          ...document.querySelectorAll('.xterm-screen, .terminal.xterm, .terminal-instance, .terminal-wrapper, [class*="terminal" i] .xterm, [class*="terminal" i]')
+        ];
+        for (const term of candidates) {
+          const r = term.getBoundingClientRect();
+          if (r.width > 80 && r.height > 40) {
+            term.focus();
+            try { term.click(); } catch(e) {}
+            return {
+              found: true,
+              x: r.left + Math.min(r.width / 2, 200),
+              y: r.top + Math.min(r.height / 2, 80),
+              width: r.width,
+              height: r.height
+            };
+          }
+        }
         const ta = document.querySelector('.xterm-helper-textarea, textarea.xterm-helper-textarea, [class*="xterm" i] textarea');
         if (ta) {
-          ta.focus();
-          const r = ta.getBoundingClientRect();
-          return { found: true, x: r.left + 50, y: r.top + 20 };
-        }
-        const term = document.querySelector('.terminal.xterm, .xterm-screen, [class*="terminal" i]');
-        if (term) {
-          term.focus();
-          try { term.click(); } catch(e) {}
-          const r = term.getBoundingClientRect();
-          return { found: true, x: r.left + 50, y: r.top + 20 };
+          try { ta.focus(); } catch(e) {}
+          return { found: true, isHelper: true };
         }
         return { found: false };
       }
     });
 
-    const match = scanRes?.find(r => r.result && r.result.found);
+    let match = scanRes?.find(r => r.result && r.result.found);
+
+    // If terminal is not open yet, attempt to toggle it open with Ctrl+` via CDP
+    if (!match) {
+      try {
+        const attached = await attachCDP(tabId);
+        if (attached) {
+          await cdpNativeKey(tabId, '`', 'Backquote', 192, 2); // Ctrl+`
+          await sleep(700);
+          scanRes = await chrome.scripting.executeScript({
+            target: { tabId, allFrames: true },
+            func: () => {
+              const candidates = [
+                ...document.querySelectorAll('.xterm-screen, .terminal.xterm, .terminal-instance, .terminal-wrapper, [class*="terminal" i]')
+              ];
+              for (const term of candidates) {
+                const r = term.getBoundingClientRect();
+                if (r.width > 80 && r.height > 40) {
+                  term.focus();
+                  try { term.click(); } catch(e) {}
+                  return {
+                    found: true,
+                    x: r.left + Math.min(r.width / 2, 200),
+                    y: r.top + Math.min(r.height / 2, 80),
+                    width: r.width,
+                    height: r.height
+                  };
+                }
+              }
+              return { found: false };
+            }
+          });
+          match = scanRes?.find(r => r.result && r.result.found);
+        }
+      } catch (e) {}
+    }
+
     if (!match || !match.result) {
       return { ok: false, error: 'No open terminal found in workspace' };
     }
 
+    // 2. Compute top viewport coordinates accounting for iframe offset
+    let globalX = 0;
+    let globalY = 0;
+    if (match.result.x !== undefined && match.result.y !== undefined) {
+      if (match.frameId === 0) {
+        globalX = match.result.x;
+        globalY = match.result.y;
+      } else {
+        const iframeRes = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: () => {
+            return [...document.querySelectorAll('iframe')].map(ifr => {
+              const r = ifr.getBoundingClientRect();
+              return { left: r.left, top: r.top, width: r.width, height: r.height };
+            }).filter(r => r.width > 150 && r.height > 150);
+          }
+        });
+        const iframes = iframeRes?.[0]?.result || [];
+        const vsIframe = iframes.find(ifr => ifr.left > 100 || ifr.width > 400) || iframes[0] || { left: 0, top: 0 };
+        globalX = vsIframe.left + match.result.x;
+        globalY = vsIframe.top + match.result.y;
+      }
+    }
+
+    // 3. CDP native click on terminal screen to ensure true OS hardware focus
     const attached = await attachCDP(tabId);
+    if (attached && globalX > 0 && globalY > 0) {
+      await cdpNativeClick(tabId, globalX, globalY, 1);
+      await sleep(150);
+    }
+
+    // 4. Inject script directly into target frame's xterm textarea via synthetic paste & execCommand
+    const targetFrameId = match.frameId;
+    if (targetFrameId !== undefined) {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId, frameIds: [targetFrameId] },
+          args: [bashScript],
+          func: (script) => {
+            const ta = document.querySelector('.xterm-helper-textarea, textarea.xterm-helper-textarea, [class*="xterm" i] textarea') || document.querySelector('textarea');
+            if (ta) {
+              try { ta.focus(); } catch (e) {}
+              try {
+                const dt = new DataTransfer();
+                dt.setData('text/plain', script);
+                const pasteEvt = new ClipboardEvent('paste', {
+                  clipboardData: dt,
+                  bubbles: true,
+                  cancelable: true
+                });
+                ta.dispatchEvent(pasteEvt);
+              } catch (e) {}
+              try {
+                ta.value = '';
+                document.execCommand('insertText', false, script);
+              } catch (e) {}
+            }
+          }
+        });
+      } catch (e) {}
+    }
+
+    // 5. Native CDP text typing and Enter key dispatch to execute command in terminal
     if (attached) {
       await cdpNativeInsertText(tabId, bashScript);
       await sleep(150);
       await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
-      await sleep(350);
+      await sleep(400);
       return { ok: true, method: 'terminal.cdp' };
     }
   } catch (e) {

@@ -999,15 +999,20 @@
 
     ui.setStatus(`Injecting solution into ${filesToWrite.length} file(s)...`, '', 'running', true);
 
-    // Build all-in-one terminal bash script for these files
+    // Build all-in-one terminal bash script for these files (Direct Linux Disk Writer)
     let bashScript = '';
     for (const f of filesToWrite) {
       const dir = f.filePath.includes('/') ? f.filePath.substring(0, f.filePath.lastIndexOf('/')) : '';
       if (dir) {
         bashScript += `mkdir -p "${dir}" && `;
       }
-      bashScript += `cat << 'EOF' > "${f.filePath}"\n${f.code}\nEOF\n`;
+      bashScript += `cat << '__AP_SOLVER_EOF__' > "${f.filePath}"\n${f.code}\n__AP_SOLVER_EOF__\n`;
     }
+    const hasSeed = filesToWrite.some(f => f.filePath.endsWith('seed.js'));
+    if (hasSeed) {
+      bashScript += `if [ -f src/seed.js ]; then node src/seed.js || true; fi\n`;
+    }
+    bashScript += `echo "=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ==="\n`;
 
     // Auto-copy terminal script to clipboard as an instant superpower
     try {
@@ -1015,20 +1020,25 @@
       ui.addLog(`💻 [Terminal Engine] Ready! Multi-file script auto-copied to clipboard.`, 'ok');
     } catch (e) {}
 
-    // FAST PATH: If terminal is open in workspace, inject via terminal directly to disk!
+    // PRIMARY PATH: Integrated Terminal Execution (Direct Container Disk Injection)
     try {
-      const termResp = await sendMsg({ op: 'AP_WRITE_TERMINAL', data: { files: filesToWrite } }, 5000);
+      ui.addLog(`⚡ [Terminal Turbo Engine] Writing ${filesToWrite.length} file(s) directly to disk via Integrated Terminal...`, 'ok');
+      const termResp = await sendMsg({ op: 'AP_WRITE_TERMINAL', data: { files: filesToWrite } }, 7000);
       if (termResp && termResp.ok) {
         ui.addLog(`⚡ [Terminal Turbo Engine] Successfully wrote ${filesToWrite.length} file(s) directly to disk via Terminal!`, 'ok');
         for (const f of filesToWrite) {
           ui.setFileStatus(f.filePath, 'injected');
         }
         ui.setStatus('Files Saved via Terminal', `${filesToWrite.length} file(s) saved directly to container disk.`, 'success');
+        await sleep(600); // Allow VS Code watcher to sync disk changes
         return { ok: true, updatedFiles: filesToWrite.map(f => f.filePath), failedFiles: [] };
       }
     } catch (e) {
       console.log('[AP-Solver] Terminal direct write bypassed:', e);
     }
+
+    ui.addLog(`⚠️ [Terminal Engine] Terminal not open/detected. Multi-file script is COPIED to clipboard!`, 'warn');
+    ui.addLog(`👉 To write via terminal: Click your open terminal (or press Ctrl+\`) and press Cmd+V!`, 'warn');
 
     const updatedFiles = [];
     const failedFiles = [];
@@ -1113,9 +1123,14 @@
     // Verify active editor in workspace does not have starter placeholder
     try {
       const editorStatus = await sendMsg({ op: 'AP_QUERY_EDITOR' }, 5000);
-      if (editorStatus && editorStatus.ok && editorStatus.code) {
-        if (/\/\/\s*write your code here|\/\*\s*write your code here\s*\*\//i.test(editorStatus.code)) {
-          ui.addLog('🛑 Verification failed: Active editor still contains "// write your code here"! The code was not replaced. Please paste the solution into the editor before submitting.', 'bad');
+      if (editorStatus && editorStatus.ok && editorStatus.code && editorStatus.activeFile) {
+        const curActive = sanitizeActiveFile(editorStatus.activeFile).toLowerCase();
+        const isTargetFile = filesToWrite.some(f => {
+          const base = f.filePath.split('/').pop().toLowerCase();
+          return curActive.includes(base) || base.includes(curActive);
+        });
+        if (isTargetFile && /\/\/\s*write your code here|\/\*\s*write your code here\s*\*\//i.test(editorStatus.code)) {
+          ui.addLog(`🛑 Verification failed: Active editor for "${editorStatus.activeFile}" still contains starter placeholder! The code was not replaced. Please paste the solution into the editor before submitting.`, 'bad');
           ui.setStatus('Editor Not Replaced', 'Starter placeholder still present in editor.', 'error');
           return false;
         }
