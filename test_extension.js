@@ -992,4 +992,40 @@ if (!uiJs31.includes('safe.directory') || !uiJs31.includes('npx -y prisma')) {
 
 console.log('   ✓ Strict Zero-Monaco-Corruption, Container Permissions & Clean Terminal Execution verified');
 
+// ---------------------------------------------------------------------------
+// 32. Deep Terminal Error Parsing, Multi-Failure Itemization & One-Shot Debug Matrix
+// ---------------------------------------------------------------------------
+console.log('32. Testing Deep Terminal Error Parsing, Multi-Failure Itemization & One-Shot Debug Matrix...');
+const contentJs32 = fs.readFileSync(path.join(__dirname, 'content/content.js'), 'utf-8');
+const llmJs32 = fs.readFileSync(path.join(__dirname, 'utils/llm.js'), 'utf-8');
+
+// 1. Verify parseAndStructureFailures exists in content.js and parses multi-line assertion diffs
+if (!contentJs32.includes('function parseAndStructureFailures') ||
+    !contentJs32.includes('HTTP Status mismatch') ||
+    !contentJs32.includes('Unhandled Async Timeout')) {
+  throw new Error('content.js must implement parseAndStructureFailures with status code mismatch and async timeout detection!');
+}
+
+// 2. Verify terminal output is NOT truncated to 1500 chars (upscaled to 14000)
+if (contentJs32.includes('terminalOutput.slice(-1500)')) {
+  throw new Error('content.js must NOT truncate terminal output to 1500 chars! It must preserve comprehensive logs (14000 chars).');
+}
+if (!contentJs32.includes('terminalOutput.slice(-14000)')) {
+  throw new Error('content.js must preserve up to 14000 characters of terminal output traces!');
+}
+
+// 3. Verify llm.js enforces one-shot simultaneous resolution
+if (!llmJs32.includes('ONE-SHOT SIMULTANEOUS ERROR RESOLUTION REQUIRED') ||
+    !llmJs32.includes('MANDATORY ONE-SHOT REFINEMENT INSTRUCTIONS')) {
+  throw new Error('llm.js must enforce ONE-SHOT SIMULTANEOUS ERROR RESOLUTION in buildPrompt feedback section!');
+}
+
+// 4. Verify findMochaErrorForTest supports fuzzy keyword matching & iframes
+if (!contentJs32.includes('contentDocument || ifr.contentWindow?.document') ||
+    !contentJs32.includes('cleanTestName.split')) {
+  throw new Error('content.js findMochaErrorForTest must support fuzzy keyword matching and iframe document querying!');
+}
+
+console.log('   ✓ Deep Terminal Error Parsing, Multi-Failure Itemization & One-Shot Debug Matrix verified');
+
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');

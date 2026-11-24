@@ -525,18 +525,39 @@
     if (!testName) return '';
     try {
       const candidates = [...document.querySelectorAll('.xterm-rows, pre, code, [class*="terminal" i], [class*="console" i], [class*="output" i]')];
+      // Also inspect accessible iframes (such as VS Code web workbench)
+      for (const ifr of document.querySelectorAll('iframe')) {
+        try {
+          const doc = ifr.contentDocument || ifr.contentWindow?.document;
+          if (doc) {
+            candidates.push(...doc.querySelectorAll('.xterm-rows, pre, code, [class*="terminal" i], [class*="output" i]'));
+          }
+        } catch(e) {}
+      }
+
       for (const el of candidates) {
         const text = el.innerText || '';
-        if (!text || (!text.includes('AssertionError') && !text.includes('failing') && !text.includes('Error:'))) continue;
+        if (!text || (!text.includes('AssertionError') && !text.includes('failing') && !text.includes('Error:') && !text.includes('timeout'))) continue;
 
         const cleanTestName = testName.replace(/^\d+[\.\)]\s*/, '').trim();
-        const testIdx = text.indexOf(cleanTestName);
+        let testIdx = text.indexOf(cleanTestName);
+        if (testIdx === -1) {
+          // Fuzzy match on key phrases in test name
+          const words = cleanTestName.split(/\s+/).filter(w => w.length > 3);
+          if (words.length > 0) {
+            const firstIdx = text.indexOf(words[0]);
+            if (firstIdx !== -1 && words.some(w => text.includes(w))) {
+              testIdx = firstIdx;
+            }
+          }
+        }
+
         if (testIdx !== -1) {
           const after = text.substring(testIdx);
           const lines = after.split('\n').map(l => l.trim()).filter(Boolean);
-          for (let i = 1; i < Math.min(lines.length, 12); i++) {
-            if (/AssertionError|Error:|expected|timeout of|Cannot find module|TypeError/i.test(lines[i])) {
-              return lines.slice(i, Math.min(i + 3, lines.length)).join(' | ');
+          for (let i = 1; i < Math.min(lines.length, 14); i++) {
+            if (/AssertionError|Error:|expected|timeout of|Cannot find module|TypeError|ReferenceError/i.test(lines[i])) {
+              return lines.slice(i, Math.min(i + 4, lines.length)).join(' | ');
             }
           }
         }
@@ -990,14 +1011,57 @@
         );
       });
 
+      // Also inspect accessible iframes (workbench / vscode iframe)
+      try {
+        for (const ifr of document.querySelectorAll('iframe')) {
+          const doc = ifr.contentDocument || ifr.contentWindow?.document;
+          if (doc) {
+            const ifrEls = [...doc.querySelectorAll('pre, code, .xterm-rows, [class*="terminal" i], [class*="output" i], [class*="log" i], div')].filter(el => {
+              const text = el.innerText || '';
+              return /mocha|npm test|AssertionError|failing|passing|prisma|timeout|error|node|TypeError|ReferenceError|SyntaxError/i.test(text);
+            });
+            candidates.push(...ifrEls);
+          }
+        }
+      } catch(e) {}
+
       if (candidates.length > 0) {
         // Prioritize candidates located in left section (x < window.innerWidth * 0.55)
-        const leftCandidates = candidates.filter(c => c.getBoundingClientRect().left < window.innerWidth * 0.55);
+        const leftCandidates = candidates.filter(c => {
+          try {
+            return c.getBoundingClientRect().left < window.innerWidth * 0.55;
+          } catch(e) { return true; }
+        });
         const bestPool = leftCandidates.length > 0 ? leftCandidates : candidates;
-        const longest = bestPool.sort((a, b) => (b.innerText || '').length - (a.innerText || '').length)[0];
-        const logText = (longest.innerText || '').trim();
-        if (logText.length > 25) {
-          return logText;
+
+        const collected = [];
+        for (const el of bestPool) {
+          // If element has xterm-rows, extract line by line to prevent virtual scroll truncation
+          const xtermRows = el.querySelectorAll ? el.querySelectorAll('.xterm-rows > div') : null;
+          if (xtermRows && xtermRows.length > 0) {
+            const xtermText = Array.from(xtermRows).map(row => row.innerText || '').join('\n').trim();
+            if (xtermText.length > 25 && !collected.includes(xtermText)) {
+              collected.push(xtermText);
+            }
+          }
+          const t = (el.innerText || '').trim();
+          if (t.length > 25 && !collected.includes(t)) {
+            collected.push(t);
+          }
+        }
+
+        if (collected.length > 0) {
+          // Sort candidates that contain rich error traces first (AssertionError, failing, etc.)
+          collected.sort((a, b) => {
+            const aHasTrace = /AssertionError|failing|expected/i.test(a) ? 1 : 0;
+            const bHasTrace = /AssertionError|failing|expected/i.test(b) ? 1 : 0;
+            if (aHasTrace !== bHasTrace) return bHasTrace - aHasTrace;
+            return b.length - a.length;
+          });
+          const longestLog = collected[0];
+          if (longestLog.length > 25) {
+            return longestLog;
+          }
         }
       }
 
@@ -1280,6 +1344,88 @@
     }
   }
 
+  function parseAndStructureFailures(terminalOutput, subRes) {
+    const analysisItems = [];
+    const seenErrors = new Set();
+
+    if (terminalOutput) {
+      const mochaFailureRegex = /(?:^|\n)\s*(\d+)\)\s+([^\n:]+):?\s*\n([\s\S]*?)(?=(?:\n\s*\d+\)\s+[^\n:]+:?|\n\s*(?:\d+\s+failing|\d+\s+passing|\z)))/g;
+      let match;
+      while ((match = mochaFailureRegex.exec(terminalOutput)) !== null) {
+        const num = match[1];
+        const title = match[2].trim();
+        const block = match[3].trim();
+        const lines = block.split('\n').map(l => l.trim()).filter(Boolean);
+
+        const errLine = lines.find(l => /AssertionError|TypeError|ReferenceError|SyntaxError|Error:|timeout of/i.test(l)) || lines[0] || 'Assertion Failure';
+        const diffLines = lines.filter(l => /^[+-]\s|expected\s+|actual\s+|to equal|to deeply equal/i.test(l));
+        const stackLine = lines.find(l => /^at\s+.+\((.+:\d+:\d+)\)/.test(l) || /^at\s+.+:\d+:\d+/.test(l)) || '';
+
+        let diagnosis = '';
+        const combined = errLine + ' ' + diffLines.join(' ');
+        if (/expected\s+(\d+)\s+to equal\s+(\d+)/i.test(combined) || /-(\d+)\s*\+(\d+)/.test(combined)) {
+          const m = combined.match(/expected\s+(\d+)\s+to equal\s+(\d+)/i) || combined.match(/-(\d+)\s*\+(\d+)/);
+          if (m) {
+            diagnosis = `HTTP Status mismatch: Test expects HTTP ${m[2]}, but endpoint returned HTTP ${m[1]}. Return res.status(${m[2]}).json(...) for this failure case.`;
+          } else {
+            diagnosis = `HTTP Status code mismatch. Check status code sent in response.`;
+          }
+        } else if (/timeout of\s+\d+ms exceeded/i.test(errLine)) {
+          diagnosis = `Unhandled Async Timeout: Request hung. Ensure EVERY branch (if, else, catch) calls res.status().json() or res.send(), and all DB/Prisma operations are awaited.`;
+        } else if (/Cannot read propert|is not defined|TypeError/i.test(errLine)) {
+          diagnosis = `Runtime / Type Error: Variable or model accessed incorrectly. Check imports, Prisma model casing, and input validation guards.`;
+        } else if (/to deeply equal|to have property/i.test(errLine) || diffLines.length > 0) {
+          diagnosis = `Response Body Mismatch: Returned JSON shape does not match assertions. Ensure exact property keys, types, and values are returned.`;
+        }
+
+        const key = title.toLowerCase();
+        seenErrors.add(key);
+
+        analysisItems.push({
+          num,
+          title,
+          error: errLine,
+          diff: diffLines.slice(0, 4).join('\n') || null,
+          stack: stackLine || null,
+          diagnosis: diagnosis || 'Verify route handler logic against test assertion.'
+        });
+      }
+    }
+
+    if (subRes?.tests && subRes.tests.length > 0) {
+      const failItems = subRes.tests.filter(t => t.fail);
+      for (const fi of failItems) {
+        const key = fi.name.toLowerCase();
+        if (![...seenErrors].some(k => key.includes(k) || k.includes(key))) {
+          analysisItems.push({
+            num: analysisItems.length + 1,
+            title: fi.name,
+            error: fi.error || 'Test assertion failed in evaluation',
+            diff: null,
+            stack: null,
+            diagnosis: 'Implement missing functionality or fix validation logic for this test case.'
+          });
+        }
+      }
+    } else if (subRes?.failedTests && subRes.failedTests.length > 0) {
+      for (const ft of subRes.failedTests) {
+        const key = ft.toLowerCase();
+        if (![...seenErrors].some(k => key.includes(k) || k.includes(key))) {
+          analysisItems.push({
+            num: analysisItems.length + 1,
+            title: ft,
+            error: 'Test assertion failed',
+            diff: null,
+            stack: null,
+            diagnosis: 'Implement missing functionality or fix validation logic for this test case.'
+          });
+        }
+      }
+    }
+
+    return analysisItems;
+  }
+
   async function handleOneClickSolve() {
     console.log('[AP-Solver] handleOneClickSolve triggered');
     try {
@@ -1408,9 +1554,25 @@
 
           const terminalOutput = await readTerminalOutput(5500);
 
+          const failureItems = parseAndStructureFailures(terminalOutput, subRes);
+
           // Build rich combined feedback from BOTH Tab 2 (Failed tests) and Tab 3 (Terminal logs)
           const feedbackBlocks = [];
           feedbackBlocks.push(`=== PREVIOUS ATTEMPT ${attempt} FAILED (${subRes?.passed || 0}/${subRes?.total || 0} PASSED AT ${timeStr}) ===`);
+
+          if (failureItems.length > 0) {
+            feedbackBlocks.push(
+              `🚨 COMPLETE ITEMIZED BREAKDOWN OF ALL ${failureItems.length} FAILING TESTS:\n` +
+              `You MUST simultaneously fix EVERY SINGLE test failure listed below in one shot. Do NOT leave any test unresolved:\n\n` +
+              failureItems.map(item => (
+                `🔴 FAILURE #${item.num}: "${item.title}"\n` +
+                `   - Exact Error: ${item.error}\n` +
+                (item.diff ? `   - Diff / Assertion: ${item.diff}\n` : '') +
+                (item.stack ? `   - Source Location: ${item.stack}\n` : '') +
+                `   - Root Cause & Required Fix: ${item.diagnosis}`
+              )).join('\n\n')
+            );
+          }
 
           if (subRes?.tests && subRes.tests.length > 0) {
             const failItems = subRes.tests.filter(t => t.fail);
@@ -1422,8 +1584,9 @@
           }
 
           if (terminalOutput && terminalOutput.length > 25) {
-            feedbackBlocks.push(`SIDE BAR TERMINAL & MOCHA ERROR TRACES (FROM TAB 3):\n\`\`\`\n${terminalOutput.slice(-1500)}\n\`\`\``);
-            ui.addLog(`📄 Captured side bar terminal error logs (${terminalOutput.split('\n').length} lines).`, 'ok');
+            const cleanTermTrace = terminalOutput.length > 14000 ? terminalOutput.slice(-14000) : terminalOutput;
+            feedbackBlocks.push(`SIDE BAR TERMINAL & MOCHA ERROR TRACES (FROM TAB 3):\n\`\`\`\n${cleanTermTrace}\n\`\`\``);
+            ui.addLog(`📄 Captured side bar terminal error logs (${terminalOutput.split('\n').length} lines, ${failureItems.length} parsed failure(s)).`, 'ok');
           }
 
           // Gather CURRENT CODE of ALL files in src/ (and workspace) as requested by user
@@ -1471,18 +1634,21 @@
           }
 
           feedbackBlocks.push(
-            `CRITICAL DEBUGGING DIRECTIVES FOR NEXT ATTEMPT:\n` +
-            `1. Fix every failed test case listed above from Tab 2 and Tab 3.\n` +
-            `2. Read the CURRENT CODE of each file in src/ above. Do NOT duplicate code or invent wrong schemas.\n` +
-            `3. If any timeouts occurred (e.g. "Timeout of 2000ms exceeded"), ensure EVERY route handler calls res.status(...).json(...) or res.send(...) so the request NEVER hangs.\n` +
-            `4. For user authentication / Prisma / bcrypt:\n` +
-            `   - Validate input: return 400 immediately if email or password is missing or empty string.\n` +
-            `   - Check duplicate email: query database first (findUnique/findFirst); return 400 if user exists.\n` +
-            `   - Hash password with bcrypt using EXACTLY salt rounds = 10 (await bcrypt.hash(password, 10)).\n` +
-            `   - Persist user to PostgreSQL via Prisma (prisma.user.create).\n` +
-            `   - NEVER return or expose the password or hash in the response (return user without password).\n` +
-            `5. Provide output in markdown code blocks with the exact file path on Line 1 (e.g. \`// src/index.js\`).\n` +
-            `6. AVOID WRITING COMMENTS IN CODE: Output 100% clean, executable code without any comments.`
+            `🔥 MANDATORY ONE-SHOT COMPREHENSIVE DEBUGGING DIRECTIVES:\n` +
+            `1. SIMULTANEOUS RESOLUTION: You MUST resolve EVERY single failed test case #1 through #${Math.max(failureItems.length, 1)} in this single output. Do NOT cherry-pick or fix only one error.\n` +
+            `2. EXAMINE CURRENT CODE: Cross-reference each failure with the CURRENT CODE of all files above. Fix the exact lines where status codes, schemas, or logic diverge.\n` +
+            `3. STATUS CODE & RESPONSE SHAPE PRECISION:\n` +
+            `   - If test expects 400 for invalid/missing input, validate req.body fields upfront and return res.status(400).json({ error: '...' }).\n` +
+            `   - If test expects 201 for resource creation, return res.status(201).json(...).\n` +
+            `   - If test expects 404 for not found, return res.status(404).json(...).\n` +
+            `   - If test expects 409 or 400 for duplicate records (e.g. email exists), check database first and return appropriate error status.\n` +
+            `4. PREVENT TIMEOUTS: Ensure every endpoint handler calls res.status(...).json(...) or res.send(...) in EVERY code branch (including if/else and catch blocks). Always await async DB calls.\n` +
+            `5. PRISMA & SEEDING RELATIONS:\n` +
+            `   - In prisma/schema.prisma, ensure relations have correct references and unique foreign keys (e.g. userId Int @unique, user User @relation(fields: [userId], references: [id])).\n` +
+            `   - In src/seed.js, clean existing records with deleteMany() before seeding, and disconnect Prisma in finally.\n` +
+            `   - When returning user objects, never return plain or hashed passwords unless explicitly required.\n` +
+            `6. MULTI-FILE OUTPUT: Output EVERY file that requires changes in separate code blocks with the exact file path on Line 1 (e.g. \`// src/index.js\`, \`// prisma/schema.prisma\`, \`// src/seed.js\`).\n` +
+            `7. ZERO COMMENTS: Output clean, production-ready, comment-free code.`
           );
 
           feedback = feedbackBlocks.join('\n\n');

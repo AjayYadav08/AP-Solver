@@ -527,10 +527,18 @@ export function buildPrompt({
   }
 
   if (feedback) {
-    parts.push(`## CRITICAL: PREVIOUS SUBMISSION FAILED
-Earlier attempt resulted in test failures. Fix these issues immediately:
+    parts.push(`## CRITICAL: PREVIOUS SUBMISSION FAILED — ONE-SHOT SIMULTANEOUS ERROR RESOLUTION REQUIRED
+Earlier attempt resulted in test failures. The full terminal logs, assertion diffs, and itemized errors have been deeply analyzed below.
+You MUST analyze EVERY failure trace and implement a unified, comprehensive fix that resolves ALL test cases simultaneously in this single output.
+
 ${feedback}
-Carefully re-read requirements and ensure all edge cases, files, and status codes are handled.`);
+
+### MANDATORY ONE-SHOT REFINEMENT INSTRUCTIONS:
+1. Resolve EVERY failing test simultaneously. Do NOT cherry-pick or fix only the first failure.
+2. Cross-reference the exact line numbers and stack traces with the current file contents provided above.
+3. Match exact status codes (200, 201, 400, 404, 409) and exact JSON key shapes as demanded by tests.
+4. Guarantee no hanging async requests (every branch must call res.status(...).json(...) or res.send(...)).
+5. Return complete, production-ready code for all updated files with \`// <filepath>\` on Line 1 and zero comments.`);
   }
 
   const isPrismaTask = /prisma|schema\.prisma|seed\.js|one-to-one/i.test((questionTitle || '') + ' ' + (questionDetails || ''));
