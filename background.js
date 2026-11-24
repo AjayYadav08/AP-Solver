@@ -1615,19 +1615,37 @@ async function writeFilesViaTerminal(tabId, files, customScript = null) {
         } catch(e) {}
       }
 
-      // Clean the current terminal prompt line: Ctrl+C
-      await cdpNativeKey(tabId, 'c', 'KeyC', 67, 2); // Ctrl+C
-      await sleep(120);
+      // CRITICAL FOCUS GUARD: Verify active focus is NOT inside Monaco Editor
+      let isMonacoFocused = false;
+      try {
+        const focusCheck = await chrome.scripting.executeScript({
+          target: { tabId, allFrames: true },
+          func: () => {
+            const el = document.activeElement;
+            if (!el) return false;
+            return !!el.closest('.monaco-editor, .monaco-workbench .part.editor') || (el.tagName === 'TEXTAREA' && el.classList.contains('inputarea'));
+          }
+        });
+        isMonacoFocused = focusCheck?.some(f => f.result === true);
+      } catch(e) {}
 
-      // Type atomic single-line base64 script via hardware CDP InsertText
-      await cdpNativeInsertText(tabId, bashScript);
-      await sleep(120);
+      if (isMonacoFocused) {
+        console.warn('[AP-Solver] Focus guard: Active element is inside Monaco editor! Aborting CDP insertText to prevent editor corruption.');
+      } else {
+        // Clean the current terminal prompt line: Ctrl+C
+        await cdpNativeKey(tabId, 'c', 'KeyC', 67, 2); // Ctrl+C
+        await sleep(120);
 
-      // Execute in bash via Enter key
-      await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
-      await sleep(1500); // Allow disk writing and node seed execution to complete
+        // Type atomic single-line base64 script via hardware CDP InsertText
+        await cdpNativeInsertText(tabId, bashScript);
+        await sleep(120);
 
-      return { ok: true, method: 'terminal.cdp' };
+        // Execute in bash via Enter key
+        await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
+        await sleep(1500); // Allow disk writing and node seed execution to complete
+
+        return { ok: true, method: 'terminal.cdp' };
+      }
     }
 
     // 5. Fallback if CDP is not available: In-frame direct script injection

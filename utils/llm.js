@@ -98,25 +98,25 @@ STRICT GUIDELINES:
          return res.status(200).json({ token });
      * authenticate Middleware:
        - Extract header: 'const authHeader = req.headers["authorization"] || req.headers["Authorization"];'.
-       - Reject if missing, null, not a string, or not starting with 'Bearer ':
+       - Reject if Authorization header is missing or not a string:
          if (!authHeader || typeof authHeader !== 'string') {
-           return res.status(401).json({ message: 'Invalid credentials' });
+           return res.status(401).json({ message: 'Token missing' });
          }
          const parts = authHeader.split(' ');
          if (parts.length !== 2 || parts[0] !== 'Bearer' || !parts[1]) {
-           return res.status(401).json({ message: 'Invalid credentials' });
+           return res.status(401).json({ message: 'Invalid or expired token' });
          }
          const token = parts[1];
-       - Verify Token:
+       - Verify Token with SECRET:
          try {
            const decoded = jwt.verify(token, SECRET);
            if (!decoded || (!decoded.userId && !decoded.id)) {
-             return res.status(401).json({ message: 'Invalid credentials' });
+             return res.status(401).json({ message: 'Invalid or expired token' });
            }
            req.user = decoded;
            return next();
          } catch (err) {
-           return res.status(401).json({ message: 'Invalid credentials' });
+           return res.status(401).json({ message: 'Invalid or expired token' });
          }
      * GET /profile Endpoint:
        - Protect with 'authenticate' middleware: 'app.get("/profile", authenticate, (req, res) => { ... });'.

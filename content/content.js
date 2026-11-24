@@ -1072,9 +1072,9 @@
           for (const f of filesToWrite) {
             ui.setFileStatus(f.filePath, 'injected');
           }
-          ui.setStatus('Files Saved via Terminal', `${filesToWrite.length} file(s) saved directly to container disk.`, 'success');
-          await sleep(1200); // Allow disk writing and Prisma/DB transactions to commit
-          return { ok: true, updatedFiles: filesToWrite.map(f => f.filePath), failedFiles: [] };
+          ui.setStatus('Files Saved via Terminal', `${filesToWrite.length} file(s) saved to disk. Syncing Monaco editor...`, 'success');
+          await sleep(500);
+          break; // Terminal write completed; proceed to synchronize Monaco editor in-memory models
         } else {
           ui.addLog(`⚠️ [Terminal Engine] Notice: ${termResp?.error || 'Terminal focus pending'}. Script is in clipboard!`, 'warn');
           if (termAttempt < 2) await sleep(500);
@@ -1172,14 +1172,16 @@
     // Give editor buffer and container file system 1500ms to settle after file save
     await sleep(1500);
 
-    // Verify active editor in workspace does not have starter placeholder
+    // Verify active editor in workspace does not have starter placeholder or bash artifacts
     try {
       const editorStatus = await sendMsg({ op: 'AP_QUERY_EDITOR' }, 5000);
       if (editorStatus && editorStatus.ok && editorStatus.code && editorStatus.activeFile) {
         if (/base64\s*-d|mkdir\s*-p|=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ===/i.test(editorStatus.code)) {
-          ui.addLog(`🛑 Verification failed: Active editor contains terminal command artifacts! Re-injection required.`, 'bad');
-          ui.setStatus('Invalid Code Artifact', 'Editor contains bash artifacts.', 'error');
-          return false;
+          ui.addLog(`⚠️ Notice: Active editor contains terminal command artifact. Auto-repairing with clean solution...`, 'warn');
+          for (const f of filesToWrite) {
+            await writeCodeToEditor(f.code, f.filePath);
+          }
+          await sleep(600);
         }
         const curActive = sanitizeActiveFile(editorStatus.activeFile).toLowerCase();
         const isTargetFile = filesToWrite.some(f => {
@@ -1188,7 +1190,11 @@
         });
         if (isTargetFile && /\/\/\s*write your code here|\/\*\s*write your code here\s*\*\//i.test(editorStatus.code)) {
           if (filesWrittenViaTerminal) {
-            ui.addLog(`ℹ️ Notice: Files were injected directly to Linux container disk via Terminal. Monaco editor in-memory tab will sync automatically. Proceeding to submit!`, 'ok');
+            ui.addLog(`⚠️ Notice: Starter placeholder detected in editor while files were written via terminal. Auto-repairing editor model...`, 'warn');
+            for (const f of filesToWrite) {
+              await writeCodeToEditor(f.code, f.filePath);
+            }
+            await sleep(600);
           } else {
             ui.addLog(`🛑 Verification failed: Active editor for "${editorStatus.activeFile}" still contains starter placeholder! The code was not replaced. Please paste the solution into the editor before submitting.`, 'bad');
             ui.setStatus('Editor Not Replaced', 'Starter placeholder still present in editor.', 'error');
