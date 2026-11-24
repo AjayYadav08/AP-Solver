@@ -333,6 +333,16 @@
       }
       document.execCommand('selectAll', false, null);
 
+      // True Wipe: Delete & Backspace existing selection before pasting
+      try { document.execCommand('delete', false, null); } catch(e) {}
+      const backspaceEvt = new KeyboardEvent('keydown', { key: 'Backspace', code: 'Backspace', keyCode: 8, which: 8, bubbles: true, cancelable: true });
+      textarea.dispatchEvent(backspaceEvt);
+      try {
+        textarea.dispatchEvent(new InputEvent('beforeinput', { inputType: 'deleteContentBackward', bubbles: true, cancelable: true }));
+      } catch(e) {}
+      textarea.value = '';
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+
       // 4. Primary: Block Paste to avoid newline auto-indent staircase drift
       const dt = new DataTransfer();
       dt.setData('text/plain', newCode);

@@ -1012,6 +1012,7 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
             }
 
             if (targetModel && typeof targetModel.setValue === 'function') {
+              try { targetModel.setValue(''); } catch(e) {}
               targetModel.setValue(codeToWrite);
               if (activeEd && activeEd.getModel() !== targetModel) {
                 try { activeEd.setModel(targetModel); } catch(e) {}
@@ -1031,6 +1032,7 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
 
             // B. If target is active in activeEd (or if (!targetPath)), write to activeEd model!
             if ((!targetPath || isTargetActive) && activeEd && activeEd.getModel()) {
+              try { activeEd.getModel().setValue(''); } catch(e) {}
               activeEd.getModel().setValue(codeToWrite);
               triggerFileSave();
               await sleep(150);
@@ -1134,6 +1136,61 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
         return { ok: true, verified: true, method: 'frame-editor.bridge+cdp', filePath: targetFilePath };
       }
     } catch(e) {}
+
+    // Phase 4: Hardware Native CDP Wipe & Replace (Complete erase of starter code via real OS keystrokes)
+    try {
+      const attached = await attachCDP(tabId);
+      if (attached) {
+        console.log(`[AP-Solver CDP] Performing Hardware Native Wipe & Replace for "${targetFilePath || 'active file'}"...`);
+        // 1. Dismiss any open rename/modal with Escape
+        await cdpNativeKey(tabId, 'Escape', 'Escape', 27, 0);
+        await sleep(60);
+
+        // 2. Focus editor via click
+        const edPos = await chrome.scripting.executeScript({
+          target: { tabId, allFrames: true },
+          func: () => {
+            const ed = document.querySelector('.monaco-editor');
+            if (!ed) return null;
+            if (ed.closest?.('[class*="response" i], [class*="http-request" i], #ap-solver-host')) return null;
+            const r = ed.getBoundingClientRect();
+            if (r.width > 50 && r.height > 50) {
+              return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+            }
+            return null;
+          }
+        });
+        const validPos = edPos?.find(p => p.result)?.result;
+        if (validPos) {
+          await cdpNativeClick(tabId, validPos.x, validPos.y, 1);
+          await sleep(60);
+        }
+
+        // 3. True OS Select All: Cmd+A (Mac) and Ctrl+A (Win/Linux)
+        await cdpNativeKey(tabId, 'a', 'KeyA', 65, 4); // Cmd+A (Mac)
+        await sleep(80);
+        await cdpNativeKey(tabId, 'a', 'KeyA', 65, 2); // Ctrl+A (Win/Linux)
+        await sleep(80);
+
+        // 4. True OS Hardware Backspace & Delete to 100% WIPE the initial code!
+        await cdpNativeKey(tabId, 'Backspace', 'Backspace', 8, 0);
+        await sleep(60);
+        await cdpNativeKey(tabId, 'Delete', 'Delete', 46, 0);
+        await sleep(80);
+
+        // 5. True OS Hardware Insert clean solution
+        await cdpNativeInsertText(tabId, cleanCode);
+        await sleep(150);
+
+        // 6. Save via Cmd+S / Ctrl+S
+        await cdpSaveFile(tabId);
+        await sleep(150);
+
+        return { ok: true, verified: true, method: 'cdp.hardwareWipeAndReplace', filePath: targetFilePath };
+      }
+    } catch (e) {
+      console.warn('[AP-Solver CDP] Hardware wipe error:', e);
+    }
   } catch (err) {
     console.warn('[AP-Solver] Error writing to editor in tab:', err);
   }

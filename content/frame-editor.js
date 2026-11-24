@@ -329,6 +329,16 @@
           }
           document.execCommand('selectAll', false, null);
 
+          // True Wipe: Delete & Backspace existing selection before inserting or pasting
+          try { document.execCommand('delete', false, null); } catch(e) {}
+          const backspaceEvt = new KeyboardEvent('keydown', { key: 'Backspace', code: 'Backspace', keyCode: 8, which: 8, bubbles: true, cancelable: true });
+          textarea.dispatchEvent(backspaceEvt);
+          try {
+            textarea.dispatchEvent(new InputEvent('beforeinput', { inputType: 'deleteContentBackward', bubbles: true, cancelable: true }));
+          } catch(e) {}
+          textarea.value = '';
+          textarea.dispatchEvent(new Event('input', { bubbles: true }));
+
           await new Promise(r => setTimeout(r, 120));
 
           // 4. Insert text replacing selection

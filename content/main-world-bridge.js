@@ -516,6 +516,7 @@
 
           // If targetModel found, write directly into it!
           if (targetModel && typeof targetModel.setValue === 'function') {
+            try { targetModel.setValue(''); } catch(e) {}
             targetModel.setValue(newCode);
             const editor = getActiveEditor(monaco);
             if (editor && editor.getModel() !== targetModel) {
@@ -537,6 +538,7 @@
             const editor = getActiveEditor(monaco);
             const activeModel = editor?.getModel();
             if (activeModel && typeof activeModel.setValue === 'function') {
+              try { activeModel.setValue(''); } catch(e) {}
               activeModel.setValue(newCode);
               triggerSave();
               const val = activeModel.getValue();
@@ -554,6 +556,7 @@
             const editor = getActiveEditor(monaco);
             const activeModel = editor?.getModel();
             if (activeModel && typeof activeModel.setValue === 'function') {
+              try { activeModel.setValue(''); } catch(e) {}
               activeModel.setValue(newCode);
               triggerSave();
               window.postMessage({ action: 'AP_WRITE_CODE_RESULT', id, ok: true, method: 'monaco.activeModel.setValue' }, '*');
@@ -627,6 +630,16 @@
             textarea.dispatchEvent(metaSelectAll);
             textarea.dispatchEvent(ctrlSelectAll);
             document.execCommand('selectAll', false, null);
+
+            // True Wipe: Delete & Backspace existing selection before pasting
+            try { document.execCommand('delete', false, null); } catch(e) {}
+            const backspaceEvt = new KeyboardEvent('keydown', { key: 'Backspace', code: 'Backspace', keyCode: 8, which: 8, bubbles: true, cancelable: true });
+            textarea.dispatchEvent(backspaceEvt);
+            try {
+              textarea.dispatchEvent(new InputEvent('beforeinput', { inputType: 'deleteContentBackward', bubbles: true, cancelable: true }));
+            } catch(e) {}
+            textarea.value = '';
+            textarea.dispatchEvent(new Event('input', { bubbles: true }));
 
             // 4. Primary: Block Paste & insertText
             const dt = new DataTransfer();
