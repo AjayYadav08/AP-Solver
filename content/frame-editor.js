@@ -422,7 +422,11 @@
           return;
         }
 
-        const ta = termInfo.textarea || document.querySelector('textarea.xterm-helper-textarea, textarea');
+        const ta = termInfo.textarea || document.querySelector('textarea.xterm-helper-textarea, .terminal textarea, .integrated-terminal textarea, [class*="xterm" i] textarea');
+        if (ta && ta.closest('.monaco-editor')) {
+          sendResponse({ ok: false, error: 'Targeted editor instead of terminal' });
+          return;
+        }
         if (ta) {
           try { ta.focus(); } catch(e) {}
         }
@@ -486,9 +490,11 @@
       const els = [...document.querySelectorAll(sel)];
       for (const el of els) {
         const term = el.closest('.terminal, .terminal-wrapper, .integrated-terminal') || el;
+        if (term.closest('.monaco-editor')) continue;
         const r = term.getBoundingClientRect();
         if (r.width > 40 && r.height > 30) {
-          const ta = term.querySelector('textarea.xterm-helper-textarea, textarea') || document.querySelector('textarea.xterm-helper-textarea, [class*="xterm" i] textarea');
+          const ta = term.querySelector('textarea.xterm-helper-textarea, [class*="xterm" i] textarea') || document.querySelector('textarea.xterm-helper-textarea, .terminal textarea, [class*="xterm" i] textarea');
+          if (ta && ta.closest('.monaco-editor')) continue;
           return {
             found: true,
             element: term,

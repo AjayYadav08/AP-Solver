@@ -80,6 +80,61 @@ STRICT GUIDELINES:
        - Preserve 'title' and other fields. Return status 200 with updated object.
      * For unknown routes or unsupported methods:
        - Return status 404 with { error: "Route not found" }.
+   - For JWT Authentication & Token Challenges (e.g. "Login and Get a Token", POST /login, authenticate middleware, GET /profile):
+     * Hardcoded User & Secret:
+       - Preserve the hardcoded 'SECRET' (e.g. 'const SECRET = "my_super_secret_key";') and 'user' object exactly as defined in the starter code.
+     * POST /login Endpoint:
+       - Extract credentials: 'const { username, password } = req.body || {};'.
+       - Reject missing, null, undefined, non-string, or empty/whitespace credentials:
+         if (!username || !password || typeof username !== 'string' || typeof password !== 'string' || !username.trim() || !password.trim()) {
+           return res.status(401).json({ message: 'Invalid credentials' });
+         }
+       - Exact Match Validation:
+         if (username !== user.username || password !== user.password) {
+           return res.status(401).json({ message: 'Invalid credentials' });
+         }
+       - Generate Token: Sign with payload containing 'userId: user.id' (or 'user.userId'), secret 'SECRET', and EXACTLY 15 minutes expiry:
+         const token = jwt.sign({ userId: user.id }, SECRET, { expiresIn: '15m' });
+         return res.status(200).json({ token });
+     * authenticate Middleware:
+       - Extract header: 'const authHeader = req.headers["authorization"] || req.headers["Authorization"];'.
+       - Reject if missing, null, not a string, or not starting with 'Bearer ':
+         if (!authHeader || typeof authHeader !== 'string') {
+           return res.status(401).json({ message: 'Invalid credentials' });
+         }
+         const parts = authHeader.split(' ');
+         if (parts.length !== 2 || parts[0] !== 'Bearer' || !parts[1]) {
+           return res.status(401).json({ message: 'Invalid credentials' });
+         }
+         const token = parts[1];
+       - Verify Token:
+         try {
+           const decoded = jwt.verify(token, SECRET);
+           if (!decoded || (!decoded.userId && !decoded.id)) {
+             return res.status(401).json({ message: 'Invalid credentials' });
+           }
+           req.user = decoded;
+           return next();
+         } catch (err) {
+           return res.status(401).json({ message: 'Invalid credentials' });
+         }
+     * GET /profile Endpoint:
+       - Protect with 'authenticate' middleware: 'app.get("/profile", authenticate, (req, res) => { ... });'.
+       - Check user match:
+         const targetId = req.user ? (req.user.userId || req.user.id) : null;
+         if (targetId && targetId !== user.id) {
+           return res.status(404).json({ message: 'User not found' });
+         }
+       - NEVER expose password in the profile response:
+         const { password: _, ...safeUser } = user;
+         return res.status(200).json(safeUser);
+     * Module Exports:
+       - Support both default and named imports for the test runner:
+         module.exports = app;
+         module.exports.app = app;
+         module.exports.authenticate = authenticate;
+         module.exports.SECRET = SECRET;
+         module.exports.user = user;
 4. WIPE & REPLACE COMPLETENESS:
    - Return the ENTIRE replacement file ready to run from top imports to exports.
    - Do NOT omit any parts with comments like "// ... rest of code".

@@ -1254,6 +1254,7 @@ async function ensureTerminalOpen(tabId) {
         ];
         for (const term of candidates) {
           const parent = term.closest('.terminal, .terminal-wrapper, .integrated-terminal') || term;
+          if (parent.closest('.monaco-editor')) continue;
           const r = parent.getBoundingClientRect();
           if (r.width > 40 && r.height > 30) {
             return true;
@@ -1470,7 +1471,12 @@ export function buildBase64TerminalScript(files) {
       cmd += `mkdir -p "${dir}" && `;
     }
     const cleanCode = stripComments(f.code || '').trim();
-    const b64 = Buffer.from(cleanCode).toString('base64');
+    let b64 = '';
+    try {
+      b64 = btoa(unescape(encodeURIComponent(cleanCode)));
+    } catch (e) {
+      b64 = typeof Buffer !== 'undefined' ? Buffer.from(cleanCode).toString('base64') : btoa(cleanCode);
+    }
     cmd += `echo "${b64}" | base64 -d > "${f.filePath}" && `;
   }
   const hasSeed = files.some(f => f.filePath.endsWith('seed.js'));
@@ -1512,6 +1518,7 @@ async function writeFilesViaTerminal(tabId, files, customScript = null) {
             ];
             for (const term of candidates) {
               const parent = term.closest('.terminal, .terminal-wrapper, .integrated-terminal') || term;
+              if (parent.closest('.monaco-editor')) continue;
               const r = parent.getBoundingClientRect();
               if (r.width > 40 && r.height > 30) {
                 try { parent.focus(); } catch(e) {}
@@ -1580,9 +1587,8 @@ async function writeFilesViaTerminal(tabId, files, customScript = null) {
       globalX = vsIframe.left + (termFrameInfo.rect.cx || (termFrameInfo.rect.left + termFrameInfo.rect.width / 2));
       globalY = vsIframe.top + (termFrameInfo.rect.cy || (termFrameInfo.rect.top + termFrameInfo.rect.height / 2));
     } else {
-      // Fallback: estimate coordinates at lower center of VS Code iframe
-      globalX = Math.round(vsIframe.left + (vsIframe.width ? vsIframe.width / 2 : 300));
-      globalY = Math.round(vsIframe.top + (vsIframe.height ? vsIframe.height * 0.82 : 550));
+      console.warn('[AP-Solver] Integrated Terminal was not found or visible across frames. Aborting terminal injection to protect editor code buffer.');
+      return { ok: false, error: 'Integrated Terminal not found or visible' };
     }
 
     // 4. CDP native click on terminal screen to ensure true OS hardware focus
@@ -1600,8 +1606,8 @@ async function writeFilesViaTerminal(tabId, files, customScript = null) {
           await chrome.scripting.executeScript({
             target: { tabId, frameIds: [match.frameId] },
             func: () => {
-              const ta = document.querySelector('textarea.xterm-helper-textarea, [class*="xterm" i] textarea, textarea');
-              if (ta) {
+              const ta = document.querySelector('textarea.xterm-helper-textarea, .terminal textarea, .integrated-terminal textarea, [class*="xterm" i] textarea');
+              if (ta && !ta.closest('.monaco-editor')) {
                 try { ta.focus(); } catch(e) {}
               }
             }
@@ -1631,8 +1637,8 @@ async function writeFilesViaTerminal(tabId, files, customScript = null) {
         const inFrameRes = await chrome.scripting.executeScript({
           target: { tabId, frameIds: [targetFrameId] },
           func: (cmd) => {
-            const ta = document.querySelector('textarea.xterm-helper-textarea, [class*="xterm" i] textarea, textarea');
-            if (ta) {
+            const ta = document.querySelector('textarea.xterm-helper-textarea, .terminal textarea, .integrated-terminal textarea, [class*="xterm" i] textarea');
+            if (ta && !ta.closest('.monaco-editor')) {
               try { ta.focus(); } catch(e) {}
               try {
                 const dt = new DataTransfer();

@@ -595,7 +595,7 @@
     return res;
   }
 
-  async function submitAndMonitor(timeoutMs = 60000) {
+  async function submitAndMonitor(timeoutMs = 120000) {
     const btn = getSubmitButton();
     if (!btn) throw new Error('"Submit Solution" button not found on page.');
 
@@ -1162,6 +1162,11 @@
         ui.setStatus('Incomplete Code', `Placeholder detected in ${f.filePath}.`, 'error');
         return false;
       }
+      if (/base64\s*-d|mkdir\s*-p|=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ===/i.test(code)) {
+        ui.addLog(`🛑 Verification failed: Terminal bash command artifact detected inside code of "${f.filePath}". Submission aborted.`, 'bad');
+        ui.setStatus('Invalid Code Artifact', `Bash command artifact detected in ${f.filePath}.`, 'error');
+        return false;
+      }
     }
 
     // Give editor buffer and container file system 1500ms to settle after file save
@@ -1171,6 +1176,11 @@
     try {
       const editorStatus = await sendMsg({ op: 'AP_QUERY_EDITOR' }, 5000);
       if (editorStatus && editorStatus.ok && editorStatus.code && editorStatus.activeFile) {
+        if (/base64\s*-d|mkdir\s*-p|=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ===/i.test(editorStatus.code)) {
+          ui.addLog(`🛑 Verification failed: Active editor contains terminal command artifacts! Re-injection required.`, 'bad');
+          ui.setStatus('Invalid Code Artifact', 'Editor contains bash artifacts.', 'error');
+          return false;
+        }
         const curActive = sanitizeActiveFile(editorStatus.activeFile).toLowerCase();
         const isTargetFile = filesToWrite.some(f => {
           const base = f.filePath.split('/').pop().toLowerCase();
