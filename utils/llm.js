@@ -90,9 +90,49 @@ STRICT GUIDELINES:
 7. OUTPUT FORMAT:
    - Output ONLY the clean replacement code enclosed in markdown code block(s):
    \`\`\`javascript
-   // complete code here
+   code here
    \`\`\`
-   - Absolutely NO explanations, markdown or conversational text outside the code block(s).`;
+   - Absolutely NO explanations, markdown or conversational text outside the code block(s).
+8. AVOID WRITING COMMENTS IN CODE:
+   - CRITICAL REQUIREMENT: NEVER write any comments inside the generated code.
+   - Do NOT write single-line comments ('// ...').
+   - Do NOT write multi-line comments ('/* ... */').
+   - Do NOT write JSDoc comments or conversational explanations.
+   - Output 100% pure, clean, executable code ONLY.`;
+
+export function stripComments(code) {
+  if (!code) return '';
+  // Remove multi-line comments: /* ... */
+  let clean = code.replace(/\/\*[\s\S]*?\*\//g, '');
+  // Remove single-line comments: // ... (ensuring we don't strip inside quotes)
+  const lines = clean.split('\n');
+  const result = [];
+  for (const line of lines) {
+    let inQuote = false;
+    let quoteChar = '';
+    let commentIdx = -1;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if ((c === '"' || c === "'" || c === '`') && (i === 0 || line[i - 1] !== '\\')) {
+        if (!inQuote) {
+          inQuote = true;
+          quoteChar = c;
+        } else if (c === quoteChar) {
+          inQuote = false;
+        }
+      } else if (!inQuote && c === '/' && line[i + 1] === '/') {
+        commentIdx = i;
+        break;
+      }
+    }
+    const processed = commentIdx !== -1 ? line.substring(0, commentIdx).trimEnd() : line;
+    if (commentIdx !== -1 && !processed.trim() && line.trim().startsWith('//')) {
+      continue;
+    }
+    result.push(processed);
+  }
+  return result.join('\n');
+}
 
 export function formatCodeIndentation(code) {
   if (!code) return '';
@@ -234,7 +274,7 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
 
       const finalPath = resolveTargetFile(detectedFilename, code, i);
       if (finalPath && code) {
-        parsedBlocks.push({ filePath: finalPath, code: formatCodeIndentation(code) });
+        parsedBlocks.push({ filePath: finalPath, code: formatCodeIndentation(stripComments(stripFileCommentHeaders(code))) });
       }
     }
 
@@ -257,7 +297,7 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
       rawCode = rawCode.replace(/^```[a-z]*\s*\n?/i, '').replace(/```+$/g, '').trim();
       rawCode = stripFileCommentHeaders(rawCode);
       if (rawCode.length > 5) {
-        inlineFiles.push({ filePath: normPath(fn), code: formatCodeIndentation(rawCode) });
+        inlineFiles.push({ filePath: normPath(fn), code: formatCodeIndentation(stripComments(rawCode)) });
       }
     }
     if (inlineFiles.length > 0) {
@@ -271,14 +311,14 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
   if (topMatch && isValidFilename(topMatch[1])) {
     const fn = topMatch[1];
     cleaned = stripFileCommentHeaders(cleaned);
-    return [{ filePath: normPath(fn), code: formatCodeIndentation(cleaned) }];
+    return [{ filePath: normPath(fn), code: formatCodeIndentation(stripComments(cleaned)) }];
   }
 
   const singleCode = stripFileCommentHeaders(extractCodeBlock(rawText));
   const finalSinglePath = resolveTargetFile('', singleCode, 0);
   return [{
     filePath: finalSinglePath,
-    code: formatCodeIndentation(singleCode)
+    code: formatCodeIndentation(stripComments(singleCode))
   }];
 }
 
@@ -298,7 +338,7 @@ export function extractCodeBlock(rawText) {
     }
   }
 
-  extracted = stripFileCommentHeaders(extracted);
+  extracted = stripComments(stripFileCommentHeaders(extracted));
   return formatCodeIndentation(extracted);
 }
 
@@ -357,7 +397,8 @@ Carefully re-read requirements and ensure all edge cases, files, and status code
 2. DETERMINE ALL REQUIRED FILES & LOCATIONS: Identify all files in which code must be written. If a required file is not present in the project (e.g. \`src/seed.js\`, \`src/routes/tasks.js\`, \`src/controllers/userController.js\`), specify its full path on Line 1 so it will be created at its given location.
 3. WRITE COMPLETE CODE & ERASE INITIAL CODE: Provide 100% complete, bug-free replacement code for all required files that completely erases initial starter code and fills corresponding files.
 4. ONE CODE BLOCK PER FILE: Output each file in its own distinct markdown code block with the exact file path on Line 1 (e.g. \`// src/seed.js\`).
-5. NO GENERIC LABELS: Never use "File 1", "1.js", or conversational text. Return ONLY the code blocks.`);
+5. NO GENERIC LABELS: Never use "File 1", "1.js", or conversational text. Return ONLY the code blocks.
+6. AVOID WRITING COMMENTS IN CODE: NEVER write comments in the code. Output clean, pure executable code only.`);
 
   return parts.join('\n\n');
 }

@@ -997,6 +997,29 @@
       ? cachedGeneratedFiles
       : [{ filePath: sanitizeActiveFile(cachedEditor?.activeFile), code: cachedGeneratedCode }];
 
+    function stripAllComments(c) {
+      if (!c) return '';
+      let clean = c.replace(/\/\*[\s\S]*?\*\//g, '');
+      return clean.split('\n').map(line => {
+        let inQuote = false, qChar = '', cIdx = -1;
+        for (let i = 0; i < line.length; i++) {
+          const ch = line[i];
+          if ((ch === '"' || ch === "'" || ch === '`') && (i === 0 || line[i-1] !== '\\')) {
+            if (!inQuote) { inQuote = true; qChar = ch; }
+            else if (ch === qChar) { inQuote = false; }
+          } else if (!inQuote && ch === '/' && line[i+1] === '/') {
+            cIdx = i; break;
+          }
+        }
+        return cIdx !== -1 ? line.substring(0, cIdx).trimEnd() : line;
+      }).filter(l => l.trim() || !l).join('\n');
+    }
+
+    // Strict Enforcement: Strip all comments from all solution files
+    for (const f of filesToWrite) {
+      f.code = stripAllComments(f.code);
+    }
+
     ui.setStatus(`Injecting solution into ${filesToWrite.length} file(s)...`, '', 'running', true);
 
     // Build all-in-one terminal bash script for these files (Direct Linux Disk Writer)

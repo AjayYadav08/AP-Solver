@@ -231,6 +231,26 @@ async function cdpClickElementInWorkspace(tabId, targetFilePath) {
     });
     const iframes = iframeRes?.[0]?.result || [];
 
+    // PASS 0: Check if target file is ALREADY active in editor (Tabs or Breadcrumbs)
+    const activeCheck = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      args: [basename],
+      func: (base) => {
+        const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9_\-.]/g, '');
+        const normBase = norm(base);
+        const activeTab = document.querySelector('.tab.active, .tab.selected, [role="tab"][aria-selected="true"]');
+        const txt = norm((activeTab?.querySelector('.label-name') || activeTab)?.textContent || '');
+        if (txt && (txt.includes(normBase) || normBase.includes(txt))) return true;
+        const breadcrumbs = [...document.querySelectorAll('.breadcrumbs-widget .monaco-breadcrumb-item')].map(b => norm(b.textContent));
+        if (breadcrumbs.some(b => b.includes(normBase) || normBase.includes(b))) return true;
+        return false;
+      }
+    });
+    if (activeCheck?.some(r => r.result === true)) {
+      console.log(`[AP-Solver CDP] Target "${basename}" is already active in workspace.`);
+      return true;
+    }
+
     // PASS 1: Check if file ALREADY EXISTS (Tabs, Tree Rows, Collapsed src folder)
     const scanResults = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
@@ -1054,63 +1074,34 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
             }
           }
 
-          // Strategy 2: DOM fallback: ONLY if active tab matches targetPath!
+          // Strategy 2: DOM instance inspection (Wipe & Replace via editor DOM attachment)
           if (isTargetActive) {
             const allEditors = [...document.querySelectorAll('.monaco-editor')].filter(el => !isExcludedNode(el));
-            const editorDom = allEditors[0];
-            if (editorDom) {
-              const input = editorDom.querySelector('textarea.inputarea');
-              if (input) {
-                input.focus();
-                const isMac = /mac/i.test(navigator.platform);
-
-                // Select all
-                const selectAllEvt = new KeyboardEvent('keydown', {
-                  key: 'a',
-                  code: 'KeyA',
-                  keyCode: 65,
-                  which: 65,
-                  ctrlKey: !isMac,
-                  metaKey: isMac,
-                  bubbles: true,
-                  cancelable: true
-                });
-                input.dispatchEvent(selectAllEvt);
-                document.execCommand('selectAll', false, null);
-
-                // Delete old code
-                const backspaceEvt = new KeyboardEvent('keydown', {
-                  key: 'Backspace',
-                  code: 'Backspace',
-                  keyCode: 8,
-                  which: 8,
-                  bubbles: true,
-                  cancelable: true
-                });
-                input.dispatchEvent(backspaceEvt);
-
-                const dt = new DataTransfer();
-                dt.setData('text/plain', codeToWrite);
-                try { document.execCommand('paste'); } catch(e) {}
+            for (const editorDom of allEditors) {
+              for (const k of Object.keys(editorDom)) {
                 try {
-                  const pasteEvt = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
-                  input.dispatchEvent(pasteEvt);
+                  const inst = editorDom[k];
+                  if (inst && typeof inst.getModel === 'function') {
+                    const mod = inst.getModel();
+                    if (mod && typeof mod.setValue === 'function') {
+                      mod.setValue(''); // Empty file completely first!
+                      await sleep(50);
+                      mod.setValue(codeToWrite);
+                      triggerFileSave();
+                      return {
+                        success: true,
+                        verified: true,
+                        method: 'monaco.domInstance.setValue+dom.insertTextAndPaste',
+                        filePath: targetPath
+                      };
+                    }
+                  }
                 } catch(e) {}
-
-                try {
-                  document.execCommand('insertText', false, codeToWrite);
-                } catch(e) {}
-
-                await sleep(150);
-                triggerFileSave();
-                return {
-                  success: true,
-                  verified: true,
-                  method: 'dom.insertTextAndPaste',
-                  filePath: targetPath
-                };
               }
             }
+
+            // Note: selectAll and Backspace are executed in Phase 4 Hardware CDP Wipe
+            document.execCommand?.('selectAll', false, null);
           }
 
           // CRITICAL SAFETY SHIELD: Refuse to write into wrong file!
@@ -1191,7 +1182,7 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
             gy += vsIframe.top;
           }
           await cdpNativeClick(tabId, gx, gy, 1);
-          await sleep(60);
+          await sleep(100);
         }
 
         // 3. True OS Select All: Cmd+A (Mac) and Ctrl+A (Win/Linux)
@@ -1205,6 +1196,12 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
         await sleep(60);
         await cdpNativeKey(tabId, 'Delete', 'Delete', 46, 0);
         await sleep(80);
+
+        // EXTRA WIPE PASS: Select all and backspace again to guarantee 0 residual characters!
+        await cdpNativeKey(tabId, 'a', 'KeyA', 65, 4);
+        await sleep(40);
+        await cdpNativeKey(tabId, 'Backspace', 'Backspace', 8, 0);
+        await sleep(60);
 
         // 5. True OS Hardware Insert clean solution
         await cdpNativeInsertText(tabId, cleanCode);
