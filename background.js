@@ -617,7 +617,7 @@ async function queryEditorInTab(tabId) {
                   !fname.includes('package-lock') && !fname.includes('node_modules') && !/inmemory|workbench/i.test(p) && !/^\d+$/.test(fname)) {
                 const val = mod.getValue();
                 const cleanKey = p.includes('src/') ? 'src/' + fname : fname;
-                if (val && val.length < 25000 && cleanKey !== detectedActive) {
+                if (val && val.length < 35000) {
                   referenceFiles[cleanKey] = val;
                 }
               }

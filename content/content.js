@@ -825,6 +825,16 @@
     ui.setStatus(`Generating solution with ${providerName}...`, feedback ? 'Refining code based on failed test cases...' : 'Crafting 100% test-compliant code...', 'running', true);
     ui.addLog(`Calling AI solver (${providerName})...`);
 
+    // Ensure all currently written files from previous attempt are in referenceFiles
+    const mergedReferenceFiles = { ...(cachedEditor?.referenceFiles || {}) };
+    if (cachedGeneratedFiles && cachedGeneratedFiles.length > 0) {
+      for (const f of cachedGeneratedFiles) {
+        if (f.filePath && f.code) {
+          mergedReferenceFiles[f.filePath] = f.code;
+        }
+      }
+    }
+
     const promptData = {
       questionTitle: cachedQuestion.title,
       questionDetails: cachedQuestion.details,
@@ -832,7 +842,7 @@
       currentCode: cachedEditor?.code || '',
       activeFile: sanitizeActiveFile(cachedEditor?.activeFile),
       workspaceFiles: cachedEditor?.allFiles || [],
-      referenceFiles: cachedEditor?.referenceFiles || {},
+      referenceFiles: mergedReferenceFiles,
       language: cachedEditor?.language || 'javascript',
       feedback
     };
@@ -1349,17 +1359,63 @@
             ui.addLog(`📄 Captured side bar terminal error logs (${terminalOutput.split('\n').length} lines).`, 'ok');
           }
 
+          // Gather CURRENT CODE of ALL files in src/ (and workspace) as requested by user
+          const currentFilesMap = new Map();
+
+          // 1. Files from previous write / cachedGeneratedFiles
+          if (cachedGeneratedFiles && cachedGeneratedFiles.length > 0) {
+            for (const f of cachedGeneratedFiles) {
+              if (f.filePath && f.code) {
+                currentFilesMap.set(f.filePath, f.code);
+              }
+            }
+          }
+
+          // 2. Query editor models to get the latest in-memory code of all open files
+          try {
+            const latestEd = await sendMsg({ op: 'AP_QUERY_EDITOR' }, 3000);
+            if (latestEd?.referenceFiles) {
+              for (const [fname, content] of Object.entries(latestEd.referenceFiles)) {
+                if (content && (fname.includes('src/') || !currentFilesMap.has(fname))) {
+                  currentFilesMap.set(fname, content);
+                }
+              }
+            }
+            if (latestEd?.activeFile && latestEd?.code) {
+              const act = sanitizeActiveFile(latestEd.activeFile);
+              currentFilesMap.set(act, latestEd.code);
+            }
+          } catch(e) {}
+
+          // 3. Attach full code of all current files to feedbackBlocks
+          if (currentFilesMap.size > 0) {
+            const fileEntries = [];
+            for (const [fname, code] of currentFilesMap.entries()) {
+              const ext = fname.split('.').pop().toLowerCase();
+              const lang = ext === 'json' ? 'json' : (ext === 'prisma' ? 'prisma' : (ext === 'ts' ? 'typescript' : 'javascript'));
+              fileEntries.push(`### File: \`${fname}\`\n\`\`\`${lang}\n${code}\n\`\`\``);
+            }
+            feedbackBlocks.push(
+              `=== CURRENT CODE OF ALL WORKSPACE FILES (SRC) AT TIME OF FAILURE ===\n` +
+              `The test failed with the following exact code currently in the files. Inspect these files thoroughly, identify the root bugs, and return the complete corrected replacement for any file that needs fixing:\n\n` +
+              fileEntries.join('\n\n')
+            );
+            ui.addLog(`📂 Attached current code of ${currentFilesMap.size} file(s) from src/ to AI prompt for debugging.`, 'ok');
+          }
+
           feedbackBlocks.push(
             `CRITICAL DEBUGGING DIRECTIVES FOR NEXT ATTEMPT:\n` +
             `1. Fix every failed test case listed above from Tab 2 and Tab 3.\n` +
-            `2. If any timeouts occurred (e.g. "Timeout of 2000ms exceeded"), ensure EVERY route handler calls res.status(...).json(...) or res.send(...) so the request NEVER hangs.\n` +
-            `3. For user authentication / Prisma / bcrypt:\n` +
+            `2. Read the CURRENT CODE of each file in src/ above. Do NOT duplicate code or invent wrong schemas.\n` +
+            `3. If any timeouts occurred (e.g. "Timeout of 2000ms exceeded"), ensure EVERY route handler calls res.status(...).json(...) or res.send(...) so the request NEVER hangs.\n` +
+            `4. For user authentication / Prisma / bcrypt:\n` +
             `   - Validate input: return 400 immediately if email or password is missing or empty string.\n` +
             `   - Check duplicate email: query database first (findUnique/findFirst); return 400 if user exists.\n` +
             `   - Hash password with bcrypt using EXACTLY salt rounds = 10 (await bcrypt.hash(password, 10)).\n` +
             `   - Persist user to PostgreSQL via Prisma (prisma.user.create).\n` +
             `   - NEVER return or expose the password or hash in the response (return user without password).\n` +
-            `4. Return the COMPLETE replacement file with clean 2-space indentation.`
+            `5. Provide output in markdown code blocks with the exact file path on Line 1 (e.g. \`// src/index.js\`).\n` +
+            `6. AVOID WRITING COMMENTS IN CODE: Output 100% clean, executable code without any comments.`
           );
 
           feedback = feedbackBlocks.join('\n\n');

@@ -420,17 +420,19 @@
           }
         }
 
-        // Also extract snippets of JSON or helper files if loaded
+        // Also extract all loaded workspace files in Monaco (JS, TS, Prisma, JSON, TXT)
         const referenceFiles = {};
         if (monaco && monaco.editor) {
           const models = monaco.editor.getModels ? monaco.editor.getModels() : [];
           for (const m of models) {
             const p = m.uri?.path || '';
             const fname = p.split('/').pop();
-            if (fname && (fname.endsWith('.json') || fname.endsWith('.txt')) && !fname.includes('package-lock')) {
+            if (fname && (fname.endsWith('.js') || fname.endsWith('.ts') || fname.endsWith('.prisma') || fname.endsWith('.json') || fname.endsWith('.txt')) &&
+                !fname.includes('package-lock') && !fname.includes('node_modules') && !/inmemory|workbench/i.test(p) && !/^\d+$/.test(fname)) {
               const val = m.getValue();
-              if (val && val.length < 5000) {
-                referenceFiles[fname] = val;
+              const cleanKey = p.includes('src/') ? 'src/' + fname : fname;
+              if (val && val.length < 35000) {
+                referenceFiles[cleanKey] = val;
               }
             }
           }

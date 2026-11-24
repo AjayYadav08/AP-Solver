@@ -787,4 +787,19 @@ if (!solverUiJs27.includes('ap-btn-confirm-terminal-pasted') ||
 }
 console.log('   ✓ Base64 Atomic Terminal Script, In-Frame Controller & 1-Click Paste Confirmation verified');
 
+console.log('28. Testing Current Code in SRC Attachment on Test Failures...');
+const bridgeJs28 = fs.readFileSync(path.join(__dirname, 'content/main-world-bridge.js'), 'utf8');
+
+if (!contentJs27.includes('CURRENT CODE OF ALL WORKSPACE FILES (SRC) AT TIME OF FAILURE') ||
+    !contentJs27.includes('currentFilesMap') ||
+    !contentJs27.includes('mergedReferenceFiles')) {
+  throw new Error('content.js must attach current code of all files in src/ to feedback and referenceFiles!');
+}
+
+if (!bridgeJs28.includes('fname.endsWith(\'.js\')') ||
+    !bridgeJs28.includes('p.includes(\'src/\') ? \'src/\' + fname : fname')) {
+  throw new Error('main-world-bridge.js must extract JS and src/ files in referenceFiles!');
+}
+console.log('   ✓ Current Code in SRC Attached on Test Failure & Full Multi-File Feedback verified');
+
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');
