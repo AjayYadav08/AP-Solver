@@ -445,12 +445,9 @@ async function cdpClickElementInWorkspace(tabId, targetFilePath) {
         // 1. Dismiss any existing inline rename box with Escape
         await cdpNativeKey(tabId, 'Escape', 'Escape', 27, 0);
         await sleep(60);
-        // 2. Click the file icon (targetX is at left icon, never label text)
-        await cdpNativeClick(tabId, globalX, globalY, 1);
-        await sleep(80);
-        // 3. Native double-click on file icon to open permanently
+        // 2. Hardware native double-click on file icon to open permanently (never slow single clicks that trigger rename)
         await cdpNativeDblClick(tabId, globalX, globalY);
-        await sleep(200);
+        await sleep(250);
         // CRITICAL: NEVER send Enter key! On macOS/VS Code, Enter triggers inline file rename!
         return true;
       }
@@ -510,9 +507,15 @@ async function queryEditorInTab(tabId) {
       world: 'MAIN',
       func: () => {
         try {
-          const isWorkbench = !!document.querySelector('.monaco-workbench, .part.editor, .editor-instance');
+          const isWorkbench = !document.querySelector('#ap-solver-host') && (
+            !!document.querySelector('.monaco-workbench, .part.editor, .editor-instance, .explorer-viewlet') ||
+            (window.self !== window.top && !!document.querySelector('.monaco-editor'))
+          );
           // If this frame contains an iframe AND has NO workbench, it's the top host window! SKIP IT!
           if (!isWorkbench && document.querySelector('iframe')) {
+            return null;
+          }
+          if (window.self === window.top && document.querySelector('iframe')) {
             return null;
           }
 
@@ -709,9 +712,15 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
       args: [cleanCode, targetFilePath],
       func: async (codeToWrite, targetPath) => {
         try {
-          const isWorkbench = !!document.querySelector('.monaco-workbench, .part.editor, .editor-instance');
+          const isWorkbench = !document.querySelector('#ap-solver-host') && (
+            !!document.querySelector('.monaco-workbench, .part.editor, .editor-instance, .explorer-viewlet') ||
+            (window.self !== window.top && !!document.querySelector('.monaco-editor'))
+          );
           // If this frame contains an iframe AND has NO workbench, it's the top host window! SKIP IT!
           if (!isWorkbench && document.querySelector('iframe')) {
+            return null;
+          }
+          if (window.self === window.top && document.querySelector('iframe')) {
             return null;
           }
 
@@ -948,12 +957,29 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
             }
           }
 
+          const isExcludedNode = (node) => {
+            if (!node) return false;
+            return !!node.closest?.('[class*="response" i], [class*="http-request" i], [class*="postman" i], [class*="preview" i], [class*="request-body" i], [class*="response-body" i], #ap-solver-host');
+          };
+
+          let validEditors = [];
+          let activeEd = null;
+          if (m && m.editor) {
+            const allEds = m.editor.getEditors ? m.editor.getEditors() : [];
+            validEditors = allEds.filter(e => {
+              const node = e.getContainerDomNode ? e.getContainerDomNode() : null;
+              if (isExcludedNode(node)) return false;
+              const r = node ? node.getBoundingClientRect() : null;
+              return r && r.width > 50 && r.height > 50;
+            });
+            activeEd = validEditors.find(e => !e.getOption?.(m.editor.EditorOption?.readOnly)) || validEditors[0] || null;
+          }
+
           let isModelMatch = false;
-          if (m && m.editor && basename) {
-            const eds = m.editor.getEditors ? m.editor.getEditors() : [];
-            const ed0 = eds[0];
-            const p = ed0?.getModel()?.uri?.path || ed0?.getModel()?.uri?.toString() || '';
-            if (p.endsWith('/' + basename) || p.endsWith(targetPath)) {
+          if (activeEd && basename) {
+            const p = (activeEd.getModel()?.uri?.path || activeEd.getModel()?.uri?.toString() || '').toLowerCase();
+            const b = basename.toLowerCase();
+            if (p.endsWith('/' + b) || p.endsWith(targetPath.toLowerCase()) || p.includes('/' + b)) {
               isModelMatch = true;
             }
           }
@@ -964,35 +990,21 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
           );
 
           if (m && m.editor) {
-            const editors = m.editor.getEditors ? m.editor.getEditors() : [];
-            const isExcludedNode = (node) => {
-              if (!node) return false;
-              return !!node.closest?.('[class*="response" i], [class*="http-request" i], [class*="postman" i], [class*="preview" i], [class*="request-body" i], [class*="response-body" i], #ap-solver-host');
-            };
-
-            const validEditors = editors.filter(e => {
-              const node = e.getContainerDomNode ? e.getContainerDomNode() : null;
-              if (isExcludedNode(node)) return false;
-              const r = node ? node.getBoundingClientRect() : null;
-              return r && r.width > 50 && r.height > 50;
-            });
-
-            const activeEd = validEditors.find(e => !e.getOption?.(m.editor.EditorOption?.readOnly)) || validEditors[0] || null;
-
             // A. If targetModel exists in getModels (poll up to 3.5s for newly created files)
             let targetModel = null;
             const tStart = Date.now();
             while (Date.now() - tStart < 3500) {
               const models = m.editor.getModels ? m.editor.getModels() : [];
               if (basename) {
+                const b = basename.toLowerCase();
                 targetModel = models.find(mod => {
-                  const p = mod.uri?.path || mod.uri?.toString() || '';
-                  return p.endsWith('/' + basename) || p.endsWith(targetPath);
+                  const p = (mod.uri?.path || mod.uri?.toString() || '').toLowerCase();
+                  return p.endsWith('/' + b) || p.endsWith(targetPath.toLowerCase()) || p.includes('/' + b);
                 });
               }
               if (targetModel) break;
 
-              const curTab = document.querySelector('.tab.active, [role="tab"][aria-selected="true"]');
+              const curTab = document.querySelector('.tab.active, .tab.selected, [role="tab"][aria-selected="true"]');
               const curTxt = (curTab?.querySelector('.label-name') || curTab)?.textContent?.trim() || '';
               if (normBase && normStr(curTxt).includes(normBase)) break;
 
@@ -1002,7 +1014,7 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
             if (targetModel && typeof targetModel.setValue === 'function') {
               targetModel.setValue(codeToWrite);
               if (activeEd && activeEd.getModel() !== targetModel) {
-                activeEd.setModel(targetModel);
+                try { activeEd.setModel(targetModel); } catch(e) {}
               }
               triggerFileSave();
               await sleep(150);
@@ -1032,63 +1044,60 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
 
           // Strategy 2: DOM fallback: ONLY if active tab matches targetPath!
           if (isTargetActive) {
-            const allEditors = [...document.querySelectorAll('.monaco-editor')].filter(el => {
-              return !el.closest('[class*="response" i], [class*="http-request" i], [class*="postman" i], [class*="preview" i], [class*="request-body" i], [class*="response-body" i], #ap-solver-host');
-            });
+            const allEditors = [...document.querySelectorAll('.monaco-editor')].filter(el => !isExcludedNode(el));
             const editorDom = allEditors[0];
-            if (!editorDom) {
-              return { success: false, error: 'No valid non-HTTP-tester workspace editor found in frame' };
-            }
-            const input = editorDom.querySelector('textarea.inputarea');
-            if (input) {
-              input.focus();
-              const isMac = /mac/i.test(navigator.platform);
+            if (editorDom) {
+              const input = editorDom.querySelector('textarea.inputarea');
+              if (input) {
+                input.focus();
+                const isMac = /mac/i.test(navigator.platform);
 
-              // Select all
-              const selectAllEvt = new KeyboardEvent('keydown', {
-                key: 'a',
-                code: 'KeyA',
-                keyCode: 65,
-                which: 65,
-                ctrlKey: !isMac,
-                metaKey: isMac,
-                bubbles: true,
-                cancelable: true
-              });
-              input.dispatchEvent(selectAllEvt);
-              document.execCommand('selectAll', false, null);
+                // Select all
+                const selectAllEvt = new KeyboardEvent('keydown', {
+                  key: 'a',
+                  code: 'KeyA',
+                  keyCode: 65,
+                  which: 65,
+                  ctrlKey: !isMac,
+                  metaKey: isMac,
+                  bubbles: true,
+                  cancelable: true
+                });
+                input.dispatchEvent(selectAllEvt);
+                document.execCommand('selectAll', false, null);
 
-              // Delete old code
-              const backspaceEvt = new KeyboardEvent('keydown', {
-                key: 'Backspace',
-                code: 'Backspace',
-                keyCode: 8,
-                which: 8,
-                bubbles: true,
-                cancelable: true
-              });
-              input.dispatchEvent(backspaceEvt);
+                // Delete old code
+                const backspaceEvt = new KeyboardEvent('keydown', {
+                  key: 'Backspace',
+                  code: 'Backspace',
+                  keyCode: 8,
+                  which: 8,
+                  bubbles: true,
+                  cancelable: true
+                });
+                input.dispatchEvent(backspaceEvt);
 
-              const dt = new DataTransfer();
-              dt.setData('text/plain', codeToWrite);
-              try { document.execCommand('paste'); } catch(e) {}
-              try {
-                const pasteEvt = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
-                input.dispatchEvent(pasteEvt);
-              } catch(e) {}
+                const dt = new DataTransfer();
+                dt.setData('text/plain', codeToWrite);
+                try { document.execCommand('paste'); } catch(e) {}
+                try {
+                  const pasteEvt = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+                  input.dispatchEvent(pasteEvt);
+                } catch(e) {}
 
-              try {
-                document.execCommand('insertText', false, codeToWrite);
-              } catch(e) {}
+                try {
+                  document.execCommand('insertText', false, codeToWrite);
+                } catch(e) {}
 
-              await sleep(150);
-              triggerFileSave();
-              return {
-                success: true,
-                verified: true,
-                method: 'dom.insertTextAndPaste',
-                filePath: targetPath
-              };
+                await sleep(150);
+                triggerFileSave();
+                return {
+                  success: true,
+                  verified: true,
+                  method: 'dom.insertTextAndPaste',
+                  filePath: targetPath
+                };
+              }
             }
           }
 
@@ -1113,6 +1122,18 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
       await cdpSaveFile(tabId);
       return { ok: true, verified: !!successResult.result.verified, method: successResult.result.method + '+cdp', filePath: successResult.result.filePath };
     }
+
+    // Secondary Fallback: Forward write to content script frames via tabs.sendMessage
+    try {
+      const frameResps = await chrome.tabs.sendMessage(tabId, {
+        op: 'AP_WRITE_EDITOR',
+        data: { code: cleanCode, filePath: targetFilePath }
+      });
+      if (frameResps && frameResps.ok) {
+        await cdpSaveFile(tabId);
+        return { ok: true, verified: true, method: 'frame-editor.bridge+cdp', filePath: targetFilePath };
+      }
+    } catch(e) {}
   } catch (err) {
     console.warn('[AP-Solver] Error writing to editor in tab:', err);
   }

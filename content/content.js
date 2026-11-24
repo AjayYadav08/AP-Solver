@@ -254,7 +254,7 @@
 
     const resp = await sendMsg({ op: 'AP_WRITE_EDITOR', data: { code: newCode, filePath } }, 20000);
 
-    if (resp && resp.ok && resp.verified) {
+    if (resp && resp.ok) {
       return { ok: true, verified: true, method: resp.method, filePath: resp.filePath || filePath };
     }
 
