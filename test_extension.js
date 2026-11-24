@@ -802,4 +802,31 @@ if (!bridgeJs28.includes('fname.endsWith(\'.js\')') ||
 }
 console.log('   ✓ Current Code in SRC Attached on Test Failure & Full Multi-File Feedback verified');
 
+console.log('29. Testing Stale Monaco Buffer Elimination & Prisma Seeding Robustness...');
+const bgJs29 = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
+const contentJs29 = fs.readFileSync(path.join(__dirname, 'content/content.js'), 'utf8');
+const llmJs29 = fs.readFileSync(path.join(__dirname, 'utils/llm.js'), 'utf8');
+
+// 1. Verify buildBase64TerminalScript includes || true to prevent non-zero exits from halting bash chain
+if (!bgJs29.includes('node src/seed.js || true') || !contentJs29.includes('node src/seed.js || true')) {
+  throw new Error('Both background.js and content.js must use "node src/seed.js || true" in terminal script!');
+}
+
+// 2. Verify filesWrittenViaTerminal prevents stale Monaco placeholder from blocking submission
+if (!contentJs29.includes('filesWrittenViaTerminal = true') ||
+    !contentJs29.includes('if (filesWrittenViaTerminal)')) {
+  throw new Error('content.js must use filesWrittenViaTerminal to prevent stale editor buffers from blocking submission!');
+}
+
+// 3. Verify Prisma Seeding instructions in LLM prompt
+if (!llmJs29.includes('deleteMany') || !llmJs29.includes('skipDuplicates') || !llmJs29.includes('$disconnect()')) {
+  throw new Error('llm.js must include deleteMany, skipDuplicates, and $disconnect() in Prisma Seeding rules!');
+}
+
+// 4. Verify background.js has simulateClickSeq and hardware typing sequence
+if (!bgJs29.includes('simulateClickSeq') || !bgJs29.includes('KeyC') || !bgJs29.includes('cdpNativeInsertText')) {
+  throw new Error('background.js must implement full click sequence and clean Ctrl+C prompt typing!');
+}
+console.log('   ✓ Stale Monaco Buffer Elimination, Prisma Seeding & Hardware Terminal Typing verified');
+
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');

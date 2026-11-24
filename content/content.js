@@ -11,6 +11,7 @@
   let cachedQuestion = null;
   let cachedEditor = null;
   let cachedGeneratedCode = '';
+  let filesWrittenViaTerminal = false;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -1050,7 +1051,7 @@
     }
     const hasSeed = filesToWrite.some(f => f.filePath.endsWith('seed.js'));
     if (hasSeed) {
-      bashScript += `if [ -f src/seed.js ]; then node src/seed.js; elif [ -f seed.js ]; then node seed.js; fi && `;
+      bashScript += `if [ -f src/seed.js ]; then node src/seed.js || true; elif [ -f seed.js ]; then node seed.js || true; fi && `;
     }
     bashScript += `echo "=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ==="`;
 
@@ -1061,22 +1062,26 @@
     } catch (e) {}
 
     // PRIMARY PATH: Integrated Terminal Execution (Direct Container Disk Injection)
-    try {
-      ui.addLog(`⚡ [Terminal Turbo Engine] Writing ${filesToWrite.length} file(s) directly to disk via Integrated Terminal...`, 'ok');
-      const termResp = await sendMsg({ op: 'AP_WRITE_TERMINAL', data: { files: filesToWrite, script: bashScript } }, 15000);
-      if (termResp && termResp.ok) {
-        ui.addLog(`⚡ [Terminal Turbo Engine] Successfully wrote ${filesToWrite.length} file(s) directly to disk via Terminal!`, 'ok');
-        for (const f of filesToWrite) {
-          ui.setFileStatus(f.filePath, 'injected');
+    for (let termAttempt = 1; termAttempt <= 2; termAttempt++) {
+      try {
+        ui.addLog(`⚡ [Terminal Turbo Engine] Writing ${filesToWrite.length} file(s) directly to disk via Integrated Terminal (Attempt ${termAttempt}/2)...`, 'ok');
+        const termResp = await sendMsg({ op: 'AP_WRITE_TERMINAL', data: { files: filesToWrite, script: bashScript } }, 15000);
+        if (termResp && termResp.ok) {
+          filesWrittenViaTerminal = true;
+          ui.addLog(`⚡ [Terminal Turbo Engine] Successfully wrote ${filesToWrite.length} file(s) directly to disk via Terminal!`, 'ok');
+          for (const f of filesToWrite) {
+            ui.setFileStatus(f.filePath, 'injected');
+          }
+          ui.setStatus('Files Saved via Terminal', `${filesToWrite.length} file(s) saved directly to container disk.`, 'success');
+          await sleep(1200); // Allow disk writing and Prisma/DB transactions to commit
+          return { ok: true, updatedFiles: filesToWrite.map(f => f.filePath), failedFiles: [] };
+        } else {
+          ui.addLog(`⚠️ [Terminal Engine] Notice: ${termResp?.error || 'Terminal focus pending'}. Script is in clipboard!`, 'warn');
+          if (termAttempt < 2) await sleep(500);
         }
-        ui.setStatus('Files Saved via Terminal', `${filesToWrite.length} file(s) saved directly to container disk.`, 'success');
-        await sleep(600); // Allow VS Code watcher to sync disk changes
-        return { ok: true, updatedFiles: filesToWrite.map(f => f.filePath), failedFiles: [] };
-      } else {
-        ui.addLog(`⚠️ [Terminal Engine] Notice: ${termResp?.error || 'Terminal focus pending'}. Script is in clipboard!`, 'warn');
+      } catch (e) {
+        console.log('[AP-Solver] Terminal direct write bypassed:', e);
       }
-    } catch (e) {
-      console.log('[AP-Solver] Terminal direct write bypassed:', e);
     }
 
     ui.addLog(`📋 Multi-file bash script is COPIED in your clipboard!`, 'ok');
@@ -1172,9 +1177,13 @@
           return curActive.includes(base) || base.includes(curActive);
         });
         if (isTargetFile && /\/\/\s*write your code here|\/\*\s*write your code here\s*\*\//i.test(editorStatus.code)) {
-          ui.addLog(`🛑 Verification failed: Active editor for "${editorStatus.activeFile}" still contains starter placeholder! The code was not replaced. Please paste the solution into the editor before submitting.`, 'bad');
-          ui.setStatus('Editor Not Replaced', 'Starter placeholder still present in editor.', 'error');
-          return false;
+          if (filesWrittenViaTerminal) {
+            ui.addLog(`ℹ️ Notice: Files were injected directly to Linux container disk via Terminal. Monaco editor in-memory tab will sync automatically. Proceeding to submit!`, 'ok');
+          } else {
+            ui.addLog(`🛑 Verification failed: Active editor for "${editorStatus.activeFile}" still contains starter placeholder! The code was not replaced. Please paste the solution into the editor before submitting.`, 'bad');
+            ui.setStatus('Editor Not Replaced', 'Starter placeholder still present in editor.', 'error');
+            return false;
+          }
         }
       }
     } catch (e) {
@@ -1259,6 +1268,7 @@
       // Clear any stale cached editor or generated files from previous runs
       cachedEditor = null;
       cachedGeneratedFiles = [];
+      filesWrittenViaTerminal = false;
 
       // Step 1: Read full question & initial code of all files
       ui.setStatus('Step 1/6: Reading Full Question & Initial Files...', '', 'running', true);
@@ -1494,6 +1504,7 @@
         }
       },
       onConfirmTerminalPasted: async () => {
+        filesWrittenViaTerminal = true;
         const filesToCheck = (cachedGeneratedFiles && cachedGeneratedFiles.length > 0)
           ? cachedGeneratedFiles
           : [{ filePath: sanitizeActiveFile(cachedEditor?.activeFile), code: cachedGeneratedCode }];

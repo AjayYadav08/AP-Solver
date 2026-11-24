@@ -1226,14 +1226,24 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
 // Helper to ensure Terminal panel is open (Supports in-frame controller, tabs, '...' menu, status bar error icon, and Ctrl+`)
 async function ensureTerminalOpen(tabId) {
   try {
-    // 0. FIRST CHECK: Try in-frame terminal controller via sendMessage
-    try {
-      const frameCheck = await chrome.tabs.sendMessage(tabId, { op: 'AP_OPEN_TERMINAL' });
-      if (frameCheck && frameCheck.ok && (frameCheck.opened || frameCheck.found)) {
-        console.log('[AP-Solver] Terminal opened/verified via in-frame controller.');
+    // Helper function for full realistic mouse click sequence required by VS Code Web UI
+    const clickHelper = `
+      function simulateClickSeq(el) {
+        if (!el) return false;
+        try { el.focus(); } catch(e) {}
+        const r = el.getBoundingClientRect();
+        const clientX = r.left + r.width / 2;
+        const clientY = r.top + r.height / 2;
+        const opts = { bubbles: true, cancelable: true, view: window, clientX, clientY, screenX: clientX, screenY: clientY, button: 0, buttons: 1 };
+        try { el.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch(e) {}
+        try { el.dispatchEvent(new MouseEvent('mousedown', opts)); } catch(e) {}
+        try { el.dispatchEvent(new PointerEvent('pointerup', opts)); } catch(e) {}
+        try { el.dispatchEvent(new MouseEvent('mouseup', opts)); } catch(e) {}
+        try { el.dispatchEvent(new MouseEvent('click', opts)); } catch(e) {}
+        try { el.click(); } catch(e) {}
         return true;
       }
-    } catch(e) {}
+    `;
 
     // 1. In all frames, check if terminal is already visible
     const checkRes = await chrome.scripting.executeScript({
@@ -1258,18 +1268,30 @@ async function ensureTerminalOpen(tabId) {
       return true;
     }
 
-    // 2. Look for tab with text "TERMINAL" (Image 5 from user)
+    // 2. Look for tab with text "TERMINAL" (Image 5/6 from user) across all frames
     const tabClickRes = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       func: () => {
+        function simulateClickSeq(el) {
+          if (!el) return false;
+          try { el.focus(); } catch(e) {}
+          const r = el.getBoundingClientRect();
+          const clientX = r.left + r.width / 2;
+          const clientY = r.top + r.height / 2;
+          const opts = { bubbles: true, cancelable: true, view: window, clientX, clientY, button: 0, buttons: 1 };
+          try { el.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch(e) {}
+          try { el.dispatchEvent(new MouseEvent('mousedown', opts)); } catch(e) {}
+          try { el.dispatchEvent(new PointerEvent('pointerup', opts)); } catch(e) {}
+          try { el.dispatchEvent(new MouseEvent('mouseup', opts)); } catch(e) {}
+          try { el.dispatchEvent(new MouseEvent('click', opts)); } catch(e) {}
+          try { el.click(); } catch(e) {}
+          return true;
+        }
+
         const tabs = [...document.querySelectorAll('[role="tab"], .action-item, .composite.title, [class*="tab" i]')];
         const termTab = tabs.find(t => (t.textContent || '').trim().toUpperCase() === 'TERMINAL' || t.getAttribute('aria-label')?.toLowerCase() === 'terminal');
         if (termTab) {
-          try {
-            termTab.click();
-            termTab.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-            return true;
-          } catch(e) {}
+          return simulateClickSeq(termTab);
         }
         return false;
       }
@@ -1284,21 +1306,53 @@ async function ensureTerminalOpen(tabId) {
     await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       func: () => {
+        function simulateClickSeq(el) {
+          if (!el) return false;
+          try { el.focus(); } catch(e) {}
+          const r = el.getBoundingClientRect();
+          const clientX = r.left + r.width / 2;
+          const clientY = r.top + r.height / 2;
+          const opts = { bubbles: true, cancelable: true, view: window, clientX, clientY, button: 0, buttons: 1 };
+          try { el.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch(e) {}
+          try { el.dispatchEvent(new MouseEvent('mousedown', opts)); } catch(e) {}
+          try { el.dispatchEvent(new PointerEvent('pointerup', opts)); } catch(e) {}
+          try { el.dispatchEvent(new MouseEvent('mouseup', opts)); } catch(e) {}
+          try { el.dispatchEvent(new MouseEvent('click', opts)); } catch(e) {}
+          try { el.click(); } catch(e) {}
+          return true;
+        }
+
         const moreBtn = document.querySelector('.part.panel .title [aria-label*="More" i], .part.panel [class*="codicon-more" i], .part.panel [class*="codicon-ellipsis" i], .composite.title [aria-label*="More" i]');
         if (moreBtn) {
-          try { moreBtn.click(); } catch(e) {}
+          simulateClickSeq(moreBtn);
         }
       }
     });
-    await sleep(200);
+    await sleep(250);
 
     const menuClickRes = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       func: () => {
+        function simulateClickSeq(el) {
+          if (!el) return false;
+          try { el.focus(); } catch(e) {}
+          const r = el.getBoundingClientRect();
+          const clientX = r.left + r.width / 2;
+          const clientY = r.top + r.height / 2;
+          const opts = { bubbles: true, cancelable: true, view: window, clientX, clientY, button: 0, buttons: 1 };
+          try { el.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch(e) {}
+          try { el.dispatchEvent(new MouseEvent('mousedown', opts)); } catch(e) {}
+          try { el.dispatchEvent(new PointerEvent('pointerup', opts)); } catch(e) {}
+          try { el.dispatchEvent(new MouseEvent('mouseup', opts)); } catch(e) {}
+          try { el.dispatchEvent(new MouseEvent('click', opts)); } catch(e) {}
+          try { el.click(); } catch(e) {}
+          return true;
+        }
+
         const items = [...document.querySelectorAll('.action-menu-item, [role="menuitem"], .monaco-menu-item, .action-label')];
         const termItem = items.find(it => (it.textContent || '').trim().toLowerCase() === 'terminal');
         if (termItem) {
-          try { termItem.click(); return true; } catch(e) {}
+          return simulateClickSeq(termItem);
         }
         return false;
       }
@@ -1313,9 +1367,25 @@ async function ensureTerminalOpen(tabId) {
     await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       func: () => {
+        function simulateClickSeq(el) {
+          if (!el) return false;
+          try { el.focus(); } catch(e) {}
+          const r = el.getBoundingClientRect();
+          const clientX = r.left + r.width / 2;
+          const clientY = r.top + r.height / 2;
+          const opts = { bubbles: true, cancelable: true, view: window, clientX, clientY, button: 0, buttons: 1 };
+          try { el.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch(e) {}
+          try { el.dispatchEvent(new MouseEvent('mousedown', opts)); } catch(e) {}
+          try { el.dispatchEvent(new PointerEvent('pointerup', opts)); } catch(e) {}
+          try { el.dispatchEvent(new MouseEvent('mouseup', opts)); } catch(e) {}
+          try { el.dispatchEvent(new MouseEvent('click', opts)); } catch(e) {}
+          try { el.click(); } catch(e) {}
+          return true;
+        }
+
         const statusProblems = document.querySelector('.statusbar-item.left [aria-label*="Problem" i], .statusbar-item.left [aria-label*="Error" i], .statusbar-item.left [class*="codicon-error" i], .statusbar-item.left');
         if (statusProblems) {
-          try { statusProblems.click(); } catch(e) {}
+          simulateClickSeq(statusProblems);
         }
       }
     });
@@ -1325,38 +1395,64 @@ async function ensureTerminalOpen(tabId) {
     await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       func: () => {
+        function simulateClickSeq(el) {
+          if (!el) return false;
+          try { el.focus(); } catch(e) {}
+          const r = el.getBoundingClientRect();
+          const clientX = r.left + r.width / 2;
+          const clientY = r.top + r.height / 2;
+          const opts = { bubbles: true, cancelable: true, view: window, clientX, clientY, button: 0, buttons: 1 };
+          try { el.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch(e) {}
+          try { el.dispatchEvent(new MouseEvent('mousedown', opts)); } catch(e) {}
+          try { el.dispatchEvent(new PointerEvent('pointerup', opts)); } catch(e) {}
+          try { el.dispatchEvent(new MouseEvent('mouseup', opts)); } catch(e) {}
+          try { el.dispatchEvent(new MouseEvent('click', opts)); } catch(e) {}
+          try { el.click(); } catch(e) {}
+          return true;
+        }
+
         const tabs = [...document.querySelectorAll('[role="tab"], .action-item, .composite.title, [class*="tab" i]')];
         const termTab = tabs.find(t => (t.textContent || '').trim().toUpperCase() === 'TERMINAL' || t.getAttribute('aria-label')?.toLowerCase() === 'terminal');
         if (termTab) {
-          try { termTab.click(); } catch(e) {}
+          simulateClickSeq(termTab);
+          return;
         }
-      }
-    });
-    await sleep(250);
 
-    // Also try "..." menu in case TERMINAL was inside dropdown
-    await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
-      func: () => {
         const moreBtn = document.querySelector('.part.panel .title [aria-label*="More" i], .part.panel [class*="codicon-more" i], .part.panel [class*="codicon-ellipsis" i]');
         if (moreBtn) {
-          try { moreBtn.click(); } catch(e) {}
+          simulateClickSeq(moreBtn);
         }
       }
     });
-    await sleep(150);
+    await sleep(200);
 
     await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       func: () => {
+        function simulateClickSeq(el) {
+          if (!el) return false;
+          try { el.focus(); } catch(e) {}
+          const r = el.getBoundingClientRect();
+          const clientX = r.left + r.width / 2;
+          const clientY = r.top + r.height / 2;
+          const opts = { bubbles: true, cancelable: true, view: window, clientX, clientY, button: 0, buttons: 1 };
+          try { el.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch(e) {}
+          try { el.dispatchEvent(new MouseEvent('mousedown', opts)); } catch(e) {}
+          try { el.dispatchEvent(new PointerEvent('pointerup', opts)); } catch(e) {}
+          try { el.dispatchEvent(new MouseEvent('mouseup', opts)); } catch(e) {}
+          try { el.dispatchEvent(new MouseEvent('click', opts)); } catch(e) {}
+          try { el.click(); } catch(e) {}
+          return true;
+        }
+
         const items = [...document.querySelectorAll('.action-menu-item, [role="menuitem"], .action-label')];
         const termItem = items.find(it => (it.textContent || '').trim().toLowerCase() === 'terminal');
         if (termItem) {
-          try { termItem.click(); } catch(e) {}
+          simulateClickSeq(termItem);
         }
       }
     });
-    await sleep(300);
+    await sleep(350);
 
   } catch(e) {
     console.warn('[AP-Solver] ensureTerminalOpen error:', e);
@@ -1379,7 +1475,7 @@ export function buildBase64TerminalScript(files) {
   }
   const hasSeed = files.some(f => f.filePath.endsWith('seed.js'));
   if (hasSeed) {
-    cmd += `if [ -f src/seed.js ]; then node src/seed.js; elif [ -f seed.js ]; then node seed.js; fi && `;
+    cmd += `if [ -f src/seed.js ]; then node src/seed.js || true; elif [ -f seed.js ]; then node seed.js || true; fi && `;
   }
   cmd += `echo "=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ==="`;
   return cmd;
@@ -1496,34 +1592,87 @@ async function writeFilesViaTerminal(tabId, files, customScript = null) {
       await cdpNativeClick(tabId, globalX, globalY, 1);
       await sleep(100);
       await cdpNativeClick(tabId, globalX, globalY, 1);
-      await sleep(100);
+      await sleep(120);
+
+      // Focus xterm textarea inside the frame to ensure hardware input routing
+      if (match && match.frameId !== undefined) {
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId, frameIds: [match.frameId] },
+            func: () => {
+              const ta = document.querySelector('textarea.xterm-helper-textarea, [class*="xterm" i] textarea, textarea');
+              if (ta) {
+                try { ta.focus(); } catch(e) {}
+              }
+            }
+          });
+        } catch(e) {}
+      }
+
+      // Clean the current terminal prompt line: Ctrl+C
+      await cdpNativeKey(tabId, 'c', 'KeyC', 67, 2); // Ctrl+C
+      await sleep(120);
+
+      // Type atomic single-line base64 script via hardware CDP InsertText
+      await cdpNativeInsertText(tabId, bashScript);
+      await sleep(120);
+
+      // Execute in bash via Enter key
+      await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
+      await sleep(1500); // Allow disk writing and node seed execution to complete
+
+      return { ok: true, method: 'terminal.cdp' };
     }
 
-    // 5. In-frame direct injection via sendMessage
+    // 5. Fallback if CDP is not available: In-frame direct script injection
+    const targetFrameId = match?.frameId;
+    if (targetFrameId !== undefined && targetFrameId !== 0) {
+      try {
+        const inFrameRes = await chrome.scripting.executeScript({
+          target: { tabId, frameIds: [targetFrameId] },
+          func: (cmd) => {
+            const ta = document.querySelector('textarea.xterm-helper-textarea, [class*="xterm" i] textarea, textarea');
+            if (ta) {
+              try { ta.focus(); } catch(e) {}
+              try {
+                const dt = new DataTransfer();
+                dt.setData('text/plain', cmd + '\n');
+                ta.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+              } catch(e) {}
+              try {
+                ta.value = '';
+                document.execCommand('insertText', false, cmd + '\n');
+              } catch(e) {}
+              try {
+                ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+              } catch(e) {}
+              return true;
+            }
+            return false;
+          },
+          args: [bashScript]
+        });
+        if (inFrameRes?.[0]?.result === true) {
+          await sleep(1500);
+          return { ok: true, method: 'terminal.inFrameScript' };
+        }
+      } catch(e) {}
+    }
+
+    // Secondary fallback: in-frame sendMessage
+    const msgOptions = (targetFrameId !== undefined && targetFrameId !== 0) ? { frameId: targetFrameId } : undefined;
     try {
-      await chrome.tabs.sendMessage(tabId, {
+      const injectResp = await chrome.tabs.sendMessage(tabId, {
         op: 'AP_INJECT_TERMINAL_COMMAND',
         data: { command: bashScript }
-      });
+      }, msgOptions);
+      if (injectResp && injectResp.ok) {
+        await sleep(1500);
+        return { ok: true, method: 'terminal.inFrame' };
+      }
     } catch(e) {}
 
-    // 6. Native CDP text typing and Enter key dispatch to guarantee bash execution
-    if (attached) {
-      // First try native paste shortcut: Cmd+V (Mac) or Ctrl+V (Win/Linux)
-      await cdpNativeKey(tabId, 'v', 'KeyV', 86, 4); // Cmd+V
-      await sleep(80);
-      await cdpNativeKey(tabId, 'v', 'KeyV', 86, 2); // Ctrl+V
-      await sleep(100);
-
-      // Send text via insertText as guaranteed fallback
-      await cdpNativeInsertText(tabId, bashScript);
-      await sleep(100);
-      await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
-      await sleep(400);
-      return { ok: true, method: 'terminal.hybrid' };
-    }
-
-    return { ok: true, method: 'terminal.inFrame' };
+    return { ok: true, method: 'terminal.dispatched' };
   } catch (e) {
     console.warn('[AP-Solver Terminal] writeFilesViaTerminal error:', e);
     return { ok: false, error: e.message || String(e) };

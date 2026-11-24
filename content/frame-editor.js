@@ -458,6 +458,9 @@
             ta.value = '';
             document.execCommand('insertText', false, cmd + '\n');
           } catch(e) {}
+          try {
+            ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+          } catch(e) {}
         }
 
         sendResponse({ ok: true, pasted, rect: termInfo.rect });
@@ -512,10 +515,7 @@
     const allTabs = [...document.querySelectorAll('[role="tab"], .composite.title, .action-item')];
     const termTab = allTabs.find(t => (t.textContent || '').trim().toUpperCase() === 'TERMINAL' || t.getAttribute('aria-label')?.toLowerCase() === 'terminal');
     if (termTab) {
-      try {
-        termTab.click();
-        termTab.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-      } catch(e) {}
+      simulateClick(termTab);
       await new Promise(r => setTimeout(r, 250));
       if (findIntegratedTerminal().found) return true;
     }
@@ -523,12 +523,12 @@
     // 2. Click "..." in panel title
     const moreBtn = document.querySelector('.part.panel .title [aria-label*="More" i], .part.panel [class*="codicon-more" i], .part.panel [class*="codicon-ellipsis" i], .composite.title [aria-label*="More" i]');
     if (moreBtn) {
-      try { moreBtn.click(); } catch(e) {}
-      await new Promise(r => setTimeout(r, 150));
+      simulateClick(moreBtn);
+      await new Promise(r => setTimeout(r, 200));
       const menuItems = [...document.querySelectorAll('.action-menu-item, [role="menuitem"], .action-label')];
       const termItem = menuItems.find(it => (it.textContent || '').trim().toLowerCase() === 'terminal');
       if (termItem) {
-        try { termItem.click(); } catch(e) {}
+        simulateClick(termItem);
         await new Promise(r => setTimeout(r, 350));
         if (findIntegratedTerminal().found) return true;
       }
@@ -537,25 +537,25 @@
     // 3. Click Status Bar Problems icon: "(X) 1  (!) 0"
     const statusBar = document.querySelector('.statusbar-item.left [aria-label*="Problem" i], .statusbar-item.left [aria-label*="Error" i], .statusbar-item.left [class*="codicon-error" i], .statusbar-item.left');
     if (statusBar) {
-      try { statusBar.click(); } catch(e) {}
+      simulateClick(statusBar);
       await new Promise(r => setTimeout(r, 250));
 
       const tabsAfter = [...document.querySelectorAll('[role="tab"], .composite.title, .action-item')];
       const termTabAfter = tabsAfter.find(t => (t.textContent || '').trim().toUpperCase() === 'TERMINAL');
       if (termTabAfter) {
-        try { termTabAfter.click(); } catch(e) {}
+        simulateClick(termTabAfter);
         await new Promise(r => setTimeout(r, 250));
         if (findIntegratedTerminal().found) return true;
       }
 
       const moreAfter = document.querySelector('.part.panel .title [aria-label*="More" i], .part.panel [class*="codicon-more" i], .part.panel [class*="codicon-ellipsis" i]');
       if (moreAfter) {
-        try { moreAfter.click(); } catch(e) {}
-        await new Promise(r => setTimeout(r, 150));
+        simulateClick(moreAfter);
+        await new Promise(r => setTimeout(r, 200));
         const menuItems = [...document.querySelectorAll('.action-menu-item, [role="menuitem"], .action-label')];
         const termItem = menuItems.find(it => (it.textContent || '').trim().toLowerCase() === 'terminal');
         if (termItem) {
-          try { termItem.click(); } catch(e) {}
+          simulateClick(termItem);
           await new Promise(r => setTimeout(r, 350));
           if (findIntegratedTerminal().found) return true;
         }

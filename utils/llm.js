@@ -48,6 +48,21 @@ STRICT GUIDELINES:
      * Database Creation: Save the record to PostgreSQL using Prisma: 'const user = await prisma.user.create({ data: { email: email.trim(), password: hashedPassword } });'.
      * Response Security: NEVER return or expose the plain-text password or password hash in the response! Omit the password field from the returned object: 'const { password: _, ...userWithoutPassword } = user; return res.status(201).json(userWithoutPassword);'.
      * Async Route Handlers: Always declare route handlers as 'async (req, res) => { try { ... } catch (err) { res.status(500).json({ error: err.message }); } }'. Ensure EVERY code path calls 'res.status(...).json(...)' or 'res.send(...)' so requests NEVER time out or exceed Mocha timeout!
+   - For Prisma Seeding ('src/seed.js' or 'seed.js'):
+     * Import PrismaClient: 'const { PrismaClient } = require("@prisma/client"); const prisma = new PrismaClient();'.
+     * In async function main():
+       - Clear old records first: 'await prisma.user.deleteMany({});' to ensure idempotency and prevent duplicate key errors!
+       - Populate records with the exact fields and values specified in the task description:
+         const usersData = [
+           { name: 'Alice Johnson', email: 'alice@example.com', age: 25 },
+           { name: 'Bob Smith', email: 'bob@example.com', age: 30 },
+           { name: 'Charlie Brown', email: 'charlie@example.com', age: 22 }
+         ];
+         await prisma.user.createMany({ data: usersData, skipDuplicates: true });
+         console.log("Seeded " + usersData.length + " users");
+       - Catch errors with console.error and process.exit(1).
+       - In 'finally', ALWAYS call 'await prisma.$disconnect();' so the connection doesn't hang!
+     * Invoke main(): 'main().catch(e => { console.error(e); process.exit(1); }).finally(async () => { await prisma.$disconnect(); });'.
    - For Native Node.js HTTP Server ('node:http'):
      * Always set 'Content-Type: application/json; charset=utf-8' on every response.
      * For GET /tasks:
@@ -382,7 +397,10 @@ export function buildPrompt({
   }
 
   if (currentCode) {
-    parts.push(`## Current Starter Code in \`${activeFile}\` (${language}):\n\`\`\`${language}\n${currentCode}\n\`\`\``);
+    const codeHeader = feedback
+      ? `## Previous Attempt Solution Code in \`${activeFile}\` (${language}):`
+      : `## Current Starter Code in \`${activeFile}\` (${language}):`;
+    parts.push(`${codeHeader}\n\`\`\`${language}\n${currentCode}\n\`\`\``);
   }
 
   if (feedback) {
