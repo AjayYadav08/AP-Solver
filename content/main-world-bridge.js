@@ -641,36 +641,24 @@
             textarea.value = '';
             textarea.dispatchEvent(new Event('input', { bubbles: true }));
 
-            // 4. Primary: Block Paste & insertText
-            const dt = new DataTransfer();
-            dt.setData('text/plain', newCode);
-
-            try { document.execCommand('paste'); } catch (e) {}
-
+            // 4. Primary: Clean single insertion (prevent duplicate concatenation)
+            let inserted = false;
             try {
-              const pasteEvt = new ClipboardEvent('paste', {
-                clipboardData: dt,
-                bubbles: true,
-                cancelable: true
-              });
-              textarea.dispatchEvent(pasteEvt);
-              if (editorDom) editorDom.dispatchEvent(pasteEvt);
+              inserted = document.execCommand('insertText', false, newCode);
             } catch (e) {}
 
-            try {
-              textarea.dispatchEvent(new InputEvent('beforeinput', {
-                inputType: 'insertFromPaste',
-                data: newCode,
-                dataTransfer: dt,
-                bubbles: true,
-                cancelable: true
-              }));
-            } catch (e) {}
-
-            // Ensure text is actually inserted
-            try {
-              document.execCommand('insertText', false, newCode);
-            } catch (e) {}
+            if (!inserted) {
+              const dt = new DataTransfer();
+              dt.setData('text/plain', newCode);
+              try {
+                const pasteEvt = new ClipboardEvent('paste', {
+                  clipboardData: dt,
+                  bubbles: true,
+                  cancelable: true
+                });
+                textarea.dispatchEvent(pasteEvt);
+              } catch (e) {}
+            }
 
             triggerSave();
             window.postMessage({ action: 'AP_WRITE_CODE_RESULT', id, ok: true, method: 'dom.insertTextAndPaste', filePath: targetFilePath }, '*');

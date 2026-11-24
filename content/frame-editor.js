@@ -341,21 +341,22 @@
 
           await new Promise(r => setTimeout(r, 120));
 
-          // 4. Insert text replacing selection
+          // 4. Insert clean text without duplicate paste
+          let inserted = false;
           try {
-            document.execCommand('insertText', false, code);
+            inserted = document.execCommand('insertText', false, code);
           } catch(e) {}
 
-          // 5. Paste clean code
-          const dt = new DataTransfer();
-          dt.setData('text/plain', code);
-          const pasteEvt = new ClipboardEvent('paste', {
-            clipboardData: dt,
-            bubbles: true,
-            cancelable: true
-          });
-          textarea.dispatchEvent(pasteEvt);
-          if (editorDom) editorDom.dispatchEvent(pasteEvt);
+          if (!inserted) {
+            const dt = new DataTransfer();
+            dt.setData('text/plain', code);
+            const pasteEvt = new ClipboardEvent('paste', {
+              clipboardData: dt,
+              bubbles: true,
+              cancelable: true
+            });
+            textarea.dispatchEvent(pasteEvt);
+          }
 
           await new Promise(r => setTimeout(r, 150));
 

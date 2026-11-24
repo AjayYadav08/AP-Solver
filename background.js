@@ -936,10 +936,20 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
             if (ta) ta.dispatchEvent(saveEvt);
           }
 
+          // 1. Breadcrumbs
+          let activeBreadcrumb = '';
+          const breadcrumbs = [...document.querySelectorAll('.breadcrumbs-widget .monaco-breadcrumb-item')].map(b => b.textContent.trim()).filter(Boolean);
+          if (breadcrumbs.length > 0) {
+            const last = breadcrumbs[breadcrumbs.length - 1].replace(/^[A-Z]+\s+/, '');
+            if (last.includes('.') && !/^\d+$/.test(last)) {
+              activeBreadcrumb = last;
+            }
+          }
+
           const basename = targetPath ? targetPath.split('/').pop() : null;
-          const activeTabEl = document.querySelector('.tab.active, [role="tab"][aria-selected="true"]');
-          const activeTabName = (activeTabEl?.querySelector('.label-name') || activeTabEl)?.textContent?.trim() || '';
-          const normActive = normStr(activeTabName);
+          const activeTabEl = document.querySelector('.tab.active, .tab.selected, [role="tab"][aria-selected="true"]');
+          const activeTabName = (activeTabEl?.querySelector('.label-name') || activeTabEl)?.textContent?.trim() || activeBreadcrumb;
+          const normActive = normStr(activeTabName || activeBreadcrumb);
           const normBase = basename ? normStr(basename) : '';
           // Strategy 1: Monaco instance or AMD loader search (Wipe & Replace with setValue)
           let m = window.monaco;
@@ -1146,7 +1156,19 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
         await cdpNativeKey(tabId, 'Escape', 'Escape', 27, 0);
         await sleep(60);
 
-        // 2. Focus editor via click
+        // 2. Focus editor via click with real viewport coordinates
+        const iframeRes = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: () => {
+            return [...document.querySelectorAll('iframe')].map(ifr => {
+              const r = ifr.getBoundingClientRect();
+              return { left: r.left, top: r.top, width: r.width, height: r.height };
+            }).filter(r => r.width > 150 && r.height > 150);
+          }
+        });
+        const topIframes = iframeRes?.[0]?.result || [];
+        const vsIframe = topIframes.find(ifr => ifr.left > 150) || topIframes[0];
+
         const edPos = await chrome.scripting.executeScript({
           target: { tabId, allFrames: true },
           func: () => {
@@ -1160,9 +1182,15 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
             return null;
           }
         });
-        const validPos = edPos?.find(p => p.result)?.result;
-        if (validPos) {
-          await cdpNativeClick(tabId, validPos.x, validPos.y, 1);
+        const validMatch = edPos?.find(p => p.result);
+        if (validMatch && validMatch.result) {
+          let gx = validMatch.result.x;
+          let gy = validMatch.result.y;
+          if (validMatch.frameId !== 0 && vsIframe) {
+            gx += vsIframe.left;
+            gy += vsIframe.top;
+          }
+          await cdpNativeClick(tabId, gx, gy, 1);
           await sleep(60);
         }
 
