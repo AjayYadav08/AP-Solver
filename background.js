@@ -1226,57 +1226,108 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
 // Helper to ensure Terminal panel is open (Supports tabs, '...' menu, status bar error icon, and Ctrl+`)
 async function ensureTerminalOpen(tabId) {
   try {
-    // 1. In all frames, check if TERMINAL tab or panel opener exists
-    await chrome.scripting.executeScript({
+    // 0. FIRST CHECK: Is terminal ALREADY visible with real dimensions? If yes, DO NOT TOUCH IT!
+    const checkRes = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       func: () => {
-        // A. Look for tab with text "TERMINAL"
+        const candidates = [
+          ...document.querySelectorAll('canvas.xterm-screen, .xterm-screen, .xterm-rows, .terminal.xterm, .terminal-instance, .terminal-wrapper')
+        ];
+        for (const term of candidates) {
+          const r = term.getBoundingClientRect();
+          if (r.width > 80 && r.height > 40) {
+            return true; // ALREADY OPEN AND VISIBLE! DO NOT TOGGLE!
+          }
+        }
+        return false;
+      }
+    });
+
+    if (checkRes?.some(r => r.result === true)) {
+      console.log('[AP-Solver] Terminal is ALREADY open and visible. Keeping it intact.');
+      return true;
+    }
+
+    // 1. In all frames, look for tab with text "TERMINAL" (Image 5 from user)
+    const tabClickRes = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: () => {
         const tabs = [...document.querySelectorAll('[role="tab"], .action-item, .composite.title, [class*="tab" i]')];
         const termTab = tabs.find(t => (t.textContent || '').trim().toUpperCase() === 'TERMINAL' || t.getAttribute('aria-label')?.toLowerCase() === 'terminal');
         if (termTab) {
-          try { termTab.click(); } catch(e) {}
-          return;
+          try {
+            termTab.click();
+            termTab.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+            return true;
+          } catch(e) {}
         }
+        return false;
+      }
+    });
 
-        // B. Look for "..." more actions button in panel title
+    if (tabClickRes?.some(r => r.result === true)) {
+      await sleep(350);
+      return true;
+    }
+
+    // 2. Look for "..." more actions button in panel title (Image 4 from user)
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: () => {
         const moreBtn = document.querySelector('.part.panel .title [aria-label*="More" i], .part.panel [class*="codicon-more" i]');
         if (moreBtn) {
           try { moreBtn.click(); } catch(e) {}
         }
-
-        // C. Look for status bar problems button at bottom-left: "(X) 1  (!) 0"
-        const statusProblems = document.querySelector('.statusbar-item [aria-label*="Problem" i], .statusbar-item [aria-label*="Error" i], [class*="codicon-error" i]');
-        if (statusProblems) {
-          try { statusProblems.click(); } catch(e) {}
-        }
       }
     });
+    await sleep(200);
 
-    await sleep(250);
-
-    // If dropdown opened, click "Terminal" menu item
-    await chrome.scripting.executeScript({
+    const menuClickRes = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       func: () => {
         const items = [...document.querySelectorAll('.action-menu-item, [role="menuitem"], .monaco-menu-item, .action-label')];
         const termItem = items.find(it => (it.textContent || '').trim().toLowerCase() === 'terminal');
         if (termItem) {
-          try { termItem.click(); } catch(e) {}
+          try { termItem.click(); return true; } catch(e) {}
         }
+        return false;
       }
     });
 
-    await sleep(250);
-
-    // Also dispatch Ctrl+` via CDP
-    const attached = await attachCDP(tabId);
-    if (attached) {
-      await cdpNativeKey(tabId, '`', 'Backquote', 192, 2);
+    if (menuClickRes?.some(r => r.result === true)) {
       await sleep(350);
+      return true;
     }
+
+    // 3. Look for status bar problems button at bottom-left: "(X) 1  (!) 0" (Image 1, 2, 3 from user)
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: () => {
+        const statusProblems = document.querySelector('.statusbar-item [aria-label*="Problem" i], .statusbar-item [aria-label*="Error" i], [class*="codicon-error" i], .statusbar-item.left');
+        if (statusProblems) {
+          try { statusProblems.click(); } catch(e) {}
+        }
+      }
+    });
+    await sleep(300);
+
+    // After opening panel via problems, click TERMINAL tab
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: () => {
+        const tabs = [...document.querySelectorAll('[role="tab"], .action-item, .composite.title, [class*="tab" i]')];
+        const termTab = tabs.find(t => (t.textContent || '').trim().toUpperCase() === 'TERMINAL' || t.getAttribute('aria-label')?.toLowerCase() === 'terminal');
+        if (termTab) {
+          try { termTab.click(); } catch(e) {}
+        }
+      }
+    });
+    await sleep(300);
+
   } catch(e) {
     console.warn('[AP-Solver] ensureTerminalOpen error:', e);
   }
+  return true;
 }
 
 // Direct Terminal File Injection Engine (Zero-Click Linux Disk Writer)
@@ -1311,12 +1362,12 @@ async function writeFilesViaTerminal(tabId, files) {
         func: () => {
           // Search for visible xterm terminal canvas / screen / wrapper
           const candidates = [
-            ...document.querySelectorAll('.xterm-screen, .terminal.xterm, .terminal-instance, .terminal-wrapper, [class*="terminal" i] .xterm, [class*="terminal" i]')
+            ...document.querySelectorAll('canvas.xterm-screen, .xterm-screen, .xterm-rows, .terminal.xterm, .terminal-instance, .terminal-wrapper, [class*="terminal" i] .xterm')
           ];
           for (const term of candidates) {
             const r = term.getBoundingClientRect();
             if (r.width > 80 && r.height > 40) {
-              term.focus();
+              try { term.focus(); } catch(e) {}
               try { term.click(); } catch(e) {}
               return {
                 found: true,
@@ -1326,11 +1377,6 @@ async function writeFilesViaTerminal(tabId, files) {
                 height: r.height
               };
             }
-          }
-          const ta = document.querySelector('.xterm-helper-textarea, textarea.xterm-helper-textarea, [class*="xterm" i] textarea');
-          if (ta) {
-            try { ta.focus(); } catch(e) {}
-            return { found: true, isHelper: true };
           }
           return { found: false };
         }
@@ -1380,6 +1426,8 @@ async function writeFilesViaTerminal(tabId, files) {
     if (attached && globalX > 0 && globalY > 0) {
       await cdpNativeClick(tabId, globalX, globalY, 1);
       await sleep(150);
+      await cdpNativeClick(tabId, globalX, globalY, 1);
+      await sleep(100);
     }
 
     // 4. Inject script directly into target frame's xterm textarea via synthetic paste & execCommand
@@ -1415,6 +1463,13 @@ async function writeFilesViaTerminal(tabId, files) {
 
     // 5. Native CDP text typing and Enter key dispatch to execute command in terminal
     if (attached) {
+      // First try native paste shortcut: Cmd+V (Mac) or Ctrl+V (Win/Linux)
+      await cdpNativeKey(tabId, 'v', 'KeyV', 86, 4); // Cmd+V
+      await sleep(100);
+      await cdpNativeKey(tabId, 'v', 'KeyV', 86, 2); // Ctrl+V
+      await sleep(150);
+
+      // Send text via insertText as guaranteed fallback
       await cdpNativeInsertText(tabId, bashScript);
       await sleep(150);
       await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
