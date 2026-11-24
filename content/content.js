@@ -1057,8 +1057,8 @@
         const curCodeSample = f.code.replace(/[\s\r\n]+/g, ' ').slice(0, 50);
         const curEditorSample = curCode.replace(/[\s\r\n]+/g, ' ');
         const hasCleanCode = curCode.length > 50 && !/\/\/\s*write your code here|\/\*\s*write your code here\s*\*\//i.test(curCode);
-        const codeMatches = curEditorSample.includes(curCodeSample) || hasCleanCode;
-        const isMatch = (isCurrentFile || codeMatches) && hasCleanCode;
+        const codeMatches = curEditorSample.includes(curCodeSample);
+        const isMatch = isCurrentFile && (codeMatches || hasCleanCode);
 
         if (isMatch) {
           updatedFiles.push(f.filePath);
@@ -1112,7 +1112,7 @@
 
     // Verify active editor in workspace does not have starter placeholder
     try {
-      const editorStatus = await sendMsg({ op: 'AP_GET_EDITOR_STATUS' }, 5000);
+      const editorStatus = await sendMsg({ op: 'AP_QUERY_EDITOR' }, 5000);
       if (editorStatus && editorStatus.ok && editorStatus.code) {
         if (/\/\/\s*write your code here|\/\*\s*write your code here\s*\*\//i.test(editorStatus.code)) {
           ui.addLog('🛑 Verification failed: Active editor still contains "// write your code here"! The code was not replaced. Please paste the solution into the editor before submitting.', 'bad');
