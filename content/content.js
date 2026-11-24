@@ -1046,7 +1046,7 @@
     // PRIMARY PATH: Integrated Terminal Execution (Direct Container Disk Injection)
     try {
       ui.addLog(`⚡ [Terminal Turbo Engine] Writing ${filesToWrite.length} file(s) directly to disk via Integrated Terminal...`, 'ok');
-      const termResp = await sendMsg({ op: 'AP_WRITE_TERMINAL', data: { files: filesToWrite } }, 7000);
+      const termResp = await sendMsg({ op: 'AP_WRITE_TERMINAL', data: { files: filesToWrite } }, 12000);
       if (termResp && termResp.ok) {
         ui.addLog(`⚡ [Terminal Turbo Engine] Successfully wrote ${filesToWrite.length} file(s) directly to disk via Terminal!`, 'ok');
         for (const f of filesToWrite) {

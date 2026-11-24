@@ -1223,9 +1223,68 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
   return { ok: false, error: 'Failed to write code into editor frame.' };
 }
 
+// Helper to ensure Terminal panel is open (Supports tabs, '...' menu, status bar error icon, and Ctrl+`)
+async function ensureTerminalOpen(tabId) {
+  try {
+    // 1. In all frames, check if TERMINAL tab or panel opener exists
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: () => {
+        // A. Look for tab with text "TERMINAL"
+        const tabs = [...document.querySelectorAll('[role="tab"], .action-item, .composite.title, [class*="tab" i]')];
+        const termTab = tabs.find(t => (t.textContent || '').trim().toUpperCase() === 'TERMINAL' || t.getAttribute('aria-label')?.toLowerCase() === 'terminal');
+        if (termTab) {
+          try { termTab.click(); } catch(e) {}
+          return;
+        }
+
+        // B. Look for "..." more actions button in panel title
+        const moreBtn = document.querySelector('.part.panel .title [aria-label*="More" i], .part.panel [class*="codicon-more" i]');
+        if (moreBtn) {
+          try { moreBtn.click(); } catch(e) {}
+        }
+
+        // C. Look for status bar problems button at bottom-left: "(X) 1  (!) 0"
+        const statusProblems = document.querySelector('.statusbar-item [aria-label*="Problem" i], .statusbar-item [aria-label*="Error" i], [class*="codicon-error" i]');
+        if (statusProblems) {
+          try { statusProblems.click(); } catch(e) {}
+        }
+      }
+    });
+
+    await sleep(250);
+
+    // If dropdown opened, click "Terminal" menu item
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: () => {
+        const items = [...document.querySelectorAll('.action-menu-item, [role="menuitem"], .monaco-menu-item, .action-label')];
+        const termItem = items.find(it => (it.textContent || '').trim().toLowerCase() === 'terminal');
+        if (termItem) {
+          try { termItem.click(); } catch(e) {}
+        }
+      }
+    });
+
+    await sleep(250);
+
+    // Also dispatch Ctrl+` via CDP
+    const attached = await attachCDP(tabId);
+    if (attached) {
+      await cdpNativeKey(tabId, '`', 'Backquote', 192, 2);
+      await sleep(350);
+    }
+  } catch(e) {
+    console.warn('[AP-Solver] ensureTerminalOpen error:', e);
+  }
+}
+
 // Direct Terminal File Injection Engine (Zero-Click Linux Disk Writer)
 async function writeFilesViaTerminal(tabId, files) {
   if (!files || files.length === 0) return { ok: false, error: 'No files provided' };
+
+  // Ensure Terminal is open
+  await ensureTerminalOpen(tabId);
 
   let bashScript = '';
   for (const f of files) {
@@ -1233,7 +1292,8 @@ async function writeFilesViaTerminal(tabId, files) {
     if (dir) {
       bashScript += `mkdir -p "${dir}" && `;
     }
-    bashScript += `cat << '__AP_SOLVER_EOF__' > "${f.filePath}"\n${f.code}\n__AP_SOLVER_EOF__\n`;
+    const cleanCode = stripComments(f.code);
+    bashScript += `cat << '__AP_SOLVER_EOF__' > "${f.filePath}"\n${cleanCode}\n__AP_SOLVER_EOF__\n`;
   }
 
   // If question requires seeding (e.g. src/seed.js exists), automatically run it!
@@ -1245,71 +1305,46 @@ async function writeFilesViaTerminal(tabId, files) {
 
   try {
     // 1. Check all frames to find visible xterm terminal
-    let scanRes = await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
-      func: () => {
-        // Search for visible xterm terminal canvas / screen / wrapper
-        const candidates = [
-          ...document.querySelectorAll('.xterm-screen, .terminal.xterm, .terminal-instance, .terminal-wrapper, [class*="terminal" i] .xterm, [class*="terminal" i]')
-        ];
-        for (const term of candidates) {
-          const r = term.getBoundingClientRect();
-          if (r.width > 80 && r.height > 40) {
-            term.focus();
-            try { term.click(); } catch(e) {}
-            return {
-              found: true,
-              x: r.left + Math.min(r.width / 2, 200),
-              y: r.top + Math.min(r.height / 2, 80),
-              width: r.width,
-              height: r.height
-            };
-          }
-        }
-        const ta = document.querySelector('.xterm-helper-textarea, textarea.xterm-helper-textarea, [class*="xterm" i] textarea');
-        if (ta) {
-          try { ta.focus(); } catch(e) {}
-          return { found: true, isHelper: true };
-        }
-        return { found: false };
-      }
-    });
-
-    let match = scanRes?.find(r => r.result && r.result.found);
-
-    // If terminal is not open yet, attempt to toggle it open with Ctrl+` via CDP
-    if (!match) {
-      try {
-        const attached = await attachCDP(tabId);
-        if (attached) {
-          await cdpNativeKey(tabId, '`', 'Backquote', 192, 2); // Ctrl+`
-          await sleep(700);
-          scanRes = await chrome.scripting.executeScript({
-            target: { tabId, allFrames: true },
-            func: () => {
-              const candidates = [
-                ...document.querySelectorAll('.xterm-screen, .terminal.xterm, .terminal-instance, .terminal-wrapper, [class*="terminal" i]')
-              ];
-              for (const term of candidates) {
-                const r = term.getBoundingClientRect();
-                if (r.width > 80 && r.height > 40) {
-                  term.focus();
-                  try { term.click(); } catch(e) {}
-                  return {
-                    found: true,
-                    x: r.left + Math.min(r.width / 2, 200),
-                    y: r.top + Math.min(r.height / 2, 80),
-                    width: r.width,
-                    height: r.height
-                  };
-                }
-              }
-              return { found: false };
+    const findTerminalInFrames = async () => {
+      const scanRes = await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        func: () => {
+          // Search for visible xterm terminal canvas / screen / wrapper
+          const candidates = [
+            ...document.querySelectorAll('.xterm-screen, .terminal.xterm, .terminal-instance, .terminal-wrapper, [class*="terminal" i] .xterm, [class*="terminal" i]')
+          ];
+          for (const term of candidates) {
+            const r = term.getBoundingClientRect();
+            if (r.width > 80 && r.height > 40) {
+              term.focus();
+              try { term.click(); } catch(e) {}
+              return {
+                found: true,
+                x: r.left + Math.min(r.width / 2, 200),
+                y: r.top + Math.min(r.height / 2, 80),
+                width: r.width,
+                height: r.height
+              };
             }
-          });
-          match = scanRes?.find(r => r.result && r.result.found);
+          }
+          const ta = document.querySelector('.xterm-helper-textarea, textarea.xterm-helper-textarea, [class*="xterm" i] textarea');
+          if (ta) {
+            try { ta.focus(); } catch(e) {}
+            return { found: true, isHelper: true };
+          }
+          return { found: false };
         }
-      } catch (e) {}
+      });
+      return scanRes?.find(r => r.result && r.result.found);
+    };
+
+    let match = await findTerminalInFrames();
+
+    // If not found on first scan, try ensureTerminalOpen again and re-scan
+    if (!match) {
+      await ensureTerminalOpen(tabId);
+      await sleep(400);
+      match = await findTerminalInFrames();
     }
 
     if (!match || !match.result) {
