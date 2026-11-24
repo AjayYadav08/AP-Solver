@@ -714,4 +714,36 @@ if (!contentJs25.includes('function sanitizeActiveFile') ||
 }
 console.log('   ✓ sanitizeActiveFile Helper, Stale Cache Reset & Code Matching Fallback verified');
 
+// Test 26: Verify Complete 6-Step Autonomous Process & Submission Block Policy
+console.log('26. Testing Complete 6-Step Autonomous Process & Submission Block Policy...');
+const contentJs26 = fs.readFileSync(path.join(__dirname, 'content/content.js'), 'utf8');
+const bgJs26 = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
+const llmJs26 = fs.readFileSync(path.join(__dirname, 'utils/llm.js'), 'utf8');
+
+// 1. Step 1: Initial files of workspace passed to AI
+if (!bgJs26.includes("fname.endsWith('.prisma') || fname.endsWith('.js')") ||
+    !llmJs26.includes("Initial Workspace Files & Starter Code")) {
+  throw new Error('background.js and llm.js must provide full initial files and starter code to AI!');
+}
+
+// 2. Step 2 & 3: Multi-file handling, erasing initial code, and required file creation
+if (!contentJs26.includes("Erasing initial code & writing complete solution into") ||
+    !contentJs26.includes("updatedFiles") ||
+    !contentJs26.includes("failedFiles")) {
+  throw new Error('content.js must erase initial code and track updated/failed files for multi-file writing!');
+}
+
+// 3. Strict Submission Policy: Never submit until each required file's code is updated
+if (!contentJs26.includes("Submission BLOCKED: Do not click submit until each required file's code is updated!") ||
+    !contentJs26.includes("Submission cancelled: All required files must have complete, non-placeholder code")) {
+  throw new Error('content.js must block submission until each required file is updated and complete!');
+}
+
+// 4. Step 5 & 6: Side bar terminal error extraction and retry loop
+if (!contentJs26.includes("readTerminalOutput(5500)") ||
+    !contentJs26.includes("Repeating steps 4 and 5 with targeted fix")) {
+  throw new Error('content.js must analyze side bar terminal error messages and repeat steps 4 and 5!');
+}
+console.log('   ✓ 6-Step Autonomous Process & "Do Not Submit Until Each Required File Updated" Policy verified');
+
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');

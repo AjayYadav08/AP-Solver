@@ -74,20 +74,16 @@ STRICT GUIDELINES:
    - Do NOT use tab characters.
    - Keep code clean, elegant, and readable.
 6. MULTI-FILE WORKSPACE & TARGET FILE AWARENESS:
-   - The project workspace contains multiple files and folders in 'src/' (e.g. 'src/orderManager.js', 'src/logReader.js', 'src/index.js', 'customers.json', 'orders.json', etc.).
-   - Carefully inspect the problem requirements to determine which file(s) must be created or modified.
-   - DO NOT assume everything goes into index.js! If the challenge specifies 'orderManager.js' or another file, generate the solution for that exact file.
-   - If multiple files are required, output each file clearly with a file comment header like:
+   - Determine ALL files in which code is needed to be written.
+   - If a file is not yet present in the project (e.g. 'src/seed.js' or 'src/controllers/userController.js'), specify its target path so it can be created at its given location.
+   - For every required file, provide complete code that erases the initial starter code and fills in the full implementation.
+   - Output EACH file in its own distinct markdown code block with the exact file path on Line 1:
      \`\`\`javascript
-     // orderManager.js
-     ...complete code for orderManager.js...
+     // src/seed.js
+     ...complete code for seed.js...
      \`\`\`
      \`\`\`javascript
-     // logReader.js
-     ...complete code for logReader.js...
-     \`\`\`
-     \`\`\`javascript
-     // index.js
+     // src/index.js
      ...complete code for index.js...
      \`\`\`
    - Never merge multiple different modules or files into index.js. Keep each file independent with its own requires and exports.
@@ -330,9 +326,11 @@ export function buildPrompt({
 
   if (referenceFiles && Object.keys(referenceFiles).length > 0) {
     const refs = Object.entries(referenceFiles).map(([fname, content]) => {
-      return `### File: ${fname}\n\`\`\`json\n${content}\n\`\`\``;
+      const ext = fname.split('.').pop().toLowerCase();
+      const lang = ext === 'json' ? 'json' : (ext === 'prisma' ? 'prisma' : (ext === 'ts' ? 'typescript' : 'javascript'));
+      return `### Initial Starter File: \`${fname}\`\n\`\`\`${lang}\n${content}\n\`\`\``;
     }).join('\n\n');
-    parts.push(`## Reference Project Files & Schemas:\n${refs}`);
+    parts.push(`## Initial Workspace Files & Starter Code:\n${refs}`);
   }
 
   if (questionDetails) {
@@ -354,16 +352,12 @@ ${feedback}
 Carefully re-read requirements and ensure all edge cases, files, and status codes are handled.`);
   }
 
-  parts.push(`## Instructions:
-1. Analyze the full question requirements and initial starter code across all files.
-2. Determine ALL files in which code is needed to be written. If a file is not yet present in the project (e.g. a new router, controller, or middleware), specify its target path (e.g. \`// src/controllers/orderController.js\`) so it can be created at its given location.
-3. For existing files, provide the complete, clean replacement code.
-4. CRITICAL FILE NAMING RULES:
-   - Match exact filenames from Project Workspace Files when editing existing files.
-   - Place ONLY the direct file path on Line 1 of each code block (e.g. \`// src/index.js\` or \`// src/middleware.js\`).
-   - Do NOT use generic names or numbered labels like "File 1", "file 1", "1.js", or "part 1".
-5. If multiple files must be created or edited, provide EACH file in its own distinct code block with its file header line.
-6. Return ONLY the code blocks. Absolutely NO conversational explanation or placeholder comments like "// write your code here". Return full working code with clean 2-space indentation.`);
+  parts.push(`## Operational Process Guidelines:
+1. GIVE FULL QUESTION AND INITIAL CODE: Carefully inspect the full question requirements and initial starter code across all files above.
+2. DETERMINE ALL REQUIRED FILES & LOCATIONS: Identify all files in which code must be written. If a required file is not present in the project (e.g. \`src/seed.js\`, \`src/routes/tasks.js\`, \`src/controllers/userController.js\`), specify its full path on Line 1 so it will be created at its given location.
+3. WRITE COMPLETE CODE & ERASE INITIAL CODE: Provide 100% complete, bug-free replacement code for all required files that completely erases initial starter code and fills corresponding files.
+4. ONE CODE BLOCK PER FILE: Output each file in its own distinct markdown code block with the exact file path on Line 1 (e.g. \`// src/seed.js\`).
+5. NO GENERIC LABELS: Never use "File 1", "1.js", or conversational text. Return ONLY the code blocks.`);
 
   return parts.join('\n\n');
 }

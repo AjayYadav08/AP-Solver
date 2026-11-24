@@ -590,9 +590,13 @@ async function queryEditorInTab(tabId) {
             for (const mod of models) {
               const p = mod.uri?.path || '';
               const fname = p.split('/').pop();
-              if (fname && (fname.endsWith('.json') || fname.endsWith('.txt')) && !fname.includes('package-lock')) {
+              if (fname && (fname.endsWith('.json') || fname.endsWith('.txt') || fname.endsWith('.prisma') || fname.endsWith('.js') || fname.endsWith('.ts')) &&
+                  !fname.includes('package-lock') && !fname.includes('node_modules') && !/inmemory|workbench/i.test(p) && !/^\d+$/.test(fname)) {
                 const val = mod.getValue();
-                if (val && val.length < 5000) referenceFiles[fname] = val;
+                const cleanKey = p.includes('src/') ? 'src/' + fname : fname;
+                if (val && val.length < 25000 && cleanKey !== detectedActive) {
+                  referenceFiles[cleanKey] = val;
+                }
               }
               if (fname && fname.includes('.') && !/^\d+$/.test(fname)) workspaceFiles.push(p.includes('src/') ? 'src/' + fname : fname);
             }

@@ -1001,7 +1001,7 @@
   async function handleWriteCode() {
     if (!cachedGeneratedCode && (!cachedGeneratedFiles || cachedGeneratedFiles.length === 0)) {
       alert('No code generated yet. Please click "Solve".');
-      return false;
+      return { ok: false, updatedFiles: [], failedFiles: [] };
     }
 
     const filesToWrite = (cachedGeneratedFiles && cachedGeneratedFiles.length > 0)
@@ -1035,25 +1035,29 @@
           ui.setFileStatus(f.filePath, 'injected');
         }
         ui.setStatus('Files Saved via Terminal', `${filesToWrite.length} file(s) saved directly to container disk.`, 'success');
-        return true;
+        return { ok: true, updatedFiles: filesToWrite.map(f => f.filePath), failedFiles: [] };
       }
     } catch (e) {
       console.log('[AP-Solver] Terminal direct write bypassed:', e);
     }
 
-    let allSucceeded = true;
+    const updatedFiles = [];
+    const failedFiles = [];
 
-    for (const f of filesToWrite) {
+    for (let i = 0; i < filesToWrite.length; i++) {
+      const f = filesToWrite[i];
       const isKnown = cachedEditor?.allFiles?.some(af => af.endsWith(f.filePath) || f.filePath.endsWith(af));
       if (!isKnown) {
-        ui.addLog(`📄 [Step 2/6] "${f.filePath}" not found in workspace. Creating new file at given location...`, 'ok');
+        ui.addLog(`📄 [Step 2/6] File "${f.filePath}" not found in workspace. Creating new file at given location...`, 'ok');
       }
-      ui.setStatus(`Targeting: ${f.filePath}`, isKnown ? 'Locating file in workspace tabs and explorer...' : 'Creating new file at given location...', 'running', true);
-      ui.addLog(`✍️ [Step 3/6] Writing code into "${f.filePath}"...`);
+      ui.setStatus(`Targeting [${i + 1}/${filesToWrite.length}]: ${f.filePath}`, isKnown ? 'Locating file in workspace tabs and explorer...' : 'Creating new file at given location...', 'running', true);
+      ui.addLog(`✍️ [Step 3/6] Erasing initial code & writing complete solution into "${f.filePath}" (${i + 1}/${filesToWrite.length})...`, 'ok');
+
       const res = await writeCodeToEditor(f.code, f.filePath);
       if (res && res.ok) {
+        updatedFiles.push(f.filePath);
         ui.setFileStatus(f.filePath, 'injected');
-        ui.addLog(`✓ Saved & verified "${f.filePath}" (${f.code.split('\n').length} lines, ${res.method || 'saved'})!`, 'ok');
+        ui.addLog(`✓ Erased initial code, saved & verified "${f.filePath}" (${f.code.split('\n').length} lines, ${res.method || 'saved'})!`, 'ok');
       } else {
         // Double check: Is the file already in active editor with complete code?
         const verifyResp = await sendMsg({ op: 'AP_QUERY_EDITOR' }, 3000);
@@ -1063,30 +1067,34 @@
         const isCurrentFile = curActive.includes(baseName) || baseName.includes(curActive);
         const curCodeSample = f.code.replace(/[\s\r\n]+/g, ' ').slice(0, 50);
         const curEditorSample = curCode.replace(/[\s\r\n]+/g, ' ');
-        const codeMatches = curEditorSample.includes(curCodeSample) || (curCode.length > 50 && !/\/\/\s*write your code here|\/\*\s*write your code here\s*\*\//i.test(curCode));
-        const isMatch = (isCurrentFile || codeMatches) && curCode.length > 50 && !/\/\/\s*write your code here|\/\*\s*write your code here\s*\*\//i.test(curCode);
+        const hasCleanCode = curCode.length > 50 && !/\/\/\s*write your code here|\/\*\s*write your code here\s*\*\//i.test(curCode);
+        const codeMatches = curEditorSample.includes(curCodeSample) || hasCleanCode;
+        const isMatch = (isCurrentFile || codeMatches) && hasCleanCode;
 
         if (isMatch) {
+          updatedFiles.push(f.filePath);
           ui.setFileStatus(f.filePath, 'injected');
           ui.addLog(`✓ Verified complete solution code already active in "${f.filePath}"!`, 'ok');
         } else {
-          allSucceeded = false;
+          failedFiles.push(f.filePath);
           ui.setFileStatus(f.filePath, 'error');
           ui.addLog(`⚠️ Automated navigation into "${f.filePath}" failed. Code copied to clipboard.`, 'warn');
         }
       }
-      await sleep(300);
+      await sleep(350);
     }
 
-    if (allSucceeded) {
+    if (failedFiles.length === 0 && updatedFiles.length === filesToWrite.length) {
       ui.setStatus('Code Injected & Verified', `${filesToWrite.length} file(s) saved to workspace.`, 'success');
-      return true;
+      return { ok: true, updatedFiles, failedFiles: [] };
     }
 
-    const firstFile = filesToWrite[0]?.filePath || 'target file';
-    ui.addLog(`👉 Please click inside "${firstFile}", press Cmd+A, Cmd+V to replace, and Cmd+S to save.`, 'warn');
-    ui.setStatus('Manual Replace Required', `Press Cmd+A then Cmd+V in "${firstFile}" to replace code.`, 'warn');
-    return false;
+    // STRICT POLICY: Submission must be paused if ANY required file was not updated
+    const firstFailed = failedFiles[0] || filesToWrite[0]?.filePath || 'target file';
+    ui.addLog(`🛑 [AP-Solver Policy] Submission paused: Not all required files could be automatically updated. Failed/Pending files: [${failedFiles.join(', ')}].`, 'bad');
+    ui.addLog(`👉 Please click inside "${firstFailed}", press Cmd+A, Cmd+V to replace, and Cmd+S to save.`, 'warn');
+    ui.setStatus('Manual Replace Required', `Press Cmd+A then Cmd+V in "${firstFailed}" to replace code.`, 'warn');
+    return { ok: false, updatedFiles, failedFiles };
   }
 
   async function verifyCodeCompleteness(filesToWrite) {
@@ -1133,6 +1141,16 @@
 
   async function handleSubmit() {
     try {
+      // Safety guard: Verify all required files are complete before submitting
+      const filesToCheck = (cachedGeneratedFiles && cachedGeneratedFiles.length > 0)
+        ? cachedGeneratedFiles
+        : [{ filePath: sanitizeActiveFile(cachedEditor?.activeFile), code: cachedGeneratedCode }];
+      const isComplete = await verifyCodeCompleteness(filesToCheck);
+      if (!isComplete) {
+        ui.addLog('🛑 Submission cancelled: All required files must have complete, non-placeholder code before submitting.', 'bad');
+        return { ok: false, error: 'Incomplete code in required files' };
+      }
+
       const res = await submitAndMonitor();
       if (res.ok) {
         ui.addLog(`🎉 All test cases passed! (${res.passed || 'All'} passed)`, 'ok');
@@ -1218,21 +1236,20 @@
         // Step 2 & Step 3: Check files, create any missing files, and write code one by one
         ui.setStatus(`Attempt ${attempt}/${maxAttempts} - Step 2 & 3: Checking Files & Writing Code...`, 'Checking missing files and writing code one by one...', 'running', true);
         ui.addLog(`🔍 [Step 2/6] Determining required files & creating any missing files at given location...`, 'ok');
-        ui.addLog('✍️ [Step 3/6] Writing code into all files one by one...', 'ok');
-        const writeOk = await handleWriteCode();
-        if (!writeOk) {
-          // Double check: Is the active editor already holding complete, valid working code?
-          const checkResp = await sendMsg({ op: 'AP_QUERY_EDITOR' }, 5000);
-          const currentCode = checkResp?.code || '';
-          const hasCleanCode = currentCode.length > 50 && !/\/\/\s*write your code here|\/\*\s*write your code here\s*\*\//i.test(currentCode);
-          if (hasCleanCode) {
-            ui.addLog(`✓ Complete solution code already present & verified in editor. Proceeding to submit...`, 'ok');
-          } else {
-            const targetName = sanitizeActiveFile(cachedEditor?.activeFile || 'target file');
-            ui.addLog(`🛑 Automated submission paused because editor text was not yet replaced cleanly. Please paste the clean code into "${targetName}" and click Solve again to submit!`, 'bad');
-            ui.setRunning(false);
-            break; // NEVER SUBMIT 501 PLACEHOLDER CODE!
-          }
+        ui.addLog('✍️ [Step 3/6] Writing code into all files one by one, erasing initial code...', 'ok');
+        const writeResult = await handleWriteCode();
+        if (!writeResult || !writeResult.ok) {
+          const filesToCheck = (cachedGeneratedFiles && cachedGeneratedFiles.length > 0)
+            ? cachedGeneratedFiles
+            : [{ filePath: sanitizeActiveFile(cachedEditor?.activeFile), code: cachedGeneratedCode }];
+          const pending = writeResult?.failedFiles?.length
+            ? writeResult.failedFiles
+            : filesToCheck.map(f => f.filePath);
+
+          ui.addLog(`🛑 [Policy Enforcement] Submission BLOCKED: Do not click submit until each required file's code is updated! (${pending.join(', ')} pending)`, 'bad');
+          ui.setStatus('Submission Blocked', `Waiting for all required files to be updated: ${pending.join(', ')}`, 'error');
+          ui.setRunning(false);
+          break; // STRICT ENFORCEMENT: NEVER CLICK SUBMIT UNTIL EACH REQUIRED FILE'S CODE IS UPDATED!
         }
 
         // Code Completeness Check: Submit ONLY when code is complete and non-placeholder!
@@ -1365,6 +1382,20 @@
           ui.addLog(`✓ Saved "${filePath}" successfully (${res.method || 'saved'})!`, 'ok');
           return true;
         } else {
+          // Double check if editor has file active with complete code
+          const verifyResp = await sendMsg({ op: 'AP_QUERY_EDITOR' }, 3000);
+          const curCode = verifyResp?.code || '';
+          const curActive = sanitizeActiveFile(verifyResp?.activeFile || '').toLowerCase();
+          const baseName = filePath.split('/').pop().toLowerCase();
+          const isCurrentFile = curActive.includes(baseName) || baseName.includes(curActive);
+          const curCodeSample = code.replace(/[\s\r\n]+/g, ' ').slice(0, 50);
+          const curEditorSample = curCode.replace(/[\s\r\n]+/g, ' ');
+          const codeMatches = curEditorSample.includes(curCodeSample) || (curCode.length > 50 && !/\/\/\s*write your code here|\/\*\s*write your code here\s*\*\//i.test(curCode));
+          if ((isCurrentFile || codeMatches) && curCode.length > 50 && !/\/\/\s*write your code here|\/\*\s*write your code here\s*\*\//i.test(curCode)) {
+            ui.setFileStatus(filePath, 'injected');
+            ui.addLog(`✓ Verified complete solution code already active in "${filePath}"!`, 'ok');
+            return true;
+          }
           ui.setFileStatus(filePath, 'error');
           ui.addLog(`⚠️ Could not switch to "${filePath}". Please click "${filePath}" tab in VS Code and try again.`, 'warn');
           return false;
