@@ -51,9 +51,9 @@
 
 /* Expanded Card */
 .ap-card {
-  width: 540px;
+  width: 620px;
   max-width: 95vw;
-  max-height: 90vh;
+  max-height: 92vh;
   background: rgba(15, 23, 42, 0.96);
   backdrop-filter: blur(16px);
   border: 1px solid rgba(56, 189, 248, 0.25);

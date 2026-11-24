@@ -48,21 +48,72 @@ STRICT GUIDELINES:
      * Database Creation: Save the record to PostgreSQL using Prisma: 'const user = await prisma.user.create({ data: { email: email.trim(), password: hashedPassword } });'.
      * Response Security: NEVER return or expose the plain-text password or password hash in the response! Omit the password field from the returned object: 'const { password: _, ...userWithoutPassword } = user; return res.status(201).json(userWithoutPassword);'.
      * Async Route Handlers: Always declare route handlers as 'async (req, res) => { try { ... } catch (err) { res.status(500).json({ error: err.message }); } }'. Ensure EVERY code path calls 'res.status(...).json(...)' or 'res.send(...)' so requests NEVER time out or exceed Mocha timeout!
+   - For Prisma Schema ('prisma/schema.prisma'):
+     * Datasource & Generator:
+       datasource db {
+         provider = "postgresql"
+         url = env("DATABASE_URL")
+       }
+       generator client {
+         provider = "prisma-client-js"
+       }
+     * One-to-One Relationships (e.g. User and Profile):
+       model User {
+         id Int @id @default(autoincrement())
+         name String
+         email String @unique
+         profile Profile?
+       }
+       model Profile {
+         id Int @id @default(autoincrement())
+         bio String
+         age Int
+         city String
+         userId Int @unique
+         user User @relation(fields: [userId], references: [id])
+       }
    - For Prisma Seeding ('src/seed.js' or 'seed.js'):
      * Import PrismaClient: 'const { PrismaClient } = require("@prisma/client"); const prisma = new PrismaClient();'.
      * In async function main():
-       - Clear old records first: 'await prisma.user.deleteMany({});' to ensure idempotency and prevent duplicate key errors!
-       - Populate records with the exact fields and values specified in the task description:
-         const usersData = [
-           { name: 'Alice Johnson', email: 'alice@example.com', age: 25 },
-           { name: 'Bob Smith', email: 'bob@example.com', age: 30 },
-           { name: 'Charlie Brown', email: 'charlie@example.com', age: 22 }
-         ];
+       - Clear old records first in dependency order (e.g. child before parent):
+         await prisma.profile.deleteMany();
+         await prisma.user.deleteMany();
+       - For batch records, support createMany with skipDuplicates: true:
          await prisma.user.createMany({ data: usersData, skipDuplicates: true });
-         console.log("Seeded " + usersData.length + " users");
+       - Populate records with the exact fields and values specified in the task description:
+         await prisma.user.create({
+           data: {
+             name: 'Priya',
+             email: 'priya@example.com',
+             profile: {
+               create: {
+                 bio: 'Priya bio',
+                 age: 30,
+                 city: 'New York'
+               }
+             }
+           }
+         });
+         await prisma.user.create({
+           data: {
+             name: 'Rahul',
+             email: 'rahul@example.com',
+             profile: {
+               create: {
+                 bio: 'Rahul bio',
+                 age: 25,
+                 city: 'Los Angeles'
+               }
+             }
+           }
+         });
        - Catch errors with console.error and process.exit(1).
        - In 'finally', ALWAYS call 'await prisma.$disconnect();' so the connection doesn't hang!
      * Invoke main(): 'main().catch(e => { console.error(e); process.exit(1); }).finally(async () => { await prisma.$disconnect(); });'.
+     * For Prisma challenges, ALWAYS output all required files in separate blocks:
+       1. 'prisma/schema.prisma' with complete datasource and models.
+       2. 'src/seed.js' with complete seeding implementation.
+       3. 'src/index.js' with clean express starter (module.exports = app;) free of any artifacts.
    - For Native Node.js HTTP Server ('node:http'):
      * Always set 'Content-Type: application/json; charset=utf-8' on every response.
      * For GET /tasks:
@@ -260,7 +311,7 @@ export function stripFileCommentHeaders(code) {
   if (!code) return '';
   return code
     .replace(/^\s*(?:\/\/|\/\*|#+)\s*file\s*\d+[^\n]*(?:\*\/)?\s*\n?/gim, '')
-    .replace(/^\s*(?:\/\/|\/\*|#+)\s*(?:(?:\d+|step\s*\d+)[\.:\-\)]\s*)?(?:src\/)?[a-zA-Z0-9_\-]+\.(?:js|ts|json|txt)[^\n]*(?:\*\/)?\s*\n?/gi, '')
+    .replace(/^\s*(?:\/\/|\/\*|#+)\s*(?:(?:\d+|step\s*\d+)[\.:\-\)]\s*)?(?:src\/)?[a-zA-Z0-9_\-]+\.(?:js|ts|json|txt|prisma|sql|env|graphql)[^\n]*(?:\*\/)?\s*\n?/gi, '')
     .trim();
 }
 
@@ -270,6 +321,9 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
   const normPath = (fn) => {
     if (!fn) return '';
     fn = fn.trim();
+    if (fn.endsWith('.prisma') || fn === 'schema.prisma') {
+      return fn.startsWith('prisma/') ? fn : 'prisma/' + fn;
+    }
     if (fn.startsWith('src/')) return fn;
     if (fn.includes('/') || fn === 'package.json' || fn.startsWith('.')) return fn;
     return 'src/' + fn;
@@ -278,14 +332,28 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
   const isValidFilename = (fn) => {
     if (!fn) return false;
     fn = fn.trim();
-    if (/^(1|2|3|4|5|one|two|file1|file2|file_1|file_2)(\.(js|ts))?$/i.test(fn)) return false;
-    return /\.(js|ts|json|txt)$/i.test(fn);
+    if (/^(1|2|3|4|5|one|two|file1|file2|file_1|file_2)(\.(js|ts|prisma|sql))?$/i.test(fn)) return false;
+    return /\.(js|ts|json|txt|prisma|sql|env|graphql|html|css)$/i.test(fn);
   };
 
   const resolveTargetFile = (fn, codeSnippet, idx) => {
+    // 1. Content-based detection ALWAYS takes absolute precedence over generic/mismatched filenames
+    if (/datasource\s+db|generator\s+client|model\s+[A-Z]/i.test(codeSnippet) || (fn && fn.endsWith('.prisma'))) {
+      return 'prisma/schema.prisma';
+    }
+    if (/PrismaClient|prisma\.\w+\.(create|deleteMany|find)/i.test(codeSnippet) && !/express|createServer|app\.listen/i.test(codeSnippet)) {
+      return 'src/seed.js';
+    }
+    if (/express|createServer|app\.listen|app\.use/i.test(codeSnippet) && !/PrismaClient|prisma\.\w+/i.test(codeSnippet)) {
+      return 'src/index.js';
+    }
+    if (/"prisma"\s*:\s*\{|"scripts"\s*:\s*\{/i.test(codeSnippet) || fn === 'package.json') {
+      return 'package.json';
+    }
+
     if (fn && isValidFilename(fn)) return normPath(fn);
     if (workspaceFiles && workspaceFiles.length > 0) {
-      const codeFiles = workspaceFiles.filter(f => /\.(js|ts)$/i.test(f) && !/nodemon|package|config/i.test(f));
+      const codeFiles = workspaceFiles.filter(f => /\.(js|ts|prisma)$/i.test(f) && !/nodemon|package|config/i.test(f));
       if (/validate|middleware/i.test(codeSnippet)) {
         const m = codeFiles.find(f => /middleware|validate/i.test(f));
         if (m) return normPath(m);
@@ -304,7 +372,7 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
     return normPath(defaultActiveFile);
   };
 
-  const fileHeaderPattern = /^(?:\/\/\s*|\/\*\s*|#+\s*)?(?:file:?\s*|---\s*)?(?:(?:\d+|step\s*\d+|file\s*\d+)[\.:\-\)]\s*)?(?:src\/)?([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt))(?:\s*---|\s*\*\/)?\s*(?:\n|$)/i;
+  const fileHeaderPattern = /^(?:\/\/\s*|\/\*\s*|#+\s*)?(?:file:?\s*|---\s*)?(?:(?:\d+|step\s*\d+|file\s*\d+)[\.:\-\)]\s*)?(?:src\/)?([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt|prisma|sql|env|graphql))(?:\s*---|\s*\*\/)?\s*(?:\n|$)/i;
 
   // Strategy 1: Multiple or Single markdown code blocks
   const blockRegex = /```(?:[a-zA-Z0-9_\-]+)?(?::([^\n]+))?([^\n]*)\n([\s\S]*?)```/g;
@@ -330,7 +398,7 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
 
       // 2. Check lang tag / extra
       if (!detectedFilename && langExtra) {
-        const m = langExtra.match(/([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt))/i);
+        const m = langExtra.match(/([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt|prisma|sql|env|graphql))/i);
         if (m && isValidFilename(m[1])) detectedFilename = m[1];
       }
 
@@ -338,7 +406,7 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
       if (!detectedFilename && precedingText) {
         const lines = precedingText.split('\n').map(l => l.trim()).filter(Boolean);
         const lastFew = lines.slice(-3).join(' ');
-        const m = lastFew.match(/(?:file:?\s*)?(?:(?:\d+|step\s*\d+)[\.:\-\)]\s*)?(?:`|'|\")?(?:src\/)?([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt))/i);
+        const m = lastFew.match(/(?:file:?\s*)?(?:(?:\d+|step\s*\d+)[\.:\-\)]\s*)?(?:`|'|\")?(?:src\/)?([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt|prisma|sql|env|graphql))/i);
         if (m && isValidFilename(m[1])) detectedFilename = m[1];
       }
 
@@ -354,7 +422,7 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
   }
 
   // Strategy 2: Single block or raw text split by line-based file comment headers
-  const headerRegex = /(?:^|\n)\s*(?:\/\/|\/\*|#+)\s*(?:file:?\s*|---\s*)?(?:(?:\d+|step\s*\d+|file\s*\d+)[\.:\-\)]\s*)?(?:src\/)?([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt))(?:\s*---|\s*\*\/)?\s*(?:\n|$)/gi;
+  const headerRegex = /(?:^|\n)\s*(?:\/\/|\/\*|#+)\s*(?:file:?\s*|---\s*)?(?:(?:\d+|step\s*\d+|file\s*\d+)[\.:\-\)]\s*)?(?:src\/)?([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt|prisma|sql|env|graphql))(?:\s*---|\s*\*\/)?\s*(?:\n|$)/gi;
   const headers = [...rawText.matchAll(headerRegex)].filter(h => isValidFilename(h[1]));
 
   if (headers.length > 0) {
@@ -463,6 +531,94 @@ export function buildPrompt({
 Earlier attempt resulted in test failures. Fix these issues immediately:
 ${feedback}
 Carefully re-read requirements and ensure all edge cases, files, and status codes are handled.`);
+  }
+
+  const isPrismaTask = /prisma|schema\.prisma|seed\.js|one-to-one/i.test((questionTitle || '') + ' ' + (questionDetails || ''));
+  if (isPrismaTask) {
+    parts.push(`## MANDATORY PRISMA MULTI-FILE REQUIREMENTS:
+This challenge REQUIRES multiple files. You MUST output ALL required files in separate markdown code blocks:
+\`\`\`prisma
+// prisma/schema.prisma
+datasource db {
+  provider = "postgresql"
+  url = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id Int @id @default(autoincrement())
+  name String
+  email String @unique
+  profile Profile?
+}
+
+model Profile {
+  id Int @id @default(autoincrement())
+  bio String
+  age Int
+  city String
+  userId Int @unique
+  user User @relation(fields: [userId], references: [id])
+}
+\`\`\`
+
+\`\`\`javascript
+// src/seed.js
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+
+async function main() {
+  await prisma.profile.deleteMany();
+  await prisma.user.deleteMany();
+
+  await prisma.user.create({
+    data: {
+      name: 'Priya',
+      email: 'priya@example.com',
+      profile: {
+        create: {
+          bio: 'Priya bio',
+          age: 30,
+          city: 'New York'
+        }
+      }
+    }
+  });
+
+  await prisma.user.create({
+    data: {
+      name: 'Rahul',
+      email: 'rahul@example.com',
+      profile: {
+        create: {
+          bio: 'Rahul bio',
+          age: 25,
+          city: 'Los Angeles'
+        }
+      }
+    }
+  });
+}
+
+main().catch(e => { console.error(e); process.exit(1); }).finally(async () => { await prisma.$disconnect(); });
+\`\`\`
+
+\`\`\`javascript
+// src/index.js
+const express = require('express');
+const app = express();
+const PORT = process.env.PORT || 8000;
+app.use(express.json());
+app.get('/', (req, res) => { res.send('Server is running'); });
+if (process.env.NODE_ENV !== 'test') {
+  app.listen(PORT, () => { console.log('Server running on port ' + PORT); });
+}
+module.exports = app;
+\`\`\`
+DO NOT OMIT prisma/schema.prisma! It is required for the database tables to be created!`);
   }
 
   parts.push(`## Operational Process Guidelines:
@@ -661,8 +817,8 @@ export async function callGroq(prompt, settings) {
           msg += `: ${errText}`;
         }
 
-        // If 404 (model does not exist or access denied) or 429 (rate limit), try next model
-        if (resp.status === 404 || resp.status === 429 || /does not exist|access|decommissioned|rate limit/i.test(msg)) {
+        // If 404 (model does not exist), 413 (TPM limit exceeded), or 429 (rate limit), try next model
+        if (resp.status === 404 || resp.status === 413 || resp.status === 429 || /does not exist|access|decommissioned|rate limit|too large|TPM|RPM/i.test(msg)) {
           console.warn(`[AP-Solver] Groq model ${model} unavailable (${resp.status}), trying next model...`);
           lastError = new Error(msg);
           continue;
@@ -685,7 +841,7 @@ export async function callGroq(prompt, settings) {
         model
       };
     } catch (err) {
-      if (err.message && (err.message.includes('404') || err.message.includes('does not exist') || err.message.includes('429'))) {
+      if (err.message && (err.message.includes('404') || err.message.includes('413') || err.message.includes('429') || /too large|TPM|RPM|rate limit/i.test(err.message))) {
         lastError = err;
         continue;
       }

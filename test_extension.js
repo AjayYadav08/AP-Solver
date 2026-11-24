@@ -829,4 +829,167 @@ if (!bgJs29.includes('simulateClickSeq') || !bgJs29.includes('KeyC') || !bgJs29.
 }
 console.log('   ✓ Stale Monaco Buffer Elimination, Prisma Seeding & Hardware Terminal Typing verified');
 
+// -------------------------------------------------------------------------
+// Test 30: Terminal-First Architecture, Prisma Schema Routing & Monaco Protection Guard
+// -------------------------------------------------------------------------
+console.log('30. Testing Terminal-First Architecture, Prisma Schema Routing & Zero Monaco Corruption...');
+
+// 1. Verify parseMultiFileSolution correctly identifies schema.prisma and seed.js
+const testPrismaResponse = `
+\`\`\`prisma
+// prisma/schema.prisma
+datasource db {
+  provider = "postgresql"
+  url = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id Int @id @default(autoincrement())
+  name String
+  email String @unique
+  profile Profile?
+}
+
+model Profile {
+  id Int @id @default(autoincrement())
+  bio String
+  age Int
+  city String
+  userId Int @unique
+  user User @relation(fields: [userId], references: [id])
+}
+\`\`\`
+
+\`\`\`javascript
+// src/seed.js
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+
+async function main() {
+  await prisma.profile.deleteMany();
+  await prisma.user.deleteMany();
+  await prisma.user.create({
+    data: {
+      name: 'Priya',
+      email: 'priya@example.com',
+      profile: {
+        create: {
+          bio: 'Priya bio',
+          age: 30,
+          city: 'New York'
+        }
+      }
+    }
+  });
+  await prisma.user.create({
+    data: {
+      name: 'Rahul',
+      email: 'rahul@example.com',
+      profile: {
+        create: {
+          bio: 'Rahul bio',
+          age: 25,
+          city: 'Los Angeles'
+        }
+      }
+    }
+  });
+}
+
+main().catch(e => { console.error(e); process.exit(1); }).finally(async () => { await prisma.$disconnect(); });
+\`\`\`
+`;
+
+const parsed30 = parseMultiFileSolution(testPrismaResponse, 'src/index.js', ['prisma/schema.prisma', 'src/seed.js', 'src/index.js']);
+if (parsed30.length !== 2) {
+  throw new Error(`Expected 2 files from Prisma response, got ${parsed30.length}`);
+}
+if (parsed30[0].filePath !== 'prisma/schema.prisma') {
+  throw new Error(`Expected first file to be prisma/schema.prisma, got ${parsed30[0].filePath}`);
+}
+if (parsed30[1].filePath !== 'src/seed.js') {
+  throw new Error(`Expected second file to be src/seed.js, got ${parsed30[1].filePath}`);
+}
+
+// 2. Verify auto-content detection when headers are missing
+const rawPrismaSnippet = `
+datasource db {
+  provider = "postgresql"
+  url = env("DATABASE_URL")
+}
+model User {
+  id Int @id @default(autoincrement())
+  email String @unique
+}
+`;
+const autoParsed = parseMultiFileSolution(rawPrismaSnippet, 'src/index.js', []);
+if (autoParsed[0].filePath !== 'prisma/schema.prisma') {
+  throw new Error(`Expected content-based routing to prisma/schema.prisma, got ${autoParsed[0].filePath}`);
+}
+
+// 3. Verify terminal script generator includes prisma db push, generate, and seed execution
+const script30 = buildBase64TerminalScript(parsed30);
+if (!script30.includes('prisma/schema.prisma') ||
+    !script30.includes('src/seed.js') ||
+    !script30.includes('prisma db push') ||
+    !script30.includes('prisma generate') ||
+    !script30.includes('node src/seed.js')) {
+  throw new Error('Terminal script must include schema file, seed file, prisma db push, prisma generate, and node src/seed.js!');
+}
+
+// 4. Verify content.js strictly bypasses Monaco writes when filesWrittenViaTerminal is true
+const contentJs30 = fs.readFileSync(path.join(__dirname, 'content/content.js'), 'utf-8');
+if (!contentJs30.includes('if (filesWrittenViaTerminal)') ||
+    !contentJs30.includes('Monaco editor completely bypassed')) {
+  throw new Error('content.js must completely bypass Monaco editor writes when filesWrittenViaTerminal is true!');
+}
+
+// 5. Verify background.js enforces strict terminal focus check before CDP insertText
+const bgJs30 = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf-8');
+if (!bgJs30.includes('isTerminalFocused') ||
+    !bgJs30.includes('Aborting CDP typing to protect editor')) {
+  throw new Error('background.js must enforce strict terminal focus guard before CDP typing!');
+}
+
+console.log('   ✓ Terminal-First Architecture, Prisma Schema Routing & Zero Monaco Corruption verified');
+
+// ---------------------------------------------------------------------------
+// 31. Strict Zero-Monaco-Corruption, Container Permissions & Clean Terminal Execution
+// ---------------------------------------------------------------------------
+console.log('31. Testing Strict Zero-Monaco-Corruption, Container Permissions & Clean Terminal Execution...');
+
+// 1. Terminal script must enforce git safe directory, sudo permissions, clean starter checkout, and non-interactive npx
+if (!script30.includes('safe.directory') ||
+    !script30.includes('sudo chmod -R 777') ||
+    !script30.includes('git checkout -- src/index.js') ||
+    !script30.includes('npx -y prisma')) {
+  throw new Error('Terminal script must contain safe.directory, sudo chmod, starter index checkout, and non-interactive npx -y!');
+}
+
+// 2. background.js writeFilesViaTerminal must NEVER call document.execCommand('insertText')
+const bgJs31 = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf-8');
+const termWriterSection = bgJs31.substring(bgJs31.indexOf('writeFilesViaTerminal'));
+if (termWriterSection.includes("document.execCommand('insertText'")) {
+  throw new Error('background.js writeFilesViaTerminal must NOT call document.execCommand to prevent Monaco editor buffer corruption!');
+}
+
+// 3. content/content.js handleWriteCode must NEVER call writeCodeToEditor
+const contentJs31 = fs.readFileSync(path.join(__dirname, 'content/content.js'), 'utf-8');
+const handleWriteSection = contentJs31.substring(contentJs31.indexOf('async function handleWriteCode'), contentJs31.indexOf('async function verifyCodeCompleteness'));
+if (handleWriteSection.includes('writeCodeToEditor(')) {
+  throw new Error('content.js handleWriteCode must NEVER call writeCodeToEditor! Monaco editor writes are strictly forbidden in Terminal architecture.');
+}
+
+// 4. solver-ui.js copy terminal script must include safe.directory and npx -y
+const uiJs31 = fs.readFileSync(path.join(__dirname, 'content/solver-ui.js'), 'utf-8');
+if (!uiJs31.includes('safe.directory') || !uiJs31.includes('npx -y prisma')) {
+  throw new Error('solver-ui.js 1-click terminal script must include safe.directory and npx -y!');
+}
+
+console.log('   ✓ Strict Zero-Monaco-Corruption, Container Permissions & Clean Terminal Execution verified');
+
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');

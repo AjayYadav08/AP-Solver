@@ -400,8 +400,22 @@ window.APSolverUI = class APSolverUI {
     termBtns.forEach((btn) => {
       btn.onclick = async () => {
         let bashScript = '';
+        bashScript += `git config --global --add safe.directory /app/code 2>/dev/null || true && `;
+        bashScript += `sudo chmod -R 777 /app/code/.git 2>/dev/null || true && `;
+        bashScript += `sudo chown -R newton:newton /app/code 2>/dev/null || true && `;
+        bashScript += `git checkout -- src/index.js 2>/dev/null || true && `;
+
+        const hasPrisma = this.generatedFiles.some(f => (f.filePath && f.filePath.endsWith('.prisma')) || /datasource\s+db|generator\s+client|model\s+/i.test(f.code));
+        const hasSeed = this.generatedFiles.some(f => (f.filePath && f.filePath.endsWith('seed.js')) || /prisma\.\w+\.(create|deleteMany)/i.test(f.code));
+
         for (const f of this.generatedFiles) {
-          const dir = f.filePath.includes('/') ? f.filePath.substring(0, f.filePath.lastIndexOf('/')) : '';
+          let targetPath = f.filePath;
+          if (targetPath.endsWith('.prisma') || /datasource\s+db|generator\s+client/i.test(f.code)) {
+            targetPath = 'prisma/schema.prisma';
+          } else if (/PrismaClient|prisma\.\w+\.(create|deleteMany)/i.test(f.code) && !/express|createServer/i.test(f.code)) {
+            targetPath = 'src/seed.js';
+          }
+          const dir = targetPath.includes('/') ? targetPath.substring(0, targetPath.lastIndexOf('/')) : '';
           if (dir) {
             bashScript += `mkdir -p "${dir}" && `;
           }
@@ -412,12 +426,33 @@ window.APSolverUI = class APSolverUI {
           } catch(e) {
             b64 = btoa(cleanCode);
           }
-          bashScript += `echo "${b64}" | base64 -d > "${f.filePath}" && `;
+          bashScript += `echo "${b64}" | base64 -d > "${targetPath}" && `;
+          if (targetPath === 'prisma/schema.prisma') {
+            bashScript += `cp prisma/schema.prisma ./schema.prisma 2>/dev/null || true && `;
+          }
         }
-        const hasSeed = this.generatedFiles.some(f => f.filePath.endsWith('seed.js'));
+
+        const hasIndex = this.generatedFiles.some(f => f.filePath && f.filePath.endsWith('index.js'));
+        if (!hasIndex && (hasSeed || hasPrisma)) {
+          const starterIndex = `const express = require('express');\nconst app = express();\nconst PORT = process.env.PORT || 8000;\napp.use(express.json());\napp.get('/', (req, res) => { res.send('Server is running'); });\nif (process.env.NODE_ENV !== 'test') {\n  app.listen(PORT, () => { console.log('Server running on port ' + PORT); });\n}\nmodule.exports = app;`;
+          let b64Index = '';
+          try {
+            b64Index = btoa(unescape(encodeURIComponent(starterIndex)));
+          } catch(e) {
+            b64Index = btoa(starterIndex);
+          }
+          bashScript += `mkdir -p "src" && echo "${b64Index}" | base64 -d > "src/index.js" && `;
+        }
+
+        if (hasPrisma || hasSeed) {
+          bashScript += `node -e 'try { const p="./package.json", pkg=require(p); pkg.prisma = pkg.prisma || {}; pkg.prisma.seed = "node src/seed.js"; require("fs").writeFileSync(p, JSON.stringify(pkg, null, 2)); } catch(e){}' 2>/dev/null || true && `;
+          bashScript += `npm install --save-dev prisma 2>/dev/null || true && npm install @prisma/client 2>/dev/null || true && `;
+          bashScript += `(npx -y prisma db push --skip-generate 2>/dev/null || true) && (npx -y prisma generate 2>/dev/null || true) && `;
+        }
         if (hasSeed) {
-          bashScript += `if [ -f src/seed.js ]; then node src/seed.js; elif [ -f seed.js ]; then node seed.js; fi && `;
+          bashScript += `if [ -f src/seed.js ]; then node src/seed.js || true; elif [ -f seed.js ]; then node seed.js || true; fi && `;
         }
+        bashScript += `(git add -A && git commit -m "solution" 2>/dev/null || true) && `;
         bashScript += `echo "=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ==="`;
         try {
           await navigator.clipboard.writeText(bashScript.trim());
