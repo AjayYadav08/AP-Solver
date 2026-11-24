@@ -1022,20 +1022,27 @@
 
     ui.setStatus(`Injecting solution into ${filesToWrite.length} file(s)...`, '', 'running', true);
 
-    // Build all-in-one terminal bash script for these files (Direct Linux Disk Writer)
+    // Build all-in-one atomic base64 terminal bash script for these files (Direct Linux Disk Writer)
     let bashScript = '';
     for (const f of filesToWrite) {
       const dir = f.filePath.includes('/') ? f.filePath.substring(0, f.filePath.lastIndexOf('/')) : '';
       if (dir) {
         bashScript += `mkdir -p "${dir}" && `;
       }
-      bashScript += `cat << '__AP_SOLVER_EOF__' > "${f.filePath}"\n${f.code}\n__AP_SOLVER_EOF__\n`;
+      const cleanCode = stripAllComments(f.code || '').trim();
+      let b64 = '';
+      try {
+        b64 = btoa(unescape(encodeURIComponent(cleanCode)));
+      } catch(e) {
+        b64 = btoa(cleanCode);
+      }
+      bashScript += `echo "${b64}" | base64 -d > "${f.filePath}" && `;
     }
     const hasSeed = filesToWrite.some(f => f.filePath.endsWith('seed.js'));
     if (hasSeed) {
-      bashScript += `if [ -f src/seed.js ]; then node src/seed.js || true; fi\n`;
+      bashScript += `if [ -f src/seed.js ]; then node src/seed.js; elif [ -f seed.js ]; then node seed.js; fi && `;
     }
-    bashScript += `echo "=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ==="\n`;
+    bashScript += `echo "=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ==="`;
 
     // Auto-copy terminal script to clipboard as an instant superpower
     try {
@@ -1046,7 +1053,7 @@
     // PRIMARY PATH: Integrated Terminal Execution (Direct Container Disk Injection)
     try {
       ui.addLog(`⚡ [Terminal Turbo Engine] Writing ${filesToWrite.length} file(s) directly to disk via Integrated Terminal...`, 'ok');
-      const termResp = await sendMsg({ op: 'AP_WRITE_TERMINAL', data: { files: filesToWrite } }, 12000);
+      const termResp = await sendMsg({ op: 'AP_WRITE_TERMINAL', data: { files: filesToWrite, script: bashScript } }, 15000);
       if (termResp && termResp.ok) {
         ui.addLog(`⚡ [Terminal Turbo Engine] Successfully wrote ${filesToWrite.length} file(s) directly to disk via Terminal!`, 'ok');
         for (const f of filesToWrite) {
@@ -1055,13 +1062,15 @@
         ui.setStatus('Files Saved via Terminal', `${filesToWrite.length} file(s) saved directly to container disk.`, 'success');
         await sleep(600); // Allow VS Code watcher to sync disk changes
         return { ok: true, updatedFiles: filesToWrite.map(f => f.filePath), failedFiles: [] };
+      } else {
+        ui.addLog(`⚠️ [Terminal Engine] Notice: ${termResp?.error || 'Terminal focus pending'}. Script is in clipboard!`, 'warn');
       }
     } catch (e) {
       console.log('[AP-Solver] Terminal direct write bypassed:', e);
     }
 
-    ui.addLog(`⚠️ [Terminal Engine] Terminal not open/detected. Multi-file script is COPIED to clipboard!`, 'warn');
-    ui.addLog(`👉 To write via terminal: Click your open terminal (or press Ctrl+\`) and press Cmd+V!`, 'warn');
+    ui.addLog(`📋 Multi-file bash script is COPIED in your clipboard!`, 'ok');
+    ui.addLog(`👉 Press Cmd+V in your open Terminal & Enter! Or click "⚡ I Pasted in Terminal" below!`, 'warn');
 
     const updatedFiles = [];
     const failedFiles = [];
@@ -1427,6 +1436,18 @@
           ui.addLog(`⚠️ Could not switch to "${filePath}". Please click "${filePath}" tab in VS Code and try again.`, 'warn');
           return false;
         }
+      },
+      onConfirmTerminalPasted: async () => {
+        const filesToCheck = (cachedGeneratedFiles && cachedGeneratedFiles.length > 0)
+          ? cachedGeneratedFiles
+          : [{ filePath: sanitizeActiveFile(cachedEditor?.activeFile), code: cachedGeneratedCode }];
+        for (const f of filesToCheck) {
+          ui.setFileStatus(f.filePath, 'injected');
+        }
+        ui.addLog('⚡ Terminal paste confirmed by user! Proceeding to submit solution...', 'ok');
+        ui.setStatus('Submitting Solution...', 'Evaluating solution with test grader...', 'running', true);
+        await sleep(500);
+        await handleSubmit();
       },
       onSubmit: handleSubmit,
       onOptionsChange: (newOpts) => {

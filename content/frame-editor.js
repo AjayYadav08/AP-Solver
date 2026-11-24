@@ -396,5 +396,188 @@
       })();
       return true;
     }
+
+    // --- Integrated Terminal Direct Frame Controller ---
+    if (msg.op === 'AP_CHECK_TERMINAL') {
+      const termInfo = findIntegratedTerminal();
+      sendResponse({ ok: true, found: termInfo.found, rect: termInfo.rect || null });
+      return true;
+    }
+
+    if (msg.op === 'AP_OPEN_TERMINAL') {
+      (async () => {
+        const opened = await openIntegratedTerminal();
+        const termInfo = findIntegratedTerminal();
+        sendResponse({ ok: true, opened: opened || termInfo.found, rect: termInfo.rect || null });
+      })();
+      return true;
+    }
+
+    if (msg.op === 'AP_INJECT_TERMINAL_COMMAND') {
+      (async () => {
+        const cmd = msg.data?.command || msg.command || msg.data?.script || '';
+        const termInfo = findIntegratedTerminal();
+        if (!termInfo.found) {
+          sendResponse({ ok: false, error: 'Terminal not found in this frame' });
+          return;
+        }
+
+        const ta = termInfo.textarea || document.querySelector('textarea.xterm-helper-textarea, textarea');
+        if (ta) {
+          try { ta.focus(); } catch(e) {}
+        }
+        if (termInfo.element) {
+          try { termInfo.element.focus(); termInfo.element.click(); } catch(e) {}
+        }
+
+        let pasted = false;
+        const termEl = termInfo.element;
+        for (const k of ['xterm', '_xterm', '__xterm']) {
+          if (termEl && termEl[k] && typeof termEl[k].paste === 'function') {
+            try {
+              termEl[k].paste(cmd + '\n');
+              pasted = true;
+              break;
+            } catch(e) {}
+          }
+        }
+
+        if (!pasted && ta) {
+          try {
+            const dt = new DataTransfer();
+            dt.setData('text/plain', cmd + '\n');
+            const pasteEvt = new ClipboardEvent('paste', {
+              clipboardData: dt,
+              bubbles: true,
+              cancelable: true
+            });
+            ta.dispatchEvent(pasteEvt);
+            pasted = true;
+          } catch(e) {}
+          try {
+            ta.value = '';
+            document.execCommand('insertText', false, cmd + '\n');
+          } catch(e) {}
+        }
+
+        sendResponse({ ok: true, pasted, rect: termInfo.rect });
+      })();
+      return true;
+    }
   });
+
+  // Helper functions for Integrated Terminal
+  function findIntegratedTerminal() {
+    const selectors = [
+      '.terminal-outer-container',
+      '.terminal-wrapper',
+      '.terminal.xterm',
+      '.pane-body.integrated-terminal',
+      '.xterm-screen',
+      '.xterm-rows',
+      'canvas.xterm-text-layer',
+      'canvas.xterm-cursor-layer',
+      'textarea.xterm-helper-textarea'
+    ];
+    for (const sel of selectors) {
+      const els = [...document.querySelectorAll(sel)];
+      for (const el of els) {
+        const term = el.closest('.terminal, .terminal-wrapper, .integrated-terminal') || el;
+        const r = term.getBoundingClientRect();
+        if (r.width > 40 && r.height > 30) {
+          const ta = term.querySelector('textarea.xterm-helper-textarea, textarea') || document.querySelector('textarea.xterm-helper-textarea, [class*="xterm" i] textarea');
+          return {
+            found: true,
+            element: term,
+            textarea: ta,
+            rect: {
+              left: r.left,
+              top: r.top,
+              width: r.width,
+              height: r.height,
+              cx: r.left + Math.min(r.width / 2, 200),
+              cy: r.top + Math.min(r.height / 2, 80)
+            }
+          };
+        }
+      }
+    }
+    return { found: false };
+  }
+
+  async function openIntegratedTerminal() {
+    if (findIntegratedTerminal().found) return true;
+
+    // 1. Check if TERMINAL tab is in the panel tab bar
+    const allTabs = [...document.querySelectorAll('[role="tab"], .composite.title, .action-item')];
+    const termTab = allTabs.find(t => (t.textContent || '').trim().toUpperCase() === 'TERMINAL' || t.getAttribute('aria-label')?.toLowerCase() === 'terminal');
+    if (termTab) {
+      try {
+        termTab.click();
+        termTab.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      } catch(e) {}
+      await new Promise(r => setTimeout(r, 250));
+      if (findIntegratedTerminal().found) return true;
+    }
+
+    // 2. Click "..." in panel title
+    const moreBtn = document.querySelector('.part.panel .title [aria-label*="More" i], .part.panel [class*="codicon-more" i], .part.panel [class*="codicon-ellipsis" i], .composite.title [aria-label*="More" i]');
+    if (moreBtn) {
+      try { moreBtn.click(); } catch(e) {}
+      await new Promise(r => setTimeout(r, 150));
+      const menuItems = [...document.querySelectorAll('.action-menu-item, [role="menuitem"], .action-label')];
+      const termItem = menuItems.find(it => (it.textContent || '').trim().toLowerCase() === 'terminal');
+      if (termItem) {
+        try { termItem.click(); } catch(e) {}
+        await new Promise(r => setTimeout(r, 350));
+        if (findIntegratedTerminal().found) return true;
+      }
+    }
+
+    // 3. Click Status Bar Problems icon: "(X) 1  (!) 0"
+    const statusBar = document.querySelector('.statusbar-item.left [aria-label*="Problem" i], .statusbar-item.left [aria-label*="Error" i], .statusbar-item.left [class*="codicon-error" i], .statusbar-item.left');
+    if (statusBar) {
+      try { statusBar.click(); } catch(e) {}
+      await new Promise(r => setTimeout(r, 250));
+
+      const tabsAfter = [...document.querySelectorAll('[role="tab"], .composite.title, .action-item')];
+      const termTabAfter = tabsAfter.find(t => (t.textContent || '').trim().toUpperCase() === 'TERMINAL');
+      if (termTabAfter) {
+        try { termTabAfter.click(); } catch(e) {}
+        await new Promise(r => setTimeout(r, 250));
+        if (findIntegratedTerminal().found) return true;
+      }
+
+      const moreAfter = document.querySelector('.part.panel .title [aria-label*="More" i], .part.panel [class*="codicon-more" i], .part.panel [class*="codicon-ellipsis" i]');
+      if (moreAfter) {
+        try { moreAfter.click(); } catch(e) {}
+        await new Promise(r => setTimeout(r, 150));
+        const menuItems = [...document.querySelectorAll('.action-menu-item, [role="menuitem"], .action-label')];
+        const termItem = menuItems.find(it => (it.textContent || '').trim().toLowerCase() === 'terminal');
+        if (termItem) {
+          try { termItem.click(); } catch(e) {}
+          await new Promise(r => setTimeout(r, 350));
+          if (findIntegratedTerminal().found) return true;
+        }
+      }
+    }
+
+    // 4. Ctrl + ` keydown fallback
+    try {
+      const ev = new KeyboardEvent('keydown', {
+        key: '`',
+        code: 'Backquote',
+        keyCode: 192,
+        which: 192,
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true
+      });
+      document.dispatchEvent(ev);
+      window.dispatchEvent(ev);
+      await new Promise(r => setTimeout(r, 300));
+    } catch(e) {}
+
+    return findIntegratedTerminal().found;
+  }
 })();

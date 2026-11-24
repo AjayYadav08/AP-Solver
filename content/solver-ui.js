@@ -240,6 +240,9 @@ window.APSolverUI = class APSolverUI {
               <button class="ap-btn-copy-terminal-big" title="Copies a single bash command for all files. Paste into bottom terminal and press Enter!">
                 💻 Copy 1-Click Terminal Script (All Files)
               </button>
+              <button class="ap-btn-confirm-terminal-pasted" style="margin-top: 6px; background: linear-gradient(135deg, #059669, #10b981); color: #ffffff; border: 1px solid rgba(16,185,129,0.3); border-radius: 6px; padding: 7px 12px; font-weight: 600; font-size: 12px; cursor: pointer; width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);" title="If you pasted the script into the terminal, click this to proceed to submission immediately!">
+                ⚡ I Pasted in Terminal (Proceed to Submit)
+              </button>
             </div>
           ` : ''}
 
@@ -364,7 +367,35 @@ window.APSolverUI = class APSolverUI {
       };
     }
 
-    // Multi-File Copy All-in-One Terminal Script buttons
+    // Helper to strip comments
+    const stripUiComments = (code) => {
+      if (!code) return '';
+      let clean = code.replace(/\/\*[\s\S]*?\*\//g, '');
+      const lines = clean.split('\n');
+      const res = [];
+      for (const line of lines) {
+        let inQuote = false;
+        let quoteChar = '';
+        let commentIdx = -1;
+        for (let i = 0; i < line.length; i++) {
+          const ch = line[i];
+          const next = line[i + 1];
+          if (!inQuote && (ch === '"' || ch === "'" || ch === '`')) {
+            inQuote = true;
+            quoteChar = ch;
+          } else if (inQuote && ch === quoteChar && line[i - 1] !== '\\') {
+            inQuote = false;
+          } else if (!inQuote && ch === '/' && next === '/') {
+            commentIdx = i;
+            break;
+          }
+        }
+        res.push(commentIdx !== -1 ? line.substring(0, commentIdx).trimEnd() : line);
+      }
+      return res.filter(l => l.trim().length > 0).join('\n');
+    };
+
+    // Multi-File Copy All-in-One Terminal Script buttons (Base64 atomic single-line)
     const termBtns = this.host.querySelectorAll('.ap-btn-copy-terminal-script, .ap-btn-copy-terminal-big');
     termBtns.forEach((btn) => {
       btn.onclick = async () => {
@@ -374,13 +405,20 @@ window.APSolverUI = class APSolverUI {
           if (dir) {
             bashScript += `mkdir -p "${dir}" && `;
           }
-          bashScript += `cat << '__AP_SOLVER_EOF__' > "${f.filePath}"\n${f.code}\n__AP_SOLVER_EOF__\n\n`;
+          const cleanCode = stripUiComments(f.code || '').trim();
+          let b64 = '';
+          try {
+            b64 = btoa(unescape(encodeURIComponent(cleanCode)));
+          } catch(e) {
+            b64 = btoa(cleanCode);
+          }
+          bashScript += `echo "${b64}" | base64 -d > "${f.filePath}" && `;
         }
         const hasSeed = this.generatedFiles.some(f => f.filePath.endsWith('seed.js'));
         if (hasSeed) {
-          bashScript += `if [ -f src/seed.js ]; then node src/seed.js || true; fi\n`;
+          bashScript += `if [ -f src/seed.js ]; then node src/seed.js; elif [ -f seed.js ]; then node seed.js; fi && `;
         }
-        bashScript += `echo "=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ==="\n`;
+        bashScript += `echo "=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ==="`;
         try {
           await navigator.clipboard.writeText(bashScript.trim());
           const orig = btn.textContent;
@@ -396,6 +434,24 @@ window.APSolverUI = class APSolverUI {
         }
       };
     });
+
+    // Multi-File Confirm Terminal Pasted button
+    const confirmPastedBtn = this.host.querySelector('.ap-btn-confirm-terminal-pasted');
+    if (confirmPastedBtn) {
+      confirmPastedBtn.onclick = () => {
+        console.log('[AP-Solver] User confirmed script was pasted in terminal.');
+        if (this.generatedFiles && this.generatedFiles.length > 0) {
+          for (const f of this.generatedFiles) {
+            this.setFileStatus(f.filePath, 'injected');
+          }
+        }
+        this.addLog('⚡ Terminal paste confirmed! Proceeding with verification & submission...', 'ok');
+        this.setStatus('Verified via Terminal', 'All files saved to container disk.', 'success');
+        if (this.callbacks.onConfirmTerminalPasted) {
+          this.callbacks.onConfirmTerminalPasted();
+        }
+      };
+    }
 
     // Multi-File Individual Copy buttons
     const copyBtns = this.host.querySelectorAll('.ap-btn-file-copy');

@@ -1,5 +1,5 @@
 // background.js - AP-Solver Service Worker (Multi-File & Multi-Folder Aware)
-import { generateSolution, getSettings, saveSettings, formatCodeIndentation } from './utils/llm.js';
+import { generateSolution, getSettings, saveSettings, formatCodeIndentation, stripComments } from './utils/llm.js';
 
 console.log('[AP-Solver] Background service worker initialized.');
 
@@ -1223,20 +1223,30 @@ async function writeEditorInTab(tabId, newCode, targetFilePath = null) {
   return { ok: false, error: 'Failed to write code into editor frame.' };
 }
 
-// Helper to ensure Terminal panel is open (Supports tabs, '...' menu, status bar error icon, and Ctrl+`)
+// Helper to ensure Terminal panel is open (Supports in-frame controller, tabs, '...' menu, status bar error icon, and Ctrl+`)
 async function ensureTerminalOpen(tabId) {
   try {
-    // 0. FIRST CHECK: Is terminal ALREADY visible with real dimensions? If yes, DO NOT TOUCH IT!
+    // 0. FIRST CHECK: Try in-frame terminal controller via sendMessage
+    try {
+      const frameCheck = await chrome.tabs.sendMessage(tabId, { op: 'AP_OPEN_TERMINAL' });
+      if (frameCheck && frameCheck.ok && (frameCheck.opened || frameCheck.found)) {
+        console.log('[AP-Solver] Terminal opened/verified via in-frame controller.');
+        return true;
+      }
+    } catch(e) {}
+
+    // 1. In all frames, check if terminal is already visible
     const checkRes = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       func: () => {
         const candidates = [
-          ...document.querySelectorAll('canvas.xterm-screen, .xterm-screen, .xterm-rows, .terminal.xterm, .terminal-instance, .terminal-wrapper')
+          ...document.querySelectorAll('.terminal-outer-container, .terminal-wrapper, .terminal.xterm, .pane-body.integrated-terminal, canvas.xterm-text-layer, canvas.xterm-cursor-layer, .xterm-screen, textarea.xterm-helper-textarea')
         ];
         for (const term of candidates) {
-          const r = term.getBoundingClientRect();
-          if (r.width > 80 && r.height > 40) {
-            return true; // ALREADY OPEN AND VISIBLE! DO NOT TOGGLE!
+          const parent = term.closest('.terminal, .terminal-wrapper, .integrated-terminal') || term;
+          const r = parent.getBoundingClientRect();
+          if (r.width > 40 && r.height > 30) {
+            return true;
           }
         }
         return false;
@@ -1248,7 +1258,7 @@ async function ensureTerminalOpen(tabId) {
       return true;
     }
 
-    // 1. In all frames, look for tab with text "TERMINAL" (Image 5 from user)
+    // 2. Look for tab with text "TERMINAL" (Image 5 from user)
     const tabClickRes = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       func: () => {
@@ -1270,11 +1280,11 @@ async function ensureTerminalOpen(tabId) {
       return true;
     }
 
-    // 2. Look for "..." more actions button in panel title (Image 4 from user)
+    // 3. Look for "..." more actions button in panel title (Image 4 from user)
     await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       func: () => {
-        const moreBtn = document.querySelector('.part.panel .title [aria-label*="More" i], .part.panel [class*="codicon-more" i]');
+        const moreBtn = document.querySelector('.part.panel .title [aria-label*="More" i], .part.panel [class*="codicon-more" i], .part.panel [class*="codicon-ellipsis" i], .composite.title [aria-label*="More" i]');
         if (moreBtn) {
           try { moreBtn.click(); } catch(e) {}
         }
@@ -1299,11 +1309,11 @@ async function ensureTerminalOpen(tabId) {
       return true;
     }
 
-    // 3. Look for status bar problems button at bottom-left: "(X) 1  (!) 0" (Image 1, 2, 3 from user)
+    // 4. Look for status bar problems button at bottom-left: "(X) 1  (!) 0" (Image 1, 2, 3 from user)
     await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       func: () => {
-        const statusProblems = document.querySelector('.statusbar-item [aria-label*="Problem" i], .statusbar-item [aria-label*="Error" i], [class*="codicon-error" i], .statusbar-item.left');
+        const statusProblems = document.querySelector('.statusbar-item.left [aria-label*="Problem" i], .statusbar-item.left [aria-label*="Error" i], .statusbar-item.left [class*="codicon-error" i], .statusbar-item.left');
         if (statusProblems) {
           try { statusProblems.click(); } catch(e) {}
         }
@@ -1311,7 +1321,7 @@ async function ensureTerminalOpen(tabId) {
     });
     await sleep(300);
 
-    // After opening panel via problems, click TERMINAL tab
+    // After opening panel via problems, look for TERMINAL tab or "..."
     await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       func: () => {
@@ -1319,6 +1329,30 @@ async function ensureTerminalOpen(tabId) {
         const termTab = tabs.find(t => (t.textContent || '').trim().toUpperCase() === 'TERMINAL' || t.getAttribute('aria-label')?.toLowerCase() === 'terminal');
         if (termTab) {
           try { termTab.click(); } catch(e) {}
+        }
+      }
+    });
+    await sleep(250);
+
+    // Also try "..." menu in case TERMINAL was inside dropdown
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: () => {
+        const moreBtn = document.querySelector('.part.panel .title [aria-label*="More" i], .part.panel [class*="codicon-more" i], .part.panel [class*="codicon-ellipsis" i]');
+        if (moreBtn) {
+          try { moreBtn.click(); } catch(e) {}
+        }
+      }
+    });
+    await sleep(150);
+
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: () => {
+        const items = [...document.querySelectorAll('.action-menu-item, [role="menuitem"], .action-label')];
+        const termItem = items.find(it => (it.textContent || '').trim().toLowerCase() === 'terminal');
+        if (termItem) {
+          try { termItem.click(); } catch(e) {}
         }
       }
     });
@@ -1330,157 +1364,170 @@ async function ensureTerminalOpen(tabId) {
   return true;
 }
 
+// Helper to build atomic base64 single-line bash command
+export function buildBase64TerminalScript(files) {
+  if (!files || files.length === 0) return '';
+  let cmd = '';
+  for (const f of files) {
+    const dir = f.filePath.includes('/') ? f.filePath.substring(0, f.filePath.lastIndexOf('/')) : '';
+    if (dir) {
+      cmd += `mkdir -p "${dir}" && `;
+    }
+    const cleanCode = stripComments(f.code || '').trim();
+    const b64 = Buffer.from(cleanCode).toString('base64');
+    cmd += `echo "${b64}" | base64 -d > "${f.filePath}" && `;
+  }
+  const hasSeed = files.some(f => f.filePath.endsWith('seed.js'));
+  if (hasSeed) {
+    cmd += `if [ -f src/seed.js ]; then node src/seed.js; elif [ -f seed.js ]; then node seed.js; fi && `;
+  }
+  cmd += `echo "=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ==="`;
+  return cmd;
+}
+
 // Direct Terminal File Injection Engine (Zero-Click Linux Disk Writer)
-async function writeFilesViaTerminal(tabId, files) {
+async function writeFilesViaTerminal(tabId, files, customScript = null) {
   if (!files || files.length === 0) return { ok: false, error: 'No files provided' };
 
   // Ensure Terminal is open
   await ensureTerminalOpen(tabId);
 
-  let bashScript = '';
-  for (const f of files) {
-    const dir = f.filePath.includes('/') ? f.filePath.substring(0, f.filePath.lastIndexOf('/')) : '';
-    if (dir) {
-      bashScript += `mkdir -p "${dir}" && `;
-    }
-    const cleanCode = stripComments(f.code);
-    bashScript += `cat << '__AP_SOLVER_EOF__' > "${f.filePath}"\n${cleanCode}\n__AP_SOLVER_EOF__\n`;
-  }
-
-  // If question requires seeding (e.g. src/seed.js exists), automatically run it!
-  const hasSeed = files.some(f => f.filePath.endsWith('seed.js'));
-  if (hasSeed) {
-    bashScript += `if [ -f src/seed.js ]; then node src/seed.js || true; fi\n`;
-  }
-  bashScript += `echo "=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ==="\n`;
+  // Generate atomic base64 bash command
+  const bashScript = customScript || buildBase64TerminalScript(files);
 
   try {
-    // 1. Check all frames to find visible xterm terminal
+    // 1. First ask frame-editor via sendMessage for terminal presence & coordinates
+    let termFrameInfo = null;
+    try {
+      const checkResp = await chrome.tabs.sendMessage(tabId, { op: 'AP_CHECK_TERMINAL' });
+      if (checkResp && checkResp.ok && checkResp.found) {
+        termFrameInfo = { found: true, rect: checkResp.rect };
+      }
+    } catch(e) {}
+
+    // 2. Scan all frames via executeScript to find visible terminal element
     const findTerminalInFrames = async () => {
-      const scanRes = await chrome.scripting.executeScript({
-        target: { tabId, allFrames: true },
-        func: () => {
-          // Search for visible xterm terminal canvas / screen / wrapper
-          const candidates = [
-            ...document.querySelectorAll('canvas.xterm-screen, .xterm-screen, .xterm-rows, .terminal.xterm, .terminal-instance, .terminal-wrapper, [class*="terminal" i] .xterm')
-          ];
-          for (const term of candidates) {
-            const r = term.getBoundingClientRect();
-            if (r.width > 80 && r.height > 40) {
-              try { term.focus(); } catch(e) {}
-              try { term.click(); } catch(e) {}
-              return {
-                found: true,
-                x: r.left + Math.min(r.width / 2, 200),
-                y: r.top + Math.min(r.height / 2, 80),
-                width: r.width,
-                height: r.height
-              };
+      try {
+        const scanRes = await chrome.scripting.executeScript({
+          target: { tabId, allFrames: true },
+          func: () => {
+            const candidates = [
+              ...document.querySelectorAll('.terminal-outer-container, .terminal-wrapper, .terminal.xterm, .pane-body.integrated-terminal, canvas.xterm-text-layer, canvas.xterm-cursor-layer, .xterm-screen, textarea.xterm-helper-textarea')
+            ];
+            for (const term of candidates) {
+              const parent = term.closest('.terminal, .terminal-wrapper, .integrated-terminal') || term;
+              const r = parent.getBoundingClientRect();
+              if (r.width > 40 && r.height > 30) {
+                try { parent.focus(); } catch(e) {}
+                try { parent.click(); } catch(e) {}
+                return {
+                  found: true,
+                  x: r.left + Math.min(r.width / 2, 200),
+                  y: r.top + Math.min(r.height / 2, 80),
+                  width: r.width,
+                  height: r.height
+                };
+              }
             }
+            return { found: false };
           }
-          return { found: false };
-        }
-      });
-      return scanRes?.find(r => r.result && r.result.found);
+        });
+        return scanRes?.find(r => r.result && r.result.found);
+      } catch(err) {
+        console.warn('[AP-Solver] findTerminalInFrames error:', err);
+        return null;
+      }
     };
 
     let match = await findTerminalInFrames();
 
     // If not found on first scan, try ensureTerminalOpen again and re-scan
-    if (!match) {
+    if (!match && !termFrameInfo) {
       await ensureTerminalOpen(tabId);
-      await sleep(400);
+      await sleep(350);
       match = await findTerminalInFrames();
     }
 
-    if (!match || !match.result) {
-      return { ok: false, error: 'No open terminal found in workspace' };
-    }
-
-    // 2. Compute top viewport coordinates accounting for iframe offset
+    // 3. Compute top viewport coordinates accounting for VS Code iframe offset
     let globalX = 0;
     let globalY = 0;
-    if (match.result.x !== undefined && match.result.y !== undefined) {
+
+    const iframeRes = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        const iframes = [...document.querySelectorAll('iframe')];
+        const matchIfr = iframes.find(ifr => /edison|vscode|backend|newton-box/i.test(ifr.src || ''))
+          || iframes.find(ifr => {
+            const r = ifr.getBoundingClientRect();
+            return r.left > 150 && r.width > 300 && r.height > 250;
+          })
+          || iframes[0];
+        if (matchIfr) {
+          const r = matchIfr.getBoundingClientRect();
+          return { left: r.left, top: r.top, width: r.width, height: r.height };
+        }
+        return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+      }
+    });
+
+    const vsIframe = iframeRes?.[0]?.result || { left: 0, top: 0 };
+
+    if (match?.result?.x !== undefined && match?.result?.y !== undefined) {
       if (match.frameId === 0) {
         globalX = match.result.x;
         globalY = match.result.y;
       } else {
-        const iframeRes = await chrome.scripting.executeScript({
-          target: { tabId },
-          func: () => {
-            return [...document.querySelectorAll('iframe')].map(ifr => {
-              const r = ifr.getBoundingClientRect();
-              return { left: r.left, top: r.top, width: r.width, height: r.height };
-            }).filter(r => r.width > 150 && r.height > 150);
-          }
-        });
-        const iframes = iframeRes?.[0]?.result || [];
-        const vsIframe = iframes.find(ifr => ifr.left > 100 || ifr.width > 400) || iframes[0] || { left: 0, top: 0 };
         globalX = vsIframe.left + match.result.x;
         globalY = vsIframe.top + match.result.y;
       }
+    } else if (termFrameInfo?.rect) {
+      globalX = vsIframe.left + (termFrameInfo.rect.cx || (termFrameInfo.rect.left + termFrameInfo.rect.width / 2));
+      globalY = vsIframe.top + (termFrameInfo.rect.cy || (termFrameInfo.rect.top + termFrameInfo.rect.height / 2));
+    } else {
+      // Fallback: estimate coordinates at lower center of VS Code iframe
+      globalX = Math.round(vsIframe.left + (vsIframe.width ? vsIframe.width / 2 : 300));
+      globalY = Math.round(vsIframe.top + (vsIframe.height ? vsIframe.height * 0.82 : 550));
     }
 
-    // 3. CDP native click on terminal screen to ensure true OS hardware focus
+    // 4. CDP native click on terminal screen to ensure true OS hardware focus
     const attached = await attachCDP(tabId);
     if (attached && globalX > 0 && globalY > 0) {
+      await showVisualTargetBeacon(tabId, globalX, globalY, 'Integrated Terminal', 'terminal');
       await cdpNativeClick(tabId, globalX, globalY, 1);
-      await sleep(150);
+      await sleep(100);
       await cdpNativeClick(tabId, globalX, globalY, 1);
       await sleep(100);
     }
 
-    // 4. Inject script directly into target frame's xterm textarea via synthetic paste & execCommand
-    const targetFrameId = match.frameId;
-    if (targetFrameId !== undefined) {
-      try {
-        await chrome.scripting.executeScript({
-          target: { tabId, frameIds: [targetFrameId] },
-          args: [bashScript],
-          func: (script) => {
-            const ta = document.querySelector('.xterm-helper-textarea, textarea.xterm-helper-textarea, [class*="xterm" i] textarea') || document.querySelector('textarea');
-            if (ta) {
-              try { ta.focus(); } catch (e) {}
-              try {
-                const dt = new DataTransfer();
-                dt.setData('text/plain', script);
-                const pasteEvt = new ClipboardEvent('paste', {
-                  clipboardData: dt,
-                  bubbles: true,
-                  cancelable: true
-                });
-                ta.dispatchEvent(pasteEvt);
-              } catch (e) {}
-              try {
-                ta.value = '';
-                document.execCommand('insertText', false, script);
-              } catch (e) {}
-            }
-          }
-        });
-      } catch (e) {}
-    }
+    // 5. In-frame direct injection via sendMessage
+    try {
+      await chrome.tabs.sendMessage(tabId, {
+        op: 'AP_INJECT_TERMINAL_COMMAND',
+        data: { command: bashScript }
+      });
+    } catch(e) {}
 
-    // 5. Native CDP text typing and Enter key dispatch to execute command in terminal
+    // 6. Native CDP text typing and Enter key dispatch to guarantee bash execution
     if (attached) {
       // First try native paste shortcut: Cmd+V (Mac) or Ctrl+V (Win/Linux)
       await cdpNativeKey(tabId, 'v', 'KeyV', 86, 4); // Cmd+V
-      await sleep(100);
+      await sleep(80);
       await cdpNativeKey(tabId, 'v', 'KeyV', 86, 2); // Ctrl+V
-      await sleep(150);
+      await sleep(100);
 
       // Send text via insertText as guaranteed fallback
       await cdpNativeInsertText(tabId, bashScript);
-      await sleep(150);
+      await sleep(100);
       await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
       await sleep(400);
-      return { ok: true, method: 'terminal.cdp' };
+      return { ok: true, method: 'terminal.hybrid' };
     }
+
+    return { ok: true, method: 'terminal.inFrame' };
   } catch (e) {
     console.warn('[AP-Solver Terminal] writeFilesViaTerminal error:', e);
+    return { ok: false, error: e.message || String(e) };
   }
-
-  return { ok: false, error: 'Could not inject into terminal.' };
 }
 
 // Global Message Handler
@@ -1521,7 +1568,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: false, error: 'No tab ID found in sender.' });
           return;
         }
-        const resp = await writeFilesViaTerminal(tabId, data.files);
+        const resp = await writeFilesViaTerminal(tabId, data.files, data.script);
         sendResponse(resp);
       } else {
         sendResponse({ ok: false, error: `Unknown op: ${op}` });

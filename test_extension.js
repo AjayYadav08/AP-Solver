@@ -746,4 +746,45 @@ if (!contentJs26.includes("readTerminalOutput(5500)") ||
 }
 console.log('   ✓ 6-Step Autonomous Process & "Do Not Submit Until Each Required File Updated" Policy verified');
 
+console.log('27. Testing Base64 Atomic Terminal Script & In-Frame Terminal Controller...');
+globalThis.chrome = globalThis.chrome || {
+  runtime: {
+    onInstalled: { addListener: () => {} },
+    onMessage: { addListener: () => {} }
+  },
+  debugger: { attach: () => {}, sendCommand: () => {} },
+  scripting: { executeScript: () => {} },
+  tabs: { sendMessage: () => {} }
+};
+const { buildBase64TerminalScript } = await import('./background.js');
+const frameEditorJs27 = fs.readFileSync(path.join(__dirname, 'content/frame-editor.js'), 'utf8');
+const solverUiJs27 = fs.readFileSync(path.join(__dirname, 'content/solver-ui.js'), 'utf8');
+const contentJs27 = fs.readFileSync(path.join(__dirname, 'content/content.js'), 'utf8');
+
+// 1. Verify buildBase64TerminalScript
+const sampleFiles = [
+  { filePath: 'src/seed.js', code: '// Sample comment\nconst a = 10; /* inline */\nconsole.log(a);' }
+];
+const genScript = buildBase64TerminalScript(sampleFiles);
+if (!genScript.includes('base64 -d > "src/seed.js"') ||
+    !genScript.includes('node src/seed.js') ||
+    genScript.includes('// Sample comment') ||
+    genScript.includes('/* inline */')) {
+  throw new Error('buildBase64TerminalScript must strip comments and generate atomic base64 command!');
+}
+
+// 2. Verify frame-editor has in-frame terminal handlers
+if (!frameEditorJs27.includes('AP_CHECK_TERMINAL') ||
+    !frameEditorJs27.includes('AP_OPEN_TERMINAL') ||
+    !frameEditorJs27.includes('AP_INJECT_TERMINAL_COMMAND')) {
+  throw new Error('frame-editor.js must support direct in-frame terminal operations!');
+}
+
+// 3. Verify confirm pasted button & callback
+if (!solverUiJs27.includes('ap-btn-confirm-terminal-pasted') ||
+    !contentJs27.includes('onConfirmTerminalPasted')) {
+  throw new Error('solver-ui.js and content.js must support 1-click confirm terminal pasted!');
+}
+console.log('   ✓ Base64 Atomic Terminal Script, In-Frame Controller & 1-Click Paste Confirmation verified');
+
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');
