@@ -1028,4 +1028,37 @@ if (!contentJs32.includes('contentDocument || ifr.contentWindow?.document') ||
 
 console.log('   ✓ Deep Terminal Error Parsing, Multi-Failure Itemization & One-Shot Debug Matrix verified');
 
+// ---------------------------------------------------------------------------
+// 33. Elite Debugging Skill: Fresh State per Attempt, File Merging & RCA Protocol
+// ---------------------------------------------------------------------------
+console.log('33. Testing Elite Debugging Skill: Fresh State per Attempt, File Merging & RCA Protocol...');
+const contentJs33 = fs.readFileSync(path.join(__dirname, 'content/content.js'), 'utf-8');
+const llmJs33 = fs.readFileSync(path.join(__dirname, 'utils/llm.js'), 'utf-8');
+
+// 1. Verify latestGeneratedCode is passed as currentCode when feedback is active
+if (!contentJs33.includes('latestGeneratedCode') ||
+    !contentJs33.includes('(feedback && latestGeneratedCode) ? latestGeneratedCode : (cachedEditor?.code || \'\')')) {
+  throw new Error('content.js must pass latestGeneratedCode to promptData when feedback is active to prevent starter code stale loop!');
+}
+
+// 2. Verify multi-file preservation across retry iterations
+if (!contentJs33.includes('mergedFilesMap') ||
+    !contentJs33.includes('cachedGeneratedFiles = Array.from(mergedFilesMap.values())')) {
+  throw new Error('content.js must merge new files into cachedGeneratedFiles to prevent multi-file solution loss on debug retries!');
+}
+
+// 3. Verify filesWrittenViaTerminal is reset per attempt
+if (!contentJs33.includes('for (let attempt = 1; attempt <= maxAttempts; attempt++) {\n        filesWrittenViaTerminal = false;')) {
+  throw new Error('content.js must reset filesWrittenViaTerminal per attempt in handleOneClickSolve loop!');
+}
+
+// 4. Verify SYSTEM_PROMPT contains Master Debugging & Root Cause Protocol
+if (!llmJs33.includes('MASTER DEBUGGING & ROOT CAUSE RESOLUTION PROTOCOL') ||
+    !llmJs33.includes('DUAL ERROR PROPERTY SUPPORT') ||
+    !llmJs33.includes('PREVENT MOCHA 2000MS TIMEOUTS')) {
+  throw new Error('utils/llm.js SYSTEM_PROMPT must include Master Debugging & Root Cause Resolution Protocol!');
+}
+
+console.log('   ✓ Elite Debugging Skill: Fresh State per Attempt, File Merging & RCA Protocol verified');
+
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');

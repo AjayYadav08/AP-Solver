@@ -857,11 +857,15 @@
       }
     }
 
+    const latestGeneratedCode = (cachedGeneratedFiles && cachedGeneratedFiles.length > 0)
+      ? (cachedGeneratedFiles.find(f => f.filePath === sanitizeActiveFile(cachedEditor?.activeFile))?.code || cachedGeneratedFiles[0]?.code)
+      : cachedGeneratedCode;
+
     const promptData = {
       questionTitle: cachedQuestion.title,
       questionDetails: cachedQuestion.details,
       testCases: cachedQuestion.testCases,
-      currentCode: cachedEditor?.code || '',
+      currentCode: (feedback && latestGeneratedCode) ? latestGeneratedCode : (cachedEditor?.code || ''),
       activeFile: sanitizeActiveFile(cachedEditor?.activeFile),
       workspaceFiles: cachedEditor?.allFiles || [],
       referenceFiles: mergedReferenceFiles,
@@ -882,7 +886,17 @@
     }
 
     cachedGeneratedCode = resp.result.code;
-    cachedGeneratedFiles = resp.result.files || [{ filePath: sanitizeActiveFile(cachedEditor?.activeFile), code: cachedGeneratedCode }];
+    const newFiles = resp.result.files || [{ filePath: sanitizeActiveFile(cachedEditor?.activeFile), code: cachedGeneratedCode }];
+
+    // Merge new files into cachedGeneratedFiles to preserve all workspace files across debug iterations
+    const mergedFilesMap = new Map();
+    for (const f of (cachedGeneratedFiles || [])) {
+      if (f.filePath && f.code) mergedFilesMap.set(f.filePath, f);
+    }
+    for (const f of newFiles) {
+      if (f.filePath && f.code) mergedFilesMap.set(f.filePath, f);
+    }
+    cachedGeneratedFiles = Array.from(mergedFilesMap.values());
 
     // Enforce content-based path resolution (Ensures prisma/schema.prisma is never assigned to seed.js)
     for (const f of cachedGeneratedFiles) {
@@ -1174,6 +1188,7 @@
     } catch (e) {}
 
     // PRIMARY PATH: Integrated Terminal Execution (Direct Container Disk Injection)
+    filesWrittenViaTerminal = false;
     for (let termAttempt = 1; termAttempt <= 2; termAttempt++) {
       try {
         ui.addLog(`⚡ [Terminal Turbo Engine] Writing ${filesToWrite.length} file(s) directly to disk via Integrated Terminal (Attempt ${termAttempt}/2)...`, 'ok');
@@ -1397,13 +1412,29 @@
       for (const fi of failItems) {
         const key = fi.name.toLowerCase();
         if (![...seenErrors].some(k => key.includes(k) || k.includes(key))) {
+          let autoDiag = 'Implement missing functionality or fix validation logic for this test case.';
+          const codeMatch = fi.name.match(/(?:return|status|code)\s+(\d{3})|(\d{3})\s+status/i);
+          if (codeMatch) {
+            const expCode = codeMatch[1] || codeMatch[2];
+            autoDiag = `Status code requirement: Test explicitly expects HTTP ${expCode}. Ensure endpoint returns res.status(${expCode}).json(...) under these conditions.`;
+          }
+          if (/duplicate|already exists/i.test(fi.name)) {
+            autoDiag += ` Query database to check if record already exists before creating.`;
+          }
+          if (/timeout|hang/i.test(fi.name)) {
+            autoDiag += ` Ensure response is sent in all branches to prevent timeout.`;
+          }
+          if (/token|auth|header/i.test(fi.name)) {
+            autoDiag += ` Check authorization header validation and JWT verification.`;
+          }
+
           analysisItems.push({
             num: analysisItems.length + 1,
             title: fi.name,
             error: fi.error || 'Test assertion failed in evaluation',
             diff: null,
             stack: null,
-            diagnosis: 'Implement missing functionality or fix validation logic for this test case.'
+            diagnosis: autoDiag
           });
         }
       }
@@ -1411,13 +1442,26 @@
       for (const ft of subRes.failedTests) {
         const key = ft.toLowerCase();
         if (![...seenErrors].some(k => key.includes(k) || k.includes(key))) {
+          let autoDiag = 'Implement missing functionality or fix validation logic for this test case.';
+          const codeMatch = ft.match(/(?:return|status|code)\s+(\d{3})|(\d{3})\s+status/i);
+          if (codeMatch) {
+            const expCode = codeMatch[1] || codeMatch[2];
+            autoDiag = `Status code requirement: Test explicitly expects HTTP ${expCode}. Ensure endpoint returns res.status(${expCode}).json(...) under these conditions.`;
+          }
+          if (/duplicate|already exists/i.test(ft)) {
+            autoDiag += ` Query database to check if record already exists before creating.`;
+          }
+          if (/timeout|hang/i.test(ft)) {
+            autoDiag += ` Ensure response is sent in all branches to prevent timeout.`;
+          }
+
           analysisItems.push({
             num: analysisItems.length + 1,
             title: ft,
             error: 'Test assertion failed',
             diff: null,
             stack: null,
-            diagnosis: 'Implement missing functionality or fix validation logic for this test case.'
+            diagnosis: autoDiag
           });
         }
       }
@@ -1484,6 +1528,7 @@
       let feedback = null;
 
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        filesWrittenViaTerminal = false;
         if (attempt > 1) {
           ui.addLog(`🔁 [Attempt ${attempt}/${maxAttempts}] Generating fix from side bar terminal & retrying steps 4 & 5...`, 'warn');
         }

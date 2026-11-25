@@ -219,7 +219,22 @@ STRICT GUIDELINES:
    - Do NOT write single-line comments ('// ...').
    - Do NOT write multi-line comments ('/* ... */').
    - Do NOT write JSDoc comments or conversational explanations.
-   - Output 100% pure, clean, executable code ONLY.`;
+   - Output 100% pure, clean, executable code ONLY.
+9. MASTER DEBUGGING & ROOT CAUSE RESOLUTION PROTOCOL:
+   When refining code after failed test cases:
+   - READ THE EXACT ERROR TRACE: Inspect the AssertionError, diff (+ expected - actual), and stack trace line number.
+   - CHAI / MOCHA EQUALITY ASSERTIONS:
+     * 'expected 200 to equal 400': Test expected 400 Bad Request (input validation failure), but endpoint returned 200. Add explicit validation guard at the top of the route handler: if (!field || typeof field !== 'string' || !field.trim()) return res.status(400).json({ error: 'Field is required', message: 'Field is required' });
+     * 'expected 200 to equal 201': POST resource creation routes must return HTTP 201 Created: res.status(201).json(...).
+     * 'expected 500 to equal 404': Uncaught error or non-existent record threw 500 instead of returning 404 Not Found. Add null check: if (!record) return res.status(404).json({ error: 'Not found', message: 'Not found' });
+     * 'expected 200 to equal 409' or 'expected 500 to equal 400' on duplicate: Check uniqueness before inserting (e.g. findUnique/findFirst); return error status if record exists.
+   - DUAL ERROR PROPERTY SUPPORT:
+     Newton School test assertions frequently check either res.body.error or res.body.message. When returning error responses, ALWAYS provide both properties:
+     res.status(code).json({ error: msg, message: msg });
+   - PREVENT MOCHA 2000MS TIMEOUTS:
+     Every async route handler MUST be wrapped in try/catch, and EVERY code branch (if, else, catch) MUST send a response with return res.status(...).json(...). Never omit 'return' before res.status().
+   - COMPLETE WORKSPACE SYNCHRONIZATION:
+     Always return all required files (e.g. prisma/schema.prisma, src/seed.js, src/index.js) so the entire project remains complete and functioning.`;
 
 export function stripComments(code) {
   if (!code) return '';
