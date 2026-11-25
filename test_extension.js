@@ -1061,4 +1061,55 @@ if (!llmJs33.includes('MASTER DEBUGGING & ROOT CAUSE RESOLUTION PROTOCOL') ||
 
 console.log('   ✓ Elite Debugging Skill: Fresh State per Attempt, File Merging & RCA Protocol verified');
 
+// ---------------------------------------------------------------------------
+// 34. 5-Star Supercharged Debugging: Exposed Tests, Pro Escalation, Local Run & Deps
+// ---------------------------------------------------------------------------
+console.log('34. Testing 5-Star Supercharged Debugging: Exposed Tests, Pro Escalation, Local Run & Deps...');
+const contentJs34 = fs.readFileSync(path.join(__dirname, 'content/content.js'), 'utf-8');
+const bgJs34 = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf-8');
+const uiJs34 = fs.readFileSync(path.join(__dirname, 'content/solver-ui.js'), 'utf-8');
+const llmJs34 = fs.readFileSync(path.join(__dirname, 'utils/llm.js'), 'utf-8');
+
+// 1. Verify Feature 1 & 4 in buildPrompt: Exposed Test Suites & package.json dependencies
+const samplePromptWithTestAndPkg = buildPrompt({
+  questionTitle: 'User API',
+  questionDetails: 'Implement registration',
+  testCases: ['should return 201 when registered'],
+  currentCode: 'app.post("/register", ...)',
+  referenceFiles: {
+    'package.json': JSON.stringify({ dependencies: { bcryptjs: '^2.4.3', express: '^4.18.2' } }),
+    'test/index.test.js': 'it("should return 201 when registered", async () => { ... });'
+  }
+});
+
+if (!samplePromptWithTestAndPkg.includes('EXPOSED TEST SUITE CODE (SOURCE OF TRUTH)') ||
+    !samplePromptWithTestAndPkg.includes('test/index.test.js') ||
+    !samplePromptWithTestAndPkg.includes('INSTALLED PROJECT DEPENDENCIES') ||
+    !samplePromptWithTestAndPkg.includes('bcryptjs: ^2.4.3')) {
+  throw new Error('buildPrompt must inject exposed test suite code and package.json dependencies!');
+}
+
+// 2. Verify Feature 2: High Reasoning Model Escalation during Debugging
+if (!llmJs34.includes('debuggingActive ? debugModels : standardModels') ||
+    !llmJs34.includes('gemini-2.5-pro') ||
+    !llmJs34.includes("thinkingLevel: debuggingActive ? 'high' : 'low'")) {
+  throw new Error('utils/llm.js callGemini must escalate to gemini-2.5-pro and high thinkingLevel during debugging!');
+}
+
+// 3. Verify Feature 3: Local Pre-Test Execution in Terminal across background, content, and solver-ui
+if (!bgJs34.includes('npm test 2>&1 || npx mocha 2>&1') ||
+    !contentJs34.includes('npm test 2>&1 || npx mocha 2>&1') ||
+    !uiJs34.includes('npm test 2>&1 || npx mocha 2>&1')) {
+  throw new Error('All scripts (background, content, solver-ui) must execute local pre-test (npm test / npx mocha) in terminal!');
+}
+
+// 4. Verify main-world-bridge preserves test/ and __tests__/ in referenceFiles
+const bridgeJs34 = fs.readFileSync(path.join(__dirname, 'content/main-world-bridge.js'), 'utf-8');
+if (!bridgeJs34.includes("p.includes('test/') ? 'test/' + fname") ||
+    !bridgeJs34.includes("p.includes('__tests__/') ? '__tests__/' + fname")) {
+  throw new Error('main-world-bridge.js must preserve test/ and __tests__/ paths in referenceFiles!');
+}
+
+console.log('   ✓ 5-Star Supercharged Debugging: Exposed Tests, Pro Escalation, Local Run & Deps verified');
+
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');

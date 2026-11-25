@@ -453,6 +453,7 @@ window.APSolverUI = class APSolverUI {
           bashScript += `if [ -f src/seed.js ]; then node src/seed.js || true; elif [ -f seed.js ]; then node seed.js || true; fi && `;
         }
         bashScript += `(git add -A && git commit -m "solution" 2>/dev/null || true) && `;
+        bashScript += `(npm test 2>&1 || npx mocha 2>&1 || true) > /tmp/ap_test_run.log 2>&1 && head -n 35 /tmp/ap_test_run.log 2>/dev/null || true && `;
         bashScript += `echo "=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ==="`;
         try {
           await navigator.clipboard.writeText(bashScript.trim());

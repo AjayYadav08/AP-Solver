@@ -430,7 +430,7 @@
             if (fname && (fname.endsWith('.js') || fname.endsWith('.ts') || fname.endsWith('.prisma') || fname.endsWith('.json') || fname.endsWith('.txt')) &&
                 !fname.includes('package-lock') && !fname.includes('node_modules') && !/inmemory|workbench/i.test(p) && !/^\d+$/.test(fname)) {
               const val = m.getValue();
-              const cleanKey = p.includes('src/') ? 'src/' + fname : fname;
+              const cleanKey = p.includes('src/') ? 'src/' + fname : (p.includes('test/') ? 'test/' + fname : (p.includes('__tests__/') ? '__tests__/' + fname : fname));
               if (val && val.length < 35000) {
                 referenceFiles[cleanKey] = val;
               }

@@ -524,6 +524,30 @@ export function buildPrompt({
       return `### Initial Starter File: \`${fname}\`\n\`\`\`${lang}\n${content}\n\`\`\``;
     }).join('\n\n');
     parts.push(`## Initial Workspace Files & Starter Code:\n${refs}`);
+
+    // Feature 1: Check for exposed test suite files (Golden Source of Truth)
+    const testFileEntries = Object.entries(referenceFiles).filter(([fname]) => {
+      return fname.includes('test/') || fname.includes('__tests__/') || fname.endsWith('.test.js') || fname.endsWith('.spec.js');
+    });
+    if (testFileEntries.length > 0) {
+      const testSnippets = testFileEntries.map(([fname, content]) => {
+        return `### Test File: \`${fname}\`\n\`\`\`javascript\n${content}\n\`\`\``;
+      }).join('\n\n');
+      parts.push(`## 🎯 EXPOSED TEST SUITE CODE (SOURCE OF TRUTH):\nThe test suite code has been extracted from the workspace. Implement your solution to strictly satisfy these exact test assertions, status codes, and response bodies:\n${testSnippets}`);
+    }
+
+    // Feature 4: Check for package.json dependencies
+    const pkgEntry = Object.entries(referenceFiles).find(([fname]) => fname.endsWith('package.json'));
+    if (pkgEntry && pkgEntry[1]) {
+      try {
+        const pkg = JSON.parse(pkgEntry[1]);
+        const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+        if (Object.keys(deps).length > 0) {
+          const depList = Object.entries(deps).map(([k, v]) => `- ${k}: ${v}`).join('\n');
+          parts.push(`## 📦 INSTALLED PROJECT DEPENDENCIES:\nThe project package.json specifies the following installed dependencies. You MUST use these exact packages (e.g. require('bcryptjs') if bcryptjs is installed):\n${depList}`);
+        }
+      } catch(e) {}
+    }
   }
 
   if (questionDetails) {
@@ -655,25 +679,36 @@ DO NOT OMIT prisma/schema.prisma! It is required for the database tables to be c
   return parts.join('\n\n');
 }
 
-export async function callGemini(prompt, settings) {
+export async function callGemini(prompt, settings, isDebugging = false) {
   const apiKey = settings.geminiKey?.trim();
   if (!apiKey) {
     throw new Error('Gemini API key is missing. Please set it in AP-Solver settings.');
   }
+
+  const debuggingActive = isDebugging || !!settings.isDebugging;
 
   let requestedModel = settings.geminiModel || 'gemini-3.8-flash';
   if (requestedModel === 'gemini-2.5-flash' || requestedModel === 'gemini-1.5-flash') {
     requestedModel = 'gemini-3.8-flash';
   }
 
-  const modelsToTry = [
+  // Feature 2: High Reasoning Model Escalation during Debugging
+  const debugModels = [
+    'gemini-2.5-pro',
+    requestedModel,
+    'gemini-3.8-flash',
+    'gemini-flash-latest'
+  ];
+  const standardModels = [
     requestedModel,
     'gemini-3.8-flash',
     'gemini-flash-latest',
     'gemini-3.5-flash',
     'gemini-2.5-flash-lite'
-  ].filter(Boolean);
-  const uniqueModels = [...new Set(modelsToTry)];
+  ];
+
+  const modelsToTry = debuggingActive ? debugModels : standardModels;
+  const uniqueModels = [...new Set(modelsToTry.filter(Boolean))];
 
   let lastError = null;
 
@@ -681,7 +716,7 @@ export async function callGemini(prompt, settings) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
     // Config options to try:
-    // 1. With thinkingLevel: "low" (super fast for gemini-3.8-flash: ~3-5s response time)
+    // 1. With thinkingConfig (thinkingLevel: "high" when debugging for deep reasoning; "low" for initial speed)
     // 2. Standard config without thinkingConfig (for models that don't support thinkingConfig)
     const configsToTry = [
       {
@@ -689,7 +724,7 @@ export async function callGemini(prompt, settings) {
         topP: 0.95,
         maxOutputTokens: 8192,
         thinkingConfig: {
-          thinkingLevel: 'low'
+          thinkingLevel: debuggingActive ? 'high' : 'low'
         }
       },
       {
@@ -946,6 +981,8 @@ export async function generateSolution(promptData, settingsOverride = null) {
   }
   settings.activeFile = promptData.activeFile || 'src/index.js';
   settings.workspaceFiles = promptData.workspaceFiles || [];
+  const isDebugging = !!(promptData && promptData.feedback);
+  settings.isDebugging = isDebugging;
 
   const prompt = buildPrompt(promptData);
 
