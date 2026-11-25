@@ -321,7 +321,7 @@ console.log('12. Testing Turbo Parallel Speculative Race & Model Normalization..
 if (!updatedLlmJs.includes('Turbo Parallel Race') ||
     !updatedLlmJs.includes('Promise.any([runGroq(), runGemini()])') ||
     !updatedLlmJs.includes('openai/gpt-oss-120b') ||
-    !updatedLlmJs.includes('qwen/qwen3.8-27b')) {
+    !updatedLlmJs.includes('qwen/qwen3-32b')) {
   throw new Error('Turbo race engine or updated Groq models missing from utils/llm.js');
 }
 
@@ -1226,8 +1226,11 @@ if (diagStart === -1 || buildStart === -1) {
 const parserChunk = contentJs37.slice(diagStart, buildStart);
 const runParser = new Function('terminalOutput', 'subRes', `${parserChunk}\nreturn parseAndStructureFailures(terminalOutput, subRes);`);
 
-// Case A: Mocha output with colons in test titles AND no trailing "2 failing" line (EOF test)
+// Case A: Mocha output with summary lines at top, colons in test titles AND no trailing "2 failing" line (EOF test)
 const mochaNoFooter = [
+  '  1) POST /login: should set session cookie',
+  '  2) Protected route: returns 401 without token',
+  '',
   '  1) Auth API',
   '       POST /login: should set session cookie:',
   '     AssertionError: expected 500 to equal 200',
@@ -1318,5 +1321,194 @@ try {
   globalThis.fetch = origFetch;
 }
 console.log('   ✓ Empty Response Fallback (Groq/Gemini) & Mocha/ANSI Log Parser Recovery verified');
+
+// ---------------------------------------------------------------------------
+// 38. Live Portal Hardening: CDP Iframe Offset, Tab 3 Switcher & Groq 413 Step-Down
+// ---------------------------------------------------------------------------
+console.log('38. Testing Live Portal Hardening: CDP Iframe Offset, Tab 3 Switcher & Groq 413 Step-Down...');
+const bgJs38 = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf-8');
+const frameJs38 = fs.readFileSync(path.join(__dirname, 'content/frame-editor.js'), 'utf-8');
+const contentJs38 = fs.readFileSync(path.join(__dirname, 'content/content.js'), 'utf-8');
+const llmJs38 = fs.readFileSync(path.join(__dirname, 'utils/llm.js'), 'utf-8');
+
+if (!bgJs38.includes('resolveTopOffset') || !bgJs38.includes('pointerEvents = \'none\'')) {
+  throw new Error('background.js must add iframe top-frame offset in findTerminalFrameInfo and bypass #ap-solver-host overlay during CDP terminal click!');
+}
+
+const frameTermSec38 = frameJs38.substring(frameJs38.indexOf('AP_INJECT_TERMINAL_COMMAND'), frameJs38.indexOf('function findIntegratedTerminal'));
+if (frameTermSec38.includes("new ClipboardEvent('paste'")) {
+  throw new Error('frame-editor.js must not fake paste success via untrusted ClipboardEvent; must escalate cleanly to CDP hardware input!');
+}
+
+const switchTermSec38 = contentJs38.substring(contentJs38.indexOf('function switchToTerminalTab'), contentJs38.indexOf('async function readTerminalOutput'));
+if (switchTermSec38.includes("'button, [role=\"tab\"], div'")) {
+  throw new Error('switchToTerminalTab must NOT query wide content divs (which match "POST /logout" as "log"!)');
+}
+
+if (llmJs38.includes('llama-3.3-70b-versatile') || llmJs38.includes('qwen3.8-27b')) {
+  throw new Error('utils/llm.js must not include nonexistent or restricted fallback models!');
+}
+
+const origFetch38 = globalThis.fetch;
+try {
+  let groq413Count = 0;
+  globalThis.fetch = async (_url, init) => {
+    groq413Count++;
+    const body = JSON.parse(init.body);
+    if (body.max_tokens > 6144) {
+      return {
+        ok: false,
+        status: 413,
+        text: async () => JSON.stringify({ error: { message: 'Request too large for model on TPM' } })
+      };
+    }
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: "```javascript\nconsole.log('recovered-413');\n```" }, finish_reason: 'stop' }]
+      })
+    };
+  };
+  const recovered = await callGroq('fix code', {
+    groqKey: 'test-groq-key',
+    isDebugMode: true,
+    activeFile: 'src/index.js',
+    workspaceFiles: ['src/index.js']
+  });
+  if (groq413Count < 2 || !recovered.code.includes('recovered-413')) {
+    throw new Error('Expected callGroq to step down max_tokens on 413 TPM limit on the same model!');
+  }
+} finally {
+  globalThis.fetch = origFetch38;
+}
+console.log('   ✓ Live Portal Hardening: CDP Iframe Offset, Tab 3 Switcher & Groq 413 Step-Down verified');
+
+// ---------------------------------------------------------------------------
+// 39. CDP Enter Execution Fix & Groq 8K TPM Prompt Compaction
+// ---------------------------------------------------------------------------
+console.log('39. Testing CDP Enter Execution Fix & Groq 8K TPM Prompt Compaction...');
+const bgJs39 = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf-8');
+const llmJs39 = fs.readFileSync(path.join(__dirname, 'utils/llm.js'), 'utf-8');
+
+if (!bgJs39.includes("type: 'keyDown'") || !bgJs39.includes("text = '\\r'") || !bgJs39.includes("type: 'char'")) {
+  throw new Error('background.js cdpNativeKey must emit keyDown + char with \\r for Enter so xterm executes terminal commands!');
+}
+if (!llmJs39.includes('function buildCompactGroqMessages')) {
+  throw new Error('utils/llm.js must include buildCompactGroqMessages to fit debug prompts within 8000 TPM limits!');
+}
+
+// Verify huge debug prompt (22K chars) fits under 8000 TPM dynamically when 413 hits
+const hugeDebugPrompt = 'PREVIOUS ATTEMPT FAILED\nSIDE BAR TERMINAL & MOCHA ERROR TRACES (FROM TAB 3):\n```\n' + 'AssertionError: foo\n'.repeat(1100) + '\n```\nFix src/index.js';
+const origFetch39 = globalThis.fetch;
+try {
+  let seenBodies = [];
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    seenBodies.push(body);
+    const approxTokens = Math.ceil((body.messages[0].content.length + body.messages[1].content.length) / 3.5) + body.max_tokens;
+    if (seenBodies.length === 1) {
+      return {
+        ok: false,
+        status: 413,
+        text: async () => JSON.stringify({ error: { message: 'Request too large: Limit 8000, Requested 9865' } })
+      };
+    }
+    if (approxTokens > 7900) {
+      return {
+        ok: false,
+        status: 413,
+        text: async () => JSON.stringify({ error: { message: `Still over limit: ${approxTokens}` } })
+      };
+    }
+    return {
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: "```javascript\nconsole.log('fit-under-8k');\n```" }, finish_reason: 'stop' }] })
+    };
+  };
+  const compactRes = await callGroq(hugeDebugPrompt, { groqKey: 'k', isDebugMode: true, activeFile: 'src/index.js' });
+  if (!compactRes.code.includes('fit-under-8k') || seenBodies.length < 2) {
+    throw new Error('Expected callGroq to compact huge debug prompt under 8000 TPM and recover!');
+  }
+} finally {
+  globalThis.fetch = origFetch39;
+}
+console.log('   ✓ CDP Enter Execution Fix & Groq 8K TPM Prompt Compaction verified');
+
+// ---------------------------------------------------------------------------
+// 40. Context-Gated Groq Prompts & Unreadable WebGL Terminal Safety Guard
+// ---------------------------------------------------------------------------
+console.log('40. Testing Context-Gated Groq Prompts & Unreadable WebGL Terminal Safety Guard...');
+const llmJs40 = fs.readFileSync(path.join(__dirname, 'utils/llm.js'), 'utf-8');
+const bgJs40 = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf-8');
+const captureSec40 = bgJs40.substring(bgJs40.indexOf('async function runTerminalCommandWithCapture'), bgJs40.indexOf('async function probeWorkspaceViaTerminal'));
+
+if (!captureSec40.includes('!baseText || !baseText.trim()') || !captureSec40.includes('unreadable: true')) {
+  throw new Error('runTerminalCommandWithCapture must abort cleanly before typing node pipes when WebGL terminal is unreadable!');
+}
+
+// Verify non-Prisma feedback prompt containing accidental "prisma" artifact does not re-enable Prisma mode
+const origFetch40 = globalThis.fetch;
+try {
+  let capturedSys = '';
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    capturedSys = body.messages[0].content;
+    return {
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: "```javascript\nconsole.log('no-prisma');\n```" }, finish_reason: 'stop' }] })
+    };
+  };
+  await callGroq('QUESTION: URL Shortener using node:http\n\n=== PREVIOUS ATTEMPT FAILED ===\nprisma/schema.prisma failed', {
+    groqKey: 'k',
+    isDebugMode: true,
+    activeFile: 'src/index.js'
+  });
+  if (capturedSys.includes('PRISMA:')) {
+    throw new Error('buildCompactGroqMessages must NOT trigger Prisma rules from stale feedback when question itself uses node:http!');
+  }
+} finally {
+  globalThis.fetch = origFetch40;
+}
+console.log('   ✓ Context-Gated Groq Prompts & Unreadable WebGL Terminal Safety Guard verified');
+
+// ---------------------------------------------------------------------------
+// 41. Xterm Raw Ctrl+C/Enter Dispatch & Instant Daily TPD Model Fallback
+// ---------------------------------------------------------------------------
+console.log('41. Testing Xterm Raw Ctrl+C/Enter Dispatch & Instant Daily TPD Model Fallback...');
+const bridgeJs41 = fs.readFileSync(path.join(__dirname, 'content/main-world-bridge.js'), 'utf-8');
+const frameJs41 = fs.readFileSync(path.join(__dirname, 'content/frame-editor.js'), 'utf-8');
+const bgJs41 = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf-8');
+
+if (!bridgeJs41.includes('sentEnterViaCore') || !bridgeJs41.includes("sendRaw('\\r')") || !frameJs41.includes('sentEnterViaCore') || !bgJs41.includes('sentEnterViaCore')) {
+  throw new Error('main-world-bridge.js, frame-editor.js, and background.js must coordinate raw xterm CR execution and fallback CDP Enter!');
+}
+
+// Verify daily TPD 429 on gpt-oss-120b immediately switches to openai/gpt-oss-20b without stalling
+const origFetch41 = globalThis.fetch;
+try {
+  const modelsCalled = [];
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    modelsCalled.push(body.model);
+    if (body.model === 'openai/gpt-oss-120b') {
+      return {
+        ok: false,
+        status: 429,
+        text: async () => JSON.stringify({ error: { message: 'Rate limit reached on tokens per day (TPD): Limit 200000, Used 197888. Please try again in 30m' } })
+      };
+    }
+    return {
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: "```javascript\nconsole.log('tpd-fallback-ok');\n```" }, finish_reason: 'stop' }] })
+    };
+  };
+  const tpdRes = await callGroq('fix code', { groqKey: 'k', isDebugMode: true, activeFile: 'src/index.js' });
+  if (modelsCalled[0] !== 'openai/gpt-oss-120b' || modelsCalled[1] !== 'openai/gpt-oss-20b' || !tpdRes.code.includes('tpd-fallback-ok')) {
+    throw new Error(`Expected instant TPD fallback from 120b to 20b without sleep/retry, called=${JSON.stringify(modelsCalled)}`);
+  }
+} finally {
+  globalThis.fetch = origFetch41;
+}
+console.log('   ✓ Xterm Raw Ctrl+C/Enter Dispatch & Instant Daily TPD Model Fallback verified');
 
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');

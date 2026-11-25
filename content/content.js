@@ -895,7 +895,7 @@
     const isDebug = !!feedback;
     const provider = ui.options.provider || 'race';
     const providerName = isDebug
-      ? '🧠 Debug Escalation (High-Reasoning Pro)'
+      ? '🧠 Debug Escalation (Gemini Pro → Groq Fallback)'
       : (provider === 'gemini'
           ? 'Google Gemini (3.8 Flash)'
           : provider === 'groq'
@@ -1022,11 +1022,11 @@
   }
 
   function switchToQuestionTab() {
-    // 1. Look for explicit button/tab with aria-label or title matching question
-    const explicit = [...document.querySelectorAll('button, [role="tab"], div')].find((el) => {
+    // 1. Only inspect compact left-rail icon/tab buttons (NEVER wide Question body divs whose text mentions "POST /logout"!)
+    const explicit = [...document.querySelectorAll('button, [role="tab"]')].find((el) => {
       const r = el.getBoundingClientRect();
-      const text = (el.getAttribute('aria-label') || el.getAttribute('title') || el.innerText || '').toLowerCase();
-      return isVisible(el) && r.left < 90 && /question|problem/i.test(text);
+      const label = (el.getAttribute('aria-label') || el.getAttribute('title') || (el.innerText && el.innerText.trim().length <= 24 ? el.innerText.trim() : '')).toLowerCase();
+      return isVisible(el) && r.left < 60 && r.width <= 70 && r.height <= 70 && !el.closest('#ap-solver-host') && /question|problem/i.test(label);
     });
     if (explicit) {
       explicit.click();
@@ -1037,11 +1037,10 @@
   }
 
   function switchToSubmissionsTab() {
-    // 1. Look for explicit button/tab with aria-label or title matching submission
-    const explicit = [...document.querySelectorAll('button, [role="tab"], div')].find((el) => {
+    const explicit = [...document.querySelectorAll('button, [role="tab"]')].find((el) => {
       const r = el.getBoundingClientRect();
-      const text = (el.getAttribute('aria-label') || el.getAttribute('title') || el.innerText || '').toLowerCase();
-      return isVisible(el) && r.left < 90 && /submission|test\s*case/i.test(text);
+      const label = (el.getAttribute('aria-label') || el.getAttribute('title') || (el.innerText && el.innerText.trim().length <= 24 ? el.innerText.trim() : '')).toLowerCase();
+      return isVisible(el) && r.left < 60 && r.width <= 70 && r.height <= 70 && !el.closest('#ap-solver-host') && /submission|test\s*case/i.test(label);
     });
     if (explicit) {
       explicit.click();
@@ -1052,17 +1051,16 @@
   }
 
   function switchToTerminalTab() {
-    // 1. Look for explicit button/tab with aria-label or title matching terminal/log
-    const explicit = [...document.querySelectorAll('button, [role="tab"], div')].find((el) => {
+    const explicit = [...document.querySelectorAll('button, [role="tab"]')].find((el) => {
       const r = el.getBoundingClientRect();
-      const text = (el.getAttribute('aria-label') || el.getAttribute('title') || el.innerText || '').toLowerCase();
-      return isVisible(el) && r.left < 90 && /terminal|log|output|console|execution/i.test(text);
+      const label = (el.getAttribute('aria-label') || el.getAttribute('title') || (el.innerText && el.innerText.trim().length <= 24 ? el.innerText.trim() : '')).toLowerCase();
+      return isVisible(el) && r.left < 60 && r.width <= 70 && r.height <= 70 && !el.closest('#ap-solver-host') && /terminal|log|output|console|execution/i.test(label);
     });
     if (explicit) {
       explicit.click();
       return true;
     }
-    // 2. Tab index 2 on left rail
+    // 2. Tab index 2 on left rail (Newton Grader Logs)
     return clickRailTab(2);
   }
 
@@ -1072,17 +1070,16 @@
 
     const start = Date.now();
     while (Date.now() - start < maxWaitMs) {
-      // Find terminal output container in the left section (x < window.innerWidth * 0.55) or whole page
+      // Find terminal/grader log container in left section — NEVER match Question or HTTP Request panels!
       const candidates = [...document.querySelectorAll('pre, code, .xterm-rows, [class*="terminal" i], [class*="console" i], [class*="output" i], [class*="log" i], div')].filter((el) => {
         const r = el.getBoundingClientRect();
         const text = el.innerText || '';
-        return (
-          isVisible(el) &&
-          r.width > 80 &&
-          r.height > 40 &&
-          !el.closest('#ap-solver-host') &&
-          (/mocha|npm test|git clone|AssertionError|failing|passing|prisma|timeout|error|exit|node|TypeError|ReferenceError|SyntaxError|failed/i.test(text))
-        );
+        if (!isVisible(el) || r.width <= 80 || r.height <= 40 || el.closest('#ap-solver-host')) return false;
+        const isGraderTrace = /git clone|mochawesome|\d+\s+(?:failing|passing)|AssertionError|Response timeout of|timeout of \d+ms exceeded|Cannot find module|PrismaClient|node-\d+|npm test/i.test(text);
+        const isGenericError = /mocha|npm test|failing|passing|prisma|TypeError:|ReferenceError:|SyntaxError:|Error:/i.test(text);
+        const looksLikeQuestionOrHttp = (/^\s*QUESTION\b/i.test(text) || (/HTTP REQUEST\s+GET/i.test(text) && /QUERY PARAMS/i.test(text))) && !isGraderTrace;
+        if (looksLikeQuestionOrHttp) return false;
+        return isGraderTrace || isGenericError;
       });
 
       // Also inspect accessible iframes (workbench / vscode iframe)
@@ -1118,23 +1115,29 @@
               collected.push(xtermText);
             }
           }
-          const t = (el.innerText || '').trim();
+          let t = (el.innerText || '').trim();
+          // Strip trailing embedded HTTP REQUEST tester chrome if outer container wrapped it
+          const httpIdx = t.indexOf('\nHTTP REQUEST\n');
+          if (httpIdx > 40) t = t.slice(0, httpIdx).trim();
           if (t.length > 25 && !collected.includes(t)) {
             collected.push(t);
           }
         }
 
         if (collected.length > 0) {
-          // Sort candidates that contain rich error traces first (AssertionError, failing, etc.)
+          // Strongly prioritize real grader/Mocha output over generic UI text
           collected.sort((a, b) => {
-            const aHasTrace = /AssertionError|failing|expected/i.test(a) ? 1 : 0;
-            const bHasTrace = /AssertionError|failing|expected/i.test(b) ? 1 : 0;
-            if (aHasTrace !== bHasTrace) return bHasTrace - aHasTrace;
+            const score = (s) =>
+              (/\d+\s+failing|\d+\s+passing/i.test(s) ? 10 : 0) +
+              (/git clone|mochawesome|Response timeout of/i.test(s) ? 6 : 0) +
+              (/AssertionError|TypeError:|ReferenceError:|SyntaxError:|Cannot find module|PrismaClient/i.test(s) ? 4 : 0);
+            const diff = score(b) - score(a);
+            if (diff !== 0) return diff;
             return b.length - a.length;
           });
-          const longestLog = collected[0];
-          if (longestLog.length > 25) {
-            return longestLog;
+          const bestLog = collected[0];
+          if (bestLog.length > 25) {
+            return bestLog;
           }
         }
       }
@@ -1250,7 +1253,7 @@
     if (hasSeed) {
       bashScript += `if [ -f src/seed.js ]; then node src/seed.js || true; elif [ -f seed.js ]; then node seed.js || true; fi && `;
     }
-    bashScript += `(git add -A && git commit -m "solution" 2>/dev/null || true) && `;
+    bashScript += `(rm -f .git/index.lock 2>/dev/null; git config user.email "solver@ap.dev" 2>/dev/null; git config user.name "AP-Solver" 2>/dev/null; git add -A && git commit -m "solution" 2>/dev/null || true) && `;
     bashScript += `echo "=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ==="`;
 
     // Auto-copy terminal script to clipboard as an instant superpower
@@ -1267,7 +1270,7 @@
         const termResp = await sendMsg({ op: 'AP_WRITE_TERMINAL', data: { files: filesToWrite, script: bashScript } }, 15000);
         if (termResp && termResp.ok) {
           filesWrittenViaTerminal = true;
-          ui.addLog(`⚡ [Terminal Turbo Engine] Successfully wrote ${filesToWrite.length} file(s) directly to disk via Terminal!`, 'ok');
+          ui.addLog(`⚡ [Terminal Turbo Engine] Successfully wrote ${filesToWrite.length} file(s) directly to disk via Terminal (${termResp.method || 'terminal'})!`, 'ok');
           for (const f of filesToWrite) {
             ui.setFileStatus(f.filePath, 'injected');
           }
@@ -1510,14 +1513,16 @@
         .replace(/\r\n?/g, '\n');
 
       // 1. Parse Mocha failure blocks ("1) Suite test name:\n   AssertionError: ...")
-      // Supports colons inside test titles (e.g. "POST /login: should ...") and true EOF via (?![\s\S])
-      const mochaFailureRegex = /(?:^|\n)\s*(\d+)\)\s+([^\n]+?)\s*:?\s*\n([\s\S]*?)(?=(?:\n\s*\d+\)\s+\S[^\n]*\n|\n\s*(?:\d+\s+failing|\d+\s+passing)|(?![\s\S])))/g;
+      // Preserves leading newline in lookahead so consecutive summary lines ("1) ...\n2) ...") are cleanly ignored
+      const mochaFailureRegex = /(?:^|\n)\s*(\d+)\)\s+([^\n]+?)(?=\n)([\s\S]*?)(?=(?:\n\s*\d+\)\s+\S|\n\s*(?:\d+\s+failing|\d+\s+passing)|(?![\s\S])))/g;
       let match;
       while ((match = mochaFailureRegex.exec(cleanTerm)) !== null) {
         const num = match[1];
         let title = match[2].replace(/:\s*$/, '').trim();
         const block = match[3].trim();
+        if (!block) continue; // Skip top summary list entries
         const lines = block.split('\n').map(l => l.trim()).filter(Boolean);
+        if (lines.length === 0 || /^\d+\)\s+/.test(lines[0])) continue;
 
         // Merge multi-line Mocha suite + sub-test title when lines[0] is the indented test name ending in ':'
         if (lines.length > 1 && /:\s*$/.test(lines[0]) && !/^(?:AssertionError|TypeError|ReferenceError|SyntaxError|Error:|PrismaClient|at\s+)/i.test(lines[0])) {
@@ -1651,20 +1656,32 @@
     feedbackBlocks.push(`=== PREVIOUS ATTEMPT ${attemptLabel} FAILED (${subRes?.passed || 0}/${subRes?.total || 0} PASSED AT ${timeStr}) ===`);
 
     if (failureItems.length > 0) {
+      // Group/cap repeated identical errors so prompt stays crisp and leaves ample output budget
+      const seenErrSigs = new Map();
+      const compactItems = [];
+      for (const item of failureItems) {
+        const sig = `${(item.error || '').slice(0, 80)}|${(item.diagnosis || '').slice(0, 80)}`;
+        if (seenErrSigs.has(sig)) {
+          seenErrSigs.get(sig).alsoTests.push(`#${item.num} "${item.title}"`);
+        } else {
+          const entry = { ...item, alsoTests: [] };
+          seenErrSigs.set(sig, entry);
+          compactItems.push(entry);
+        }
+      }
       feedbackBlocks.push(
         `🚨 COMPLETE ITEMIZED BREAKDOWN OF ALL ${failureItems.length} FAILING TESTS:\n` +
         `You MUST simultaneously fix EVERY SINGLE test failure listed below in one shot. Do NOT leave any test unresolved:\n\n` +
-        failureItems.map(item => (
-          `🔴 FAILURE #${item.num}: "${item.title}"\n` +
+        compactItems.slice(0, 6).map(item => (
+          `🔴 FAILURE #${item.num}: "${item.title}"` +
+          (item.alsoTests.length > 0 ? ` (also affects ${item.alsoTests.length} other test(s): ${item.alsoTests.slice(0, 3).join(', ')})` : '') + `\n` +
           `   - Exact Error: ${item.error}\n` +
           (item.diff ? `   - Diff / Assertion: ${item.diff}\n` : '') +
           (item.stack ? `   - Source Location: ${item.stack}\n` : '') +
           `   - Root Cause & Required Fix: ${item.diagnosis}`
         )).join('\n\n')
       );
-    }
-
-    if (subRes?.tests && subRes.tests.length > 0) {
+    } else if (subRes?.tests && subRes.tests.length > 0) {
       const failItems = subRes.tests.filter(t => t.fail);
       for (const item of failItems) {
         feedbackBlocks.push(`FAILED TEST: ${item.name}${item.error ? `\nERROR: ${item.error}` : ''}`);
@@ -1674,9 +1691,16 @@
     }
 
     if (terminalOutput && terminalOutput.length > 25) {
+      const totalLinesCount = terminalOutput.split('\n').length;
+      const npmIdx = terminalOutput.search(/(?:^|\n)(?:>\s+\S+.*test|>\s*mocha|>\s*jest|\s*\d+\s+(?:passing|failing)|(?:AssertionError|TypeError|SyntaxError|ReferenceError|PrismaClient):)/m);
+      if (npmIdx > 200) terminalOutput = terminalOutput.slice(npmIdx);
+      terminalOutput = terminalOutput
+        .split('\n')
+        .filter(l => !/^\s*at\s+.*(?:node_modules\/|node:internal\/)/.test(l))
+        .join('\n');
       const cleanTermTrace = terminalOutput.length > 14000 ? terminalOutput.slice(-14000) : terminalOutput;
       feedbackBlocks.push(`SIDE BAR TERMINAL & MOCHA ERROR TRACES (FROM TAB 3):\n\`\`\`\n${cleanTermTrace}\n\`\`\``);
-      ui.addLog(`📄 Captured error logs (${terminalOutput.split('\n').length} lines, ${failureItems.length} parsed failure(s)).`, 'ok');
+      ui.addLog(`📄 Captured error logs (${totalLinesCount} lines, ${failureItems.length} parsed failure(s)).`, 'ok');
     }
 
     // Gather CURRENT CODE of ALL files in src/ (and workspace) — NEVER overwrite terminal-written solution with stale Monaco starter code!

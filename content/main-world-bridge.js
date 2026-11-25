@@ -710,15 +710,35 @@
         document.querySelectorAll('.monaco-editor textarea, textarea.inputarea').forEach(t => { try { t.blur(); } catch(e) {} });
 
         let pasted = false;
-        const candidateEls = [
+        let sentEnterViaCore = false;
+        const rawEls = [
           ...document.querySelectorAll('.terminal, .terminal-wrapper, .integrated-terminal, .xterm, .xterm-screen, canvas.xterm-text-layer')
         ];
+        // Prefer currently visible/active terminal instance (avoid hidden tabs from previous closed panes)
+        const candidateEls = rawEls.sort((a, b) => {
+          const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+          const visA = (a.offsetParent !== null && ra.width > 50 && ra.height > 30) ? 1 : 0;
+          const visB = (b.offsetParent !== null && rb.width > 50 && rb.height > 30) ? 1 : 0;
+          return visB - visA;
+        });
+
         for (const el of candidateEls) {
           for (const k of ['xterm', '_xterm', '__xterm']) {
-            if (el && el[k] && typeof el[k].paste === 'function') {
+            const term = el && el[k];
+            if (term && typeof term.paste === 'function') {
               try {
-                el[k].paste(cmd + '\n');
+                const sendRaw = (seq) => {
+                  if (typeof term.input === 'function') { term.input(seq, true); return true; }
+                  if (term._core?.coreService?.triggerDataEvent) { term._core.coreService.triggerDataEvent(seq, true); return true; }
+                  if (term._core?._onData?.fire) { term._core._onData.fire(seq); return true; }
+                  return false;
+                };
+                // Cancel any unfinished line first, paste clean base64 command without LF, then emit real CR (\r)
+                sendRaw('\x03');
+                sendRaw('\x15');
+                term.paste(cmd);
                 pasted = true;
+                sentEnterViaCore = sendRaw('\r');
                 break;
               } catch(e) {}
             }
@@ -726,7 +746,7 @@
           if (pasted) break;
         }
 
-        window.postMessage({ action: 'AP_INJECT_TERMINAL_MAIN_RESULT', id, ok: true, pasted }, '*');
+        window.postMessage({ action: 'AP_INJECT_TERMINAL_MAIN_RESULT', id, ok: true, pasted, sentEnterViaCore }, '*');
       } catch (err) {
         window.postMessage({ action: 'AP_INJECT_TERMINAL_MAIN_RESULT', id, ok: false, error: err.message }, '*');
       }

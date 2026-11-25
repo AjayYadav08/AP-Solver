@@ -806,16 +806,18 @@ export async function callGemini(prompt, settings) {
             msg += `: ${errText}`;
           }
 
-          // If 400 Bad Request mentions thinkingConfig / parameter, try next config
-          if (resp.status === 400 && /thinking|budget|level|invalid/i.test(msg)) {
-            console.warn(`[AP-Solver] config not supported by ${model}, trying fallback config...`);
+          // If 400 Bad Request mentions parameter/thinkingConfig, try next config (or break to next model if all configs fail)
+          if (resp.status === 400) {
+            console.warn(`[AP-Solver] Gemini 400 on ${model} (${msg}), trying fallback config/model...`);
+            lastError = new Error(msg);
             continue;
           }
 
-          // If 404 (not found), 429 (quota exhausted), or 5xx (overload/transient), try next model candidate
-          if (resp.status === 404 || resp.status === 429 || resp.status >= 500 || /not found|no longer available|high demand|unavailable|quota/i.test(msg)) {
+          // If 403/404/429/5xx, try next model candidate cleanly
+          if (resp.status === 403 || resp.status === 404 || resp.status === 429 || resp.status >= 500 || /not found|no longer available|high demand|unavailable|quota|permission|API key/i.test(msg)) {
             console.warn(`[AP-Solver] Gemini model ${model} unavailable (${resp.status}), trying next candidate...`);
             lastError = new Error(msg);
+            if (resp.status === 429) await new Promise(r => setTimeout(r, 1500));
             break; // Try next model in uniqueModels
           }
 
@@ -835,8 +837,12 @@ export async function callGemini(prompt, settings) {
 
         if (!text) {
           const finishReason = candidate?.finishReason || 'unknown';
-          console.warn(`[AP-Solver] Gemini model ${model} returned empty content (finishReason=${finishReason}), trying fallback config...`);
+          console.warn(`[AP-Solver] Gemini model ${model} returned empty content (finishReason=${finishReason}), trying next config/model...`);
           lastError = new Error(`Gemini returned an empty response (${finishReason}).`);
+          // If this is the last config for this model, break to next model
+          if (genConfig === configsToTry[configsToTry.length - 1]) {
+            break;
+          }
           continue;
         }
 
@@ -866,6 +872,51 @@ export async function callGemini(prompt, settings) {
   throw lastError || new Error('All Gemini model candidates failed.');
 }
 
+// Compact system prompt & debug prompt dynamically for strict Groq TPM quotas & non-Prisma isolation
+function buildCompactGroqMessages(systemPrompt, userPrompt, desiredMaxTokens = 4096, tpmLimit = 7600) {
+  let sys = String(systemPrompt || '');
+  const p = String(userPrompt || '');
+  // Check ONLY the original challenge specification & package/workspace context (before feedback/previous generated files)
+  const specSection = p.split('## CRITICAL: PREVIOUS SUBMISSION FAILED')[0].split('=== PREVIOUS ATTEMPT')[0];
+  const needsPrisma = /prisma|schema\.prisma|seed\.js|postgresql/i.test(specSection);
+  const needsJwt = /jwt|jsonwebtoken|refresh\s*token|\/login|\/refresh|bearer/i.test(specSection);
+  const needsNativeHttp = /node:http|createServer|http\.createServer/i.test(specSection);
+  const needsExpressAuth = /bcrypt|\/register/i.test(specSection);
+
+  const lines = [
+    'You are a Senior Full-Stack Software Engineer. Write complete, bug-free, test-compliant solutions.',
+    'RULES: Follow every requirement verbatim. Match starter code style (CommonJS vs ESM, Express vs node:http). Preserve all exports (e.g. module.exports = app/server).',
+    'NEVER invent extra files (e.g. NEVER create prisma/schema.prisma or seed.js unless explicitly required by the problem!).',
+    'NEVER invent uninstalled packages; strictly use packages in package.json or Node built-ins. Fix JSON SyntaxError with express error handler returning 400. Return res.status(...).json(...) on every branch so requests never hang or timeout.',
+    'Output ONLY clean executable code (NO comments, NO explanations, NO "... rest of code") in markdown fenced code block(s) with exact file path on line 1 (e.g. // src/index.js).',
+    '2-space indentation only; no tabs.'
+  ];
+  if (needsPrisma) lines.push('PRISMA: Output prisma/schema.prisma, src/seed.js (deleteMany child-then-parent, await prisma.$disconnect() in finally), and src/index.js cleanly.');
+  if (needsNativeHttp) lines.push('NODE HTTP: Set Content-Type application/json; parse JSON safely (400 on invalid JSON); export server cleanly (module.exports = server; module.exports.server = server;). Return 404 on unknown routes.');
+  if (needsJwt) lines.push('JWT: Preserve hardcoded SECRET and user object; reject missing/invalid/malformed/wrong-secret tokens accurately per spec.');
+  if (needsExpressAuth) lines.push('EXPRESS AUTH: Validate inputs strictly (400), check duplicate records via findFirst/findUnique before create, hash password with installed bcrypt/bcryptjs, omit password from JSON response.');
+  if (/PREVIOUS ATTEMPT|FAILED/i.test(p)) lines.push('DEBUG: Fix EVERY failing test simultaneously in one complete replacement file without breaking passing routes.');
+  sys = lines.join('\n');
+
+  let compactPrompt = p;
+  // Guarantee generous output headroom (~4,200+ tokens) within tight TPM limits so reasoning models don't truncate
+  const reservedOutputTokens = Math.min(4400, Math.max(desiredMaxTokens, Math.floor(tpmLimit * 0.56)));
+  const maxPromptChars = Math.min(7200, Math.max(3000, Math.floor((tpmLimit - reservedOutputTokens - 350) * 3.0) - sys.length));
+  if (compactPrompt.length > maxPromptChars) {
+    compactPrompt = compactPrompt.replace(
+      /(SIDE BAR TERMINAL & MOCHA ERROR TRACES \(FROM TAB 3\):\n```\n)([\s\S]*?)(\n```)/,
+      (_, hdr, body, ftr) => hdr + body.slice(0, 1200) + ftr
+    );
+  }
+  if (compactPrompt.length > maxPromptChars) {
+    compactPrompt = compactPrompt.slice(0, maxPromptChars);
+  }
+
+  const estInputTokens = Math.ceil((sys.length + compactPrompt.length) / 3.0);
+  const safeMaxTokens = Math.max(3200, Math.min(4600, Math.max(desiredMaxTokens, reservedOutputTokens), tpmLimit - estInputTokens - 300));
+  return { sys, compactPrompt, safeMaxTokens };
+}
+
 export async function callGroq(prompt, settings) {
   const apiKey = settings.groqKey?.trim();
   if (!apiKey) {
@@ -878,66 +929,121 @@ export async function callGroq(prompt, settings) {
     requestedModel = 'openai/gpt-oss-120b';
   }
 
+  // Prioritize gpt-oss-20b immediately after gpt-oss-120b (each has its own separate 200K TPD quota)
   const modelsToTry = [
     requestedModel,
     'openai/gpt-oss-120b',
-    'qwen/qwen3.8-27b',
     'openai/gpt-oss-20b',
-    'llama-3.3-70b-versatile'
+    'qwen/qwen3-32b',
+    'moonshotai/kimi-k2-instruct'
   ].filter(Boolean);
   const uniqueModels = [...new Set(modelsToTry)];
 
   const isDebug = !!settings.isDebugMode;
   let lastError = null;
+  let primaryNon404Error = null;
 
   for (const model of uniqueModels) {
     const url = 'https://api.groq.com/openai/v1/chat/completions';
 
+    const compact4K = buildCompactGroqMessages(SYSTEM_PROMPT, prompt, 4200, 7600);
+    const compactLow = buildCompactGroqMessages(SYSTEM_PROMPT, prompt, 4200, 7600);
+    const estFullInputTokens = Math.ceil((compactLow.sys.length + prompt.length) / 3.2);
+    const isSmallerReasoningModel = /(?:^|[-/])(?:20b|qwen)/i.test(model);
     const payloadsToTry = isDebug
       ? [
+          ...(!isSmallerReasoningModel && estFullInputTokens < 5200
+            ? [
+                {
+                  model,
+                  messages: [
+                    { role: 'system', content: compactLow.sys },
+                    { role: 'user', content: prompt }
+                  ],
+                  temperature: 0.1,
+                  max_tokens: 16384,
+                  reasoning_effort: 'high'
+                },
+                {
+                  model,
+                  messages: [
+                    { role: 'system', content: compactLow.sys },
+                    { role: 'user', content: prompt }
+                  ],
+                  temperature: 0.1,
+                  max_tokens: 6144,
+                  reasoning_effort: 'medium'
+                },
+                {
+                  model,
+                  messages: [
+                    { role: 'system', content: compactLow.sys },
+                    { role: 'user', content: prompt }
+                  ],
+                  temperature: 0.1,
+                  max_tokens: 6144,
+                  reasoning_effort: 'low'
+                }
+              ]
+            : !isSmallerReasoningModel
+              ? [
+                  {
+                    model,
+                    messages: [
+                      { role: 'system', content: compact4K.sys },
+                      { role: 'user', content: compact4K.compactPrompt }
+                    ],
+                    temperature: 0.1,
+                    max_tokens: compact4K.safeMaxTokens,
+                    reasoning_effort: 'high'
+                  }
+                ]
+              : []),
           {
             model,
             messages: [
-              { role: 'system', content: SYSTEM_PROMPT },
-              { role: 'user', content: prompt }
+              { role: 'system', content: compact4K.sys },
+              { role: 'user', content: compact4K.compactPrompt }
             ],
             temperature: 0.1,
-            max_tokens: 16384,
-            reasoning_effort: 'high'
+            max_tokens: compact4K.safeMaxTokens,
+            reasoning_effort: 'low'
           },
           {
             model,
             messages: [
-              { role: 'system', content: SYSTEM_PROMPT },
-              { role: 'user', content: prompt }
+              { role: 'system', content: compact4K.sys },
+              { role: 'user', content: compact4K.compactPrompt }
             ],
             temperature: 0.1,
-            max_tokens: 8192,
-            reasoning_effort: 'medium'
-          },
-          {
-            model,
-            messages: [
-              { role: 'system', content: SYSTEM_PROMPT },
-              { role: 'user', content: prompt }
-            ],
-            temperature: 0.1,
-            max_tokens: 8192
+            max_tokens: compact4K.safeMaxTokens
           }
         ]
       : [
           {
             model,
             messages: [
-              { role: 'system', content: SYSTEM_PROMPT },
-              { role: 'user', content: prompt }
+              { role: 'system', content: compactLow.sys },
+              { role: 'user', content: estFullInputTokens < 4500 ? prompt : compactLow.compactPrompt }
             ],
             temperature: 0.1,
-            max_tokens: 8192
+            max_tokens: Math.min(8192, Math.max(4096, compactLow.safeMaxTokens)),
+            reasoning_effort: 'low'
+          },
+          {
+            model,
+            messages: [
+              { role: 'system', content: compact4K.sys },
+              { role: 'user', content: compact4K.compactPrompt }
+            ],
+            temperature: 0.1,
+            max_tokens: compact4K.safeMaxTokens
           }
         ];
 
-    for (const payload of payloadsToTry) {
+    let waited429 = false;
+    for (let pi = 0; pi < payloadsToTry.length; pi++) {
+      const payload = payloadsToTry[pi];
       const controller = new AbortController();
       const timeoutMs = payload.reasoning_effort ? 45000 : 35000;
       const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -964,17 +1070,54 @@ export async function callGroq(prompt, settings) {
             msg += `: ${errText}`;
           }
 
-          // If 400 Bad Request rejects reasoning_effort or max_tokens, fall back to next payload
-          if (resp.status === 400 && /reasoning|effort|max_tokens|unsupported|invalid/i.test(msg)) {
-            console.warn(`[AP-Solver] Groq debug parameter not supported for ${model}, retrying fallback payload...`);
+          // Parse dynamic TPM Limit from Groq 413 message and push an extra compacted retry if needed
+          if (resp.status === 413 || /too large|TPM/i.test(msg)) {
+            const limM = msg.match(/Limit\s+(\d+)/i);
+            const parsedLim = limM ? parseInt(limM[1], 10) : 7600;
+            const tight = buildCompactGroqMessages(SYSTEM_PROMPT, prompt, 3400, Math.max(4500, parsedLim - 300));
+            if (pi === payloadsToTry.length - 1 && !payload._tightRetried) {
+              payloadsToTry.push({
+                model,
+                messages: [
+                  { role: 'system', content: tight.sys },
+                  { role: 'user', content: tight.compactPrompt }
+                ],
+                temperature: 0.1,
+                max_tokens: tight.safeMaxTokens,
+                reasoning_effort: 'low',
+                _tightRetried: true
+              });
+            }
+            console.warn(`[AP-Solver] Groq ${model} (413, max_tokens=${payload.max_tokens}) stepped down cleanly for TPM limit...`);
             lastError = new Error(msg);
+            primaryNon404Error = primaryNon404Error || lastError;
             continue;
           }
 
-          // If 404, 413 (TPM limit), 429 (rate limit), or 5xx (transient error), try next model
-          if (resp.status === 404 || resp.status === 413 || resp.status === 429 || resp.status >= 500 || /does not exist|access|decommissioned|rate limit|too large|TPM|RPM|unavailable|overloaded/i.test(msg)) {
+          // If 400 rejects reasoning_effort/max_tokens, step down payload cleanly
+          if (resp.status === 400 && (payload.reasoning_effort || payload.max_tokens > 2048)) {
+            console.warn(`[AP-Solver] Groq ${model} (400, max_tokens=${payload.max_tokens}) stepped down to fallback payload...`);
+            lastError = new Error(msg);
+            primaryNon404Error = primaryNon404Error || lastError;
+            continue;
+          }
+
+          // Skip immediately to next model on Daily TPD exhaustion; brief retry once only on short RPM 429s
+          const isDailyTPD = /TPD|tokens per day|Please try again in \d+[mh]/i.test(msg);
+          if (resp.status === 429 && !isDailyTPD && !waited429) {
+            waited429 = true;
+            console.warn(`[AP-Solver] Groq ${model} RPM rate-limited (429), retrying briefly...`);
+            lastError = new Error(msg);
+            primaryNon404Error = primaryNon404Error || lastError;
+            await new Promise(r => setTimeout(r, 2000));
+            continue;
+          }
+
+          // If 403/404/413/429/5xx or model inaccessible, move to next model candidate (preserving primary error!)
+          if (resp.status === 403 || resp.status === 404 || resp.status === 413 || resp.status === 429 || resp.status >= 500 || /does not exist|access|decommissioned|rate limit|too large|TPM|TPD|RPM|unavailable|overloaded/i.test(msg)) {
             console.warn(`[AP-Solver] Groq model ${model} unavailable (${resp.status}), trying next model...`);
             lastError = new Error(msg);
+            if (resp.status !== 404) primaryNon404Error = primaryNon404Error || lastError;
             break;
           }
 
@@ -987,9 +1130,17 @@ export async function callGroq(prompt, settings) {
         const text = typeof rawContent === 'string' ? rawContent.trim() : '';
         if (!text) {
           const finishReason = choice?.finish_reason || 'unknown';
-          console.warn(`[AP-Solver] Groq ${model} returned empty content (finish_reason=${finishReason}), retrying fallback payload/model...`);
+          // If this payload had reasoning_effort, step down to simpler payload; if already simplest, skip to next model
+          if (payload.reasoning_effort) {
+            console.warn(`[AP-Solver] Groq ${model} returned empty content (finish_reason=${finishReason}, reasoning=${payload.reasoning_effort}), stepping down...`);
+            lastError = new Error(`Groq returned an empty response (${finishReason}).`);
+            primaryNon404Error = primaryNon404Error || lastError;
+            continue;
+          }
+          console.warn(`[AP-Solver] Groq ${model} returned empty content (finish_reason=${finishReason}), skipping to next model...`);
           lastError = new Error(`Groq returned an empty response (${finishReason}).`);
-          continue;
+          primaryNon404Error = primaryNon404Error || lastError;
+          break;
         }
 
         const files = parseMultiFileSolution(text, settings.activeFile, settings.workspaceFiles);
@@ -1005,10 +1156,12 @@ export async function callGroq(prompt, settings) {
         if (err.name === 'AbortError') {
           console.warn(`[AP-Solver] Groq ${model} timed out after ${timeoutMs}ms, trying fallback...`);
           lastError = new Error(`Groq model ${model} timed out.`);
+          primaryNon404Error = primaryNon404Error || lastError;
           continue;
         }
         if (err.message && (err.message.includes('404') || err.message.includes('413') || err.message.includes('429') || /\b5\d{2}\b/.test(err.message) || /too large|TPM|RPM|rate limit|empty response|Failed to fetch|network/i.test(err.message))) {
           lastError = err;
+          if (!err.message.includes('404')) primaryNon404Error = primaryNon404Error || err;
           break;
         }
         throw err;
@@ -1016,7 +1169,7 @@ export async function callGroq(prompt, settings) {
     }
   }
 
-  throw lastError || new Error('All Groq model candidates failed.');
+  throw primaryNon404Error || lastError || new Error('All Groq model candidates failed.');
 }
 
 export async function callOpenAI(prompt, settings) {
@@ -1111,12 +1264,12 @@ export async function generateSolution(promptData, settingsOverride = null) {
   // a 300ms fast Flash/Groq guess cancel deeper analysis in Promise.any.
   if (isDebugMode) {
     console.log('[AP-Solver] 🧠 Debug Escalation Mode active: prioritizing High-Reasoning analysis...');
+    // ALWAYS try Gemini first for debug (best reasoning), then fall through to others
     const debugOrder = [];
-    if (provider === 'openai' && hasOpenAI) debugOrder.push('openai');
-    if (provider === 'groq' && hasGroq) debugOrder.push('groq');
     if (hasGemini) debugOrder.push('gemini');
-    if (hasOpenAI) debugOrder.push('openai');
+    if (provider === 'openai' && hasOpenAI) debugOrder.push('openai');
     if (hasGroq) debugOrder.push('groq');
+    if (hasOpenAI && !debugOrder.includes('openai')) debugOrder.push('openai');
     const uniqueOrder = [...new Set(debugOrder)];
 
     let lastDebugErr = null;
@@ -1127,6 +1280,11 @@ export async function generateSolution(promptData, settingsOverride = null) {
         if (p === 'gemini') res = await callGemini(prompt, settings);
         else if (p === 'groq') res = await callGroq(prompt, settings);
         else res = await callOpenAI(prompt, settings);
+        if (!res || (!res.code && (!res.files || res.files.length === 0 || !res.files[0].code))) {
+          console.warn(`[AP-Solver] Debug Escalation provider (${p}) returned empty result, trying next...`);
+          lastDebugErr = new Error(`${p} returned an empty/invalid response during debug.`);
+          continue;
+        }
         res.latencyMs = Date.now() - t0;
         res.debugEscalated = true;
         res.raceWinner = `🧠 Debug Escalated (${p === 'gemini' ? 'Gemini High-Reasoning' : p}: ${res.model})`;

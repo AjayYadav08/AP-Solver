@@ -465,6 +465,7 @@
         }
 
         let pasted = false;
+        let sentEnterViaCore = false;
 
         // 1. Try Main-World xterm.paste via postMessage to main-world-bridge
         try {
@@ -473,57 +474,53 @@
             const h = (evt) => {
               if (evt.data && evt.data.action === 'AP_INJECT_TERMINAL_MAIN_RESULT' && evt.data.id === reqId) {
                 window.removeEventListener('message', h);
-                resolve(!!evt.data.pasted);
+                resolve({ pasted: !!evt.data.pasted, sentEnterViaCore: !!evt.data.sentEnterViaCore });
               }
             };
             window.addEventListener('message', h);
             setTimeout(() => {
               window.removeEventListener('message', h);
-              resolve(false);
+              resolve({ pasted: false, sentEnterViaCore: false });
             }, 300);
           });
           window.postMessage({ action: 'AP_INJECT_TERMINAL_MAIN', id: reqId, payload: { command: cmd } }, '*');
-          pasted = await mainPromise;
+          const mainRes = await mainPromise;
+          pasted = mainRes.pasted;
+          sentEnterViaCore = mainRes.sentEnterViaCore;
         } catch (e) {}
 
         // 2. Direct element xterm property fallback
         if (!pasted) {
           const termEl = termInfo.element;
           for (const k of ['xterm', '_xterm', '__xterm']) {
-            if (termEl && termEl[k] && typeof termEl[k].paste === 'function') {
+            const term = termEl && termEl[k];
+            if (term && typeof term.paste === 'function') {
               try {
-                termEl[k].paste(cmd + '\n');
+                if (typeof term.input === 'function') { term.input('\x03', true); term.input('\x15', true); }
+                term.paste(cmd);
                 pasted = true;
+                if (typeof term.input === 'function') { term.input('\r', true); sentEnterViaCore = true; }
                 break;
               } catch(e) {}
             }
           }
         }
 
-        // Strict focus guard: ONLY dispatch ClipboardEvent if xterm textarea holds confirmed exclusive focus!
-        // Terminal injection strictly avoids execCommand insertText to prevent corrupting Monaco buffers.
-        const isConfirmedTerminalFocus = ta && document.activeElement === ta && !document.activeElement.closest('.monaco-editor');
-        if (!pasted && isConfirmedTerminalFocus) {
-          try {
-            const dt = new DataTransfer();
-            dt.setData('text/plain', cmd + '\n');
-            const pasteEvt = new ClipboardEvent('paste', {
-              clipboardData: dt,
-              bubbles: true,
-              cancelable: true
-            });
-            ta.dispatchEvent(pasteEvt);
-            ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-            pasted = true;
-          } catch(e) {}
-        }
-
+        // Do NOT simulate untrusted ClipboardEvent paste: modern xterm.js ignores synthetic paste/Enter events,
+        // which would falsely report ok=true and block CDP hardware terminal execution!
+        // Keep terminal focus confirmed and escalate to Step 3 Hardware CDP when xterm API isn't directly exposed.
+        const isConfirmedTerminalFocus = !!(ta && document.activeElement === ta && !document.activeElement.closest('.monaco-editor'));
         if (!pasted) {
-          sendResponse({ ok: false, pasted: false, error: 'Terminal focus not confirmed for safe in-frame paste' });
+          sendResponse({
+            ok: false,
+            pasted: false,
+            focusConfirmed: isConfirmedTerminalFocus,
+            error: 'Direct xterm API unavailable; escalating to CDP hardware terminal input'
+          });
           return;
         }
 
-        sendResponse({ ok: true, pasted, rect: termInfo.rect });
+        sendResponse({ ok: true, pasted, sentEnterViaCore, rect: termInfo.rect });
       })();
       return true;
     }

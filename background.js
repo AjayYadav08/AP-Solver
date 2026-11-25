@@ -73,16 +73,35 @@ async function cdpNativeDblClick(tabId, x, y) {
   await cdpNativeClick(tabId, x, y, 2);
 }
 
-// True Native Key Press
+// True Native Key Press (uses keyDown + text:'\r'/char for Enter so xterm.js & Monaco register Enter cleanly!)
 async function cdpNativeKey(tabId, key, code, keyCode, modifiers = 0) {
-  await sendCDP(tabId, 'Input.dispatchKeyEvent', {
-    type: 'rawKeyDown',
+  const isEnter = key === 'Enter' || keyCode === 13;
+  const baseEvt = {
+    type: 'keyDown',
     key,
     code,
     windowsVirtualKeyCode: keyCode,
     nativeVirtualKeyCode: keyCode,
     modifiers
-  });
+  };
+  if (isEnter) {
+    baseEvt.text = '\r';
+    baseEvt.unmodifiedText = '\r';
+  }
+  await sendCDP(tabId, 'Input.dispatchKeyEvent', baseEvt);
+  if (isEnter) {
+    await sleep(15);
+    await sendCDP(tabId, 'Input.dispatchKeyEvent', {
+      type: 'char',
+      key: 'Enter',
+      code: 'Enter',
+      text: '\r',
+      unmodifiedText: '\r',
+      windowsVirtualKeyCode: 13,
+      nativeVirtualKeyCode: 13,
+      modifiers
+    });
+  }
   await sleep(30);
   await sendCDP(tabId, 'Input.dispatchKeyEvent', {
     type: 'keyUp',
@@ -94,9 +113,17 @@ async function cdpNativeKey(tabId, key, code, keyCode, modifiers = 0) {
   });
 }
 
-// True Native Text Typing
+// True Native Text Typing (chunked for large base64 scripts so xterm PTY never overflows)
 async function cdpNativeInsertText(tabId, text) {
-  await sendCDP(tabId, 'Input.insertText', { text });
+  const str = String(text || '');
+  if (str.length <= 800) {
+    await sendCDP(tabId, 'Input.insertText', { text: str });
+    return;
+  }
+  for (let i = 0; i < str.length; i += 800) {
+    await sendCDP(tabId, 'Input.insertText', { text: str.slice(i, i + 800) });
+    await sleep(25);
+  }
 }
 
 // Quick Open via CDP (Cmd+P on Mac, Ctrl+P on Windows)
@@ -1542,6 +1569,30 @@ export function buildBase64TerminalScript(files) {
 
 // Shared Helper: Locate Integrated Terminal frame across tabs/iframes
 async function findTerminalFrameInfo(tabId) {
+  const resolveTopOffset = async (match) => {
+    if (!match || match.frameId === 0 || !match.result) return match;
+    try {
+      const ifrRes = await chrome.scripting.executeScript({
+        target: { tabId, frameIds: [0] },
+        func: () => {
+          return [...document.querySelectorAll('iframe')].map(ifr => {
+            const r = ifr.getBoundingClientRect();
+            return { src: ifr.src || '', left: r.left, top: r.top, width: r.width, height: r.height };
+          }).filter(r => r.width > 150 && r.height > 150);
+        }
+      });
+      const iframes = ifrRes?.[0]?.result || [];
+      const vsIframe = iframes.find(i => /codeserver|vscode|coder/i.test(i.src) || i.left > 150) || iframes[0];
+      if (vsIframe) {
+        match.result.x = vsIframe.left + match.result.localX;
+        match.result.y = vsIframe.top + match.result.localY;
+        match.result.frameLeft = vsIframe.left;
+        match.result.frameTop = vsIframe.top;
+      }
+    } catch (e) {}
+    return match;
+  };
+
   const scanRes = await chrome.scripting.executeScript({
     target: { tabId, allFrames: true },
     func: () => {
@@ -1553,10 +1604,15 @@ async function findTerminalFrameInfo(tabId) {
         if (parent.closest('.monaco-editor')) continue;
         const r = parent.getBoundingClientRect();
         if (r.width > 40 && r.height > 30) {
+          // Click on the left prompt side of the terminal so right-docked AP-Solver UI never intercepts it
+          const lx = r.left + Math.min(60, Math.max(20, r.width * 0.2));
+          const ly = r.top + Math.min(80, Math.max(15, r.height * 0.45));
           return {
             found: true,
-            x: r.left + Math.min(r.width / 2, 200),
-            y: r.top + Math.min(r.height / 2, 80),
+            localX: lx,
+            localY: ly,
+            x: lx,
+            y: ly,
             width: r.width,
             height: r.height
           };
@@ -1575,15 +1631,18 @@ async function findTerminalFrameInfo(tabId) {
       func: () => {
         const ta = document.querySelector('textarea.xterm-helper-textarea, .terminal textarea, .integrated-terminal textarea, [class*="xterm" i] textarea');
         if (ta && !ta.closest('.monaco-editor')) {
-          const r = ta.getBoundingClientRect();
-          return { found: true, x: r.left, y: r.top, width: r.width, height: r.height };
+          const container = ta.closest('.terminal-wrapper, .terminal, .integrated-terminal') || ta;
+          const r = container.getBoundingClientRect();
+          const lx = r.left + Math.min(60, Math.max(15, r.width * 0.2));
+          const ly = r.top + Math.min(60, Math.max(15, r.height * 0.45));
+          return { found: true, localX: lx, localY: ly, x: lx, y: ly, width: r.width, height: r.height };
         }
         return { found: false };
       }
     });
     match = retryScan?.find(r => r.result && r.result.found);
   }
-  return match || null;
+  return await resolveTopOffset(match || null);
 }
 
 // Shared Helper: Execute command in Integrated Terminal strictly protecting Monaco editor focus
@@ -1591,8 +1650,85 @@ async function dispatchCommandToTerminal(tabId, cmdText, settleMs = 1500) {
   await ensureTerminalOpen(tabId);
   const match = await findTerminalFrameInfo(tabId);
   const targetFrameId = match?.frameId;
+  const pos = match?.result;
 
-  // 1. In-frame xterm.paste (directly into xterm instance if attached)
+  // Helper: Click terminal canvas cleanly (bypassing #ap-solver-host) and focus xterm textarea
+  const focusAndPrepareTerminalLine = async (clearExistingLine = true) => {
+    const attached = await attachCDP(tabId);
+    if (!attached || !pos) return false;
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId, frameIds: [0] },
+        func: () => {
+          const host = document.getElementById('ap-solver-host');
+          if (host) {
+            host.dataset.prevPe = host.style.pointerEvents || '';
+            host.style.pointerEvents = 'none';
+          }
+        }
+      });
+    } catch (e) {}
+
+    try {
+      if (targetFrameId !== undefined) {
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId, frameIds: [targetFrameId] },
+            func: () => {
+              document.querySelectorAll('.monaco-editor textarea, textarea.inputarea').forEach(t => { try { t.blur(); } catch(e) {} });
+              const ta = document.querySelector('textarea.xterm-helper-textarea, .terminal textarea, .integrated-terminal textarea');
+              if (ta && !ta.closest('.monaco-editor')) {
+                try { ta.focus(); } catch(e) {}
+              }
+            }
+          });
+        } catch(e) {}
+      }
+
+      if (pos.x && pos.y) {
+        await cdpNativeClick(tabId, pos.x, pos.y);
+        await sleep(140);
+      }
+
+      const focusCheck = await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        func: () => {
+          const el = document.activeElement;
+          if (!el) return { isTerminal: false, isMonaco: false };
+          const isTerminal = el.classList.contains('xterm-helper-textarea') || (el.tagName === 'TEXTAREA' && !!el.closest('.terminal, .integrated-terminal'));
+          const isMonaco = el.classList.contains('inputarea') || !!el.closest('.monaco-editor');
+          return { isTerminal, isMonaco };
+        }
+      });
+      const isTerminalFocused = focusCheck?.some(f => f.result?.isTerminal);
+      const isMonacoFocused = focusCheck?.some(f => f.result?.isMonaco);
+      if (isTerminalFocused && !isMonacoFocused && clearExistingLine) {
+        await cdpNativeKey(tabId, 'c', 'KeyC', 67, 2); // Ctrl+C
+        await sleep(80);
+        await cdpNativeKey(tabId, 'u', 'KeyU', 85, 2); // Ctrl+U
+        await sleep(80);
+      }
+      return { ok: isTerminalFocused && !isMonacoFocused, isTerminalFocused, isMonacoFocused, attached };
+    } finally {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId, frameIds: [0] },
+          func: () => {
+            const host = document.getElementById('ap-solver-host');
+            if (host) {
+              host.style.pointerEvents = host.dataset.prevPe || '';
+              delete host.dataset.prevPe;
+            }
+          }
+        });
+      } catch (e) {}
+    }
+  };
+
+  // Clear any stuck/partial terminal input cleanly BEFORE pasting via xterm API
+  const prep = await focusAndPrepareTerminalLine(true);
+
+  // 1. In-frame xterm.paste (directly into xterm instance if attached) + real CDP Enter
   if (targetFrameId !== undefined) {
     try {
       const inFrameRes = await chrome.scripting.executeScript({
@@ -1608,7 +1744,8 @@ async function dispatchCommandToTerminal(tabId, cmdText, settleMs = 1500) {
             for (const k of ['xterm', '_xterm', '__xterm']) {
               if (termEl && termEl[k] && typeof termEl[k].paste === 'function') {
                 try {
-                  termEl[k].paste(cmd + '\n');
+                  termEl[k].paste(cmd);
+                  if (typeof termEl[k].input === 'function') termEl[k].input('\r', true);
                   return true;
                 } catch(e) {}
               }
@@ -1621,6 +1758,10 @@ async function dispatchCommandToTerminal(tabId, cmdText, settleMs = 1500) {
       });
 
       if (inFrameRes?.[0]?.result === true) {
+        if (prep?.ok) {
+          await sleep(160);
+          await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
+        }
         if (settleMs > 0) await sleep(settleMs);
         return { ok: true, method: 'terminal.inFrameScript', targetFrameId };
       }
@@ -1629,7 +1770,7 @@ async function dispatchCommandToTerminal(tabId, cmdText, settleMs = 1500) {
     }
   }
 
-  // 2. Secondary fallback: in-frame content script sendMessage
+  // 2. Secondary fallback: in-frame content script sendMessage -> Main World xterm.paste + REAL CDP Enter!
   if (targetFrameId !== undefined) {
     try {
       const injectResp = await chrome.tabs.sendMessage(tabId, {
@@ -1637,6 +1778,17 @@ async function dispatchCommandToTerminal(tabId, cmdText, settleMs = 1500) {
         data: { command: cmdText }
       }, { frameId: targetFrameId });
       if (injectResp && injectResp.ok) {
+        if (!injectResp.sentEnterViaCore) {
+          await sleep(180);
+          if (prep?.ok) {
+            await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
+          } else {
+            const postPrep = await focusAndPrepareTerminalLine(false);
+            if (postPrep && !postPrep.isMonacoFocused) {
+              await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
+            }
+          }
+        }
         if (settleMs > 0) await sleep(settleMs);
         return { ok: true, method: 'terminal.inFrame', targetFrameId };
       }
@@ -1644,54 +1796,15 @@ async function dispatchCommandToTerminal(tabId, cmdText, settleMs = 1500) {
   }
 
   // 3. HARDWARE CDP FALLBACK: STRICT FOCUS GUARD
-  // ONLY allowed if document.activeElement is CONFIRMED to be the xterm-helper-textarea!
-  // NEVER type via CDP if Monaco editor is focused or if terminal focus cannot be proven!
-  const attached = await attachCDP(tabId);
-  if (attached && match) {
-    if (targetFrameId !== undefined) {
-      try {
-        await chrome.scripting.executeScript({
-          target: { tabId, frameIds: [targetFrameId] },
-          func: () => {
-            document.querySelectorAll('.monaco-editor textarea, textarea.inputarea').forEach(t => { try { t.blur(); } catch(e) {} });
-            const ta = document.querySelector('textarea.xterm-helper-textarea, .terminal textarea, .integrated-terminal textarea');
-            if (ta && !ta.closest('.monaco-editor')) {
-              try { ta.focus(); ta.click(); } catch(e) {}
-            }
-          }
-        });
-      } catch(e) {}
-    }
-
-    const focusCheck = await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
-      func: () => {
-        const el = document.activeElement;
-        if (!el) return { isTerminal: false, isMonaco: false };
-        const isTerminal = el.classList.contains('xterm-helper-textarea') || (el.tagName === 'TEXTAREA' && !!el.closest('.terminal, .integrated-terminal'));
-        const isMonaco = el.classList.contains('inputarea') || !!el.closest('.monaco-editor');
-        return { isTerminal, isMonaco };
-      }
-    });
-
-    const isTerminalFocused = focusCheck?.some(f => f.result?.isTerminal);
-    const isMonacoFocused = focusCheck?.some(f => f.result?.isMonaco);
-
-    if (isTerminalFocused && !isMonacoFocused) {
-      // Double-check focus to protect editor: explicitly click terminal canvas coordinates first
-      if (match.x && match.y) {
-        await cdpNativeClick(tabId, match.x, match.y);
-        await sleep(150);
-      }
-      await cdpNativeKey(tabId, 'c', 'KeyC', 67, 2); // Ctrl+C
-      await sleep(120);
+  if (prep && pos) {
+    if (prep.isTerminalFocused && !prep.isMonacoFocused) {
       await cdpNativeInsertText(tabId, cmdText);
-      await sleep(120);
+      await sleep(150);
       await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
       if (settleMs > 0) await sleep(settleMs);
       return { ok: true, method: 'terminal.cdp', targetFrameId };
     } else {
-      console.warn('[AP-Solver Terminal] Focus guard: Terminal does not have confirmed exclusive focus (isTerminal:', isTerminalFocused, 'isMonaco:', isMonacoFocused, '). Aborting CDP typing to protect editor.');
+      console.warn('[AP-Solver Terminal] Focus guard: Terminal does not have confirmed exclusive focus (isTerminal:', prep.isTerminalFocused, 'isMonaco:', prep.isMonacoFocused, '). Aborting CDP typing to protect editor.');
       return { ok: false, error: 'Terminal does not have active focus. Command copied to clipboard.' };
     }
   }
@@ -1813,7 +1926,16 @@ async function runTerminalCommandWithCapture(tabId, { bashCmd, startMarker, endM
       if (att) await sendCDP(tabId, 'Accessibility.enable');
     } catch (e) {}
 
-    const baseText = await readIntegratedTerminalText(tabId);
+    await ensureTerminalOpen(tabId);
+    let baseText = await readIntegratedTerminalText(tabId);
+    if (!baseText || !baseText.trim()) {
+      await sleep(200);
+      baseText = await readIntegratedTerminalText(tabId);
+    }
+    // Never type long base64 | node capture pipes into a WebGL canvas terminal whose stdout cannot be read in DOM!
+    if (!baseText || !baseText.trim()) {
+      return { ok: false, unreadable: true, error: 'Terminal output unavailable in DOM/buffer (WebGL renderer)' };
+    }
     const countOccurrences = (str, sub) => {
       if (!str || !sub) return 0;
       let count = 0, pos = 0;
@@ -2011,7 +2133,7 @@ async function writeFilesViaTerminal(tabId, files, customScript = null) {
 
     // Wait dynamically for heavy setup commands (prisma install/db push/seed) to complete cleanly before returning
     const hasHeavyCmd = /prisma|npm install/i.test(bashScript);
-    const maxWait = hasHeavyCmd ? 14000 : 3000;
+    const maxWait = hasHeavyCmd ? 16000 : 5000;
     const baseline = await readIntegratedTerminalText(tabId, res.targetFrameId);
     const baseDoneCount = (baseline.match(/AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY/g) || []).length;
     const t0 = Date.now();
@@ -2021,9 +2143,9 @@ async function writeFilesViaTerminal(tabId, files, customScript = null) {
       const curText = await readIntegratedTerminalText(tabId, res.targetFrameId);
       const curDoneCount = (curText.match(/AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY/g) || []).length;
       if (curDoneCount > baseDoneCount + 1 || (curDoneCount > baseDoneCount && /(?:^|\n)[^\n]*[$#]\s*$/.test(curText.trimEnd()))) {
-        break;
+        return { ok: true, verified: true, method: res.method };
       }
-      if (!curText && (Date.now() - t0 > (hasHeavyCmd ? 4500 : 1400))) {
+      if (!curText && (Date.now() - t0 > (hasHeavyCmd ? 8000 : 2500))) {
         break;
       }
       await sleep(450);
