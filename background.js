@@ -1470,6 +1470,9 @@ export function buildBase64TerminalScript(files) {
   cmd += `git config --global --add safe.directory /app/code 2>/dev/null || true && `;
   cmd += `sudo chmod -R 777 /app/code/.git 2>/dev/null || true && `;
   cmd += `sudo chown -R newton:newton /app/code 2>/dev/null || true && `;
+  cmd += `sed -i '/mkdir -p/d' src/index.js 2>/dev/null || true && `;
+  cmd += `sed -i '/base64 -d/d' src/index.js 2>/dev/null || true && `;
+  cmd += `sed -i '/=== AP-SOLVER/d' src/index.js 2>/dev/null || true && `;
   cmd += `git checkout -- src/index.js 2>/dev/null || true && `;
 
   const hasPrisma = files.some(f => (f.filePath && f.filePath.endsWith('.prisma')) || /datasource\s+db|generator\s+client|model\s+/i.test(f.code));
@@ -1494,8 +1497,12 @@ export function buildBase64TerminalScript(files) {
       b64 = typeof Buffer !== 'undefined' ? Buffer.from(cleanCode).toString('base64') : btoa(cleanCode);
     }
     cmd += `echo "${b64}" | base64 -d > "${targetPath}" && `;
-    if (targetPath === 'prisma/schema.prisma') {
-      cmd += `cp prisma/schema.prisma ./schema.prisma 2>/dev/null || true && `;
+    if (targetPath.endsWith('schema.prisma') || targetPath === 'prisma/schema.prisma') {
+      cmd += `cp "${targetPath}" ./schema.prisma 2>/dev/null || true && `;
+      cmd += `mkdir -p prisma && cp "${targetPath}" prisma/schema.prisma 2>/dev/null || true && `;
+    } else if (targetPath.endsWith('seed.js')) {
+      cmd += `cp "${targetPath}" ./seed.js 2>/dev/null || true && `;
+      cmd += `mkdir -p src && cp "${targetPath}" src/seed.js 2>/dev/null || true && `;
     }
   }
 
@@ -1683,7 +1690,11 @@ async function writeFilesViaTerminal(tabId, files, customScript = null) {
       const isMonacoFocused = focusCheck?.some(f => f.result?.isMonaco);
 
       if (isTerminalFocused && !isMonacoFocused) {
-        // Safe to type via CDP
+        // Double-check focus to protect editor: explicitly click terminal canvas coordinates first
+        if (match.x && match.y) {
+          await cdpNativeClick(tabId, match.x, match.y);
+          await sleep(150);
+        }
         await cdpNativeKey(tabId, 'c', 'KeyC', 67, 2); // Ctrl+C
         await sleep(120);
         await cdpNativeInsertText(tabId, bashScript);
@@ -1744,6 +1755,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         const resp = await writeFilesViaTerminal(tabId, data.files, data.script);
         sendResponse(resp);
+      } else if (op === 'AP_CLEAN_EDITOR_ARTIFACTS') {
+        const tabId = sender.tab?.id;
+        if (!tabId) {
+          sendResponse({ ok: false, error: 'No tab ID found in sender.' });
+          return;
+        }
+        try {
+          const frames = await chrome.webNavigation.getAllFrames({ tabId });
+          let cleaned = 0;
+          for (const fr of frames) {
+            try {
+              const res = await chrome.tabs.sendMessage(tabId, { op: 'AP_CLEAN_EDITOR_ARTIFACTS' }, { frameId: fr.frameId });
+              if (res?.ok) cleaned += (res.cleanedCount || 0);
+            } catch(e) {}
+          }
+          sendResponse({ ok: true, cleanedCount: cleaned });
+        } catch(e) {
+          sendResponse({ ok: false, error: e.message });
+        }
       } else if (op === 'AP_RELOAD_EXT') {
         sendResponse({ ok: true });
         setTimeout(() => chrome.runtime.reload(), 100);

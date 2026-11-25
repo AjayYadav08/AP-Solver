@@ -674,6 +674,58 @@
       }
     }
 
+    if (action === 'AP_CLEAN_EDITOR_ARTIFACTS') {
+      try {
+        const monaco = getMonacoInstance();
+        let cleanedCount = 0;
+        if (monaco && monaco.editor) {
+          const models = monaco.editor.getModels ? monaco.editor.getModels() : [];
+          for (const m of models) {
+            const val = m.getValue();
+            if (/mkdir\s*-p|base64\s*-d|=== AP-SOLVER/i.test(val)) {
+              const lines = val.split('\n');
+              const cleanLines = lines.filter(l => !/mkdir\s*-p|base64\s*-d|=== AP-SOLVER/i.test(l));
+              m.setValue(cleanLines.join('\n'));
+              cleanedCount++;
+            }
+          }
+        }
+        triggerSave();
+        window.postMessage({ action: 'AP_CLEAN_EDITOR_ARTIFACTS_RESULT', id, ok: true, cleanedCount }, '*');
+      } catch (err) {
+        window.postMessage({ action: 'AP_CLEAN_EDITOR_ARTIFACTS_RESULT', id, ok: false, error: err.message }, '*');
+      }
+    }
+
+    if (action === 'AP_INJECT_TERMINAL_MAIN') {
+      try {
+        const cmd = data?.command || '';
+        // Strict guard: Unfocus all Monaco editors to guarantee Monaco is untouched
+        document.querySelectorAll('.monaco-editor textarea, textarea.inputarea').forEach(t => { try { t.blur(); } catch(e) {} });
+
+        let pasted = false;
+        const candidateEls = [
+          ...document.querySelectorAll('.terminal, .terminal-wrapper, .integrated-terminal, .xterm, .xterm-screen, canvas.xterm-text-layer')
+        ];
+        for (const el of candidateEls) {
+          for (const k of ['xterm', '_xterm', '__xterm']) {
+            if (el && el[k] && typeof el[k].paste === 'function') {
+              try {
+                el[k].paste(cmd + '\n');
+                pasted = true;
+                break;
+              } catch(e) {}
+            }
+          }
+          if (pasted) break;
+        }
+
+        window.postMessage({ action: 'AP_INJECT_TERMINAL_MAIN_RESULT', id, ok: true, pasted }, '*');
+      } catch (err) {
+        window.postMessage({ action: 'AP_INJECT_TERMINAL_MAIN_RESULT', id, ok: false, error: err.message }, '*');
+      }
+    }
+
     if (action === 'AP_SELECT_ALL') {
       try {
         const monaco = getMonacoInstance();

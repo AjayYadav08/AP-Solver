@@ -403,6 +403,9 @@ window.APSolverUI = class APSolverUI {
         bashScript += `git config --global --add safe.directory /app/code 2>/dev/null || true && `;
         bashScript += `sudo chmod -R 777 /app/code/.git 2>/dev/null || true && `;
         bashScript += `sudo chown -R newton:newton /app/code 2>/dev/null || true && `;
+        bashScript += `sed -i '/mkdir -p/d' src/index.js 2>/dev/null || true && `;
+        bashScript += `sed -i '/base64 -d/d' src/index.js 2>/dev/null || true && `;
+        bashScript += `sed -i '/=== AP-SOLVER/d' src/index.js 2>/dev/null || true && `;
         bashScript += `git checkout -- src/index.js 2>/dev/null || true && `;
 
         const hasPrisma = this.generatedFiles.some(f => (f.filePath && f.filePath.endsWith('.prisma')) || /datasource\s+db|generator\s+client|model\s+/i.test(f.code));
@@ -427,8 +430,12 @@ window.APSolverUI = class APSolverUI {
             b64 = btoa(cleanCode);
           }
           bashScript += `echo "${b64}" | base64 -d > "${targetPath}" && `;
-          if (targetPath === 'prisma/schema.prisma') {
-            bashScript += `cp prisma/schema.prisma ./schema.prisma 2>/dev/null || true && `;
+          if (targetPath.endsWith('schema.prisma') || targetPath === 'prisma/schema.prisma') {
+            bashScript += `cp "${targetPath}" ./schema.prisma 2>/dev/null || true && `;
+            bashScript += `mkdir -p prisma && cp "${targetPath}" prisma/schema.prisma 2>/dev/null || true && `;
+          } else if (targetPath.endsWith('seed.js')) {
+            bashScript += `cp "${targetPath}" ./seed.js 2>/dev/null || true && `;
+            bashScript += `mkdir -p src && cp "${targetPath}" src/seed.js 2>/dev/null || true && `;
           }
         }
 

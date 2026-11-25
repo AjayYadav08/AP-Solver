@@ -391,8 +391,38 @@
   }
 
   // --- Section 3: Submissions & Fast Grader Tracking ---
+  function triggerElementClick(el) {
+    if (!el) return;
+    try { el.scrollIntoView({ block: 'center' }); } catch(e) {}
+    try { el.focus(); } catch(e) {}
+    const opts = { bubbles: true, cancelable: true, view: window };
+    try { el.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch (e) {}
+    try { el.dispatchEvent(new MouseEvent('mousedown', opts)); } catch (e) {}
+    try { el.dispatchEvent(new PointerEvent('pointerup', opts)); } catch (e) {}
+    try { el.dispatchEvent(new MouseEvent('mouseup', opts)); } catch (e) {}
+    try { el.click(); } catch (e) {}
+  }
+
   function getSubmitButton() {
-    return findButton(/^submit solution$/i) || findButton(/^submit$/i);
+    const candidates = [
+      ...document.querySelectorAll('button, [role="button"], a[role="button"], input[type="submit"]')
+    ].filter(b => isVisible(b) && !b.closest('#ap-solver-host'));
+
+    // Check exact or partial text matches
+    const textMatch = candidates.find(b => {
+      const txt = (b.innerText || b.textContent || b.getAttribute('value') || '').trim();
+      return /submit\s*(solution|code)?/i.test(txt) && !/cancel/i.test(txt);
+    });
+    if (textMatch) return textMatch;
+
+    // Check data-testid, id or class attributes
+    const attrMatch = candidates.find(b => {
+      const tid = (b.getAttribute('data-testid') || b.getAttribute('id') || b.className || '').toLowerCase();
+      return tid.includes('submit') && !tid.includes('cancel');
+    });
+    if (attrMatch) return attrMatch;
+
+    return null;
   }
 
   function readSubmissionResults() {
@@ -627,7 +657,7 @@
     const baselineFailed = baseline?.failedCount || 0;
 
     ui.addLog('Clicking "Submit Solution" button...', 'ok');
-    btn.click();
+    triggerElementClick(btn);
 
     ui.setStatus('Evaluating Submission...', 'Waiting for grader to execute test cases...', 'running', true);
 
@@ -1122,6 +1152,11 @@
       }
     }
 
+    // Strict Safety: Proactively clean any Monaco editor buffers of accidental terminal command artifacts
+    try {
+      await sendMsg({ op: 'AP_CLEAN_EDITOR_ARTIFACTS' }, 2000);
+    } catch(e) {}
+
     // Strict Enforcement: Strip all comments from all solution files
     for (const f of filesToWrite) {
       f.code = stripAllComments(f.code);
@@ -1134,6 +1169,9 @@
     bashScript += `git config --global --add safe.directory /app/code 2>/dev/null || true && `;
     bashScript += `sudo chmod -R 777 /app/code/.git 2>/dev/null || true && `;
     bashScript += `sudo chown -R newton:newton /app/code 2>/dev/null || true && `;
+    bashScript += `sed -i '/mkdir -p/d' src/index.js 2>/dev/null || true && `;
+    bashScript += `sed -i '/base64 -d/d' src/index.js 2>/dev/null || true && `;
+    bashScript += `sed -i '/=== AP-SOLVER/d' src/index.js 2>/dev/null || true && `;
     bashScript += `git checkout -- src/index.js 2>/dev/null || true && `;
 
     const hasPrisma = filesToWrite.some(f => (f.filePath && f.filePath.endsWith('.prisma')) || /datasource\s+db|generator\s+client|model\s+/i.test(f.code));
@@ -1152,8 +1190,12 @@
         b64 = btoa(cleanCode);
       }
       bashScript += `echo "${b64}" | base64 -d > "${f.filePath}" && `;
-      if (f.filePath === 'prisma/schema.prisma') {
-        bashScript += `cp prisma/schema.prisma ./schema.prisma 2>/dev/null || true && `;
+      if (f.filePath.endsWith('schema.prisma') || f.filePath === 'prisma/schema.prisma') {
+        bashScript += `cp "${f.filePath}" ./schema.prisma 2>/dev/null || true && `;
+        bashScript += `mkdir -p prisma && cp "${f.filePath}" prisma/schema.prisma 2>/dev/null || true && `;
+      } else if (f.filePath.endsWith('seed.js')) {
+        bashScript += `cp "${f.filePath}" ./seed.js 2>/dev/null || true && `;
+        bashScript += `mkdir -p src && cp "${f.filePath}" src/seed.js 2>/dev/null || true && `;
       }
     }
 
@@ -1230,6 +1272,26 @@
 
     // Wait up to 25 seconds for the user or automated runner to confirm terminal paste
     for (let waitSec = 0; waitSec < 25; waitSec++) {
+      if (filesWrittenViaTerminal) break;
+
+      // Active Terminal Output Monitor: Check if script finished executing in terminal
+      try {
+        const termCandidates = [...document.querySelectorAll('.xterm-rows, pre, code, [class*="terminal" i]')];
+        for (const ifr of document.querySelectorAll('iframe')) {
+          try {
+            const doc = ifr.contentDocument || ifr.contentWindow?.document;
+            if (doc) termCandidates.push(...doc.querySelectorAll('.xterm-rows, pre, code, [class*="terminal" i]'));
+          } catch(e) {}
+        }
+        for (const el of termCandidates) {
+          if ((el.innerText || el.textContent || '').includes('=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ===')) {
+            filesWrittenViaTerminal = true;
+            ui.addLog(`⚡ [Terminal-First Architecture] Detected "=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ===" in terminal output! Auto-proceeding to submit...`, 'ok');
+            break;
+          }
+        }
+      } catch(e) {}
+
       if (filesWrittenViaTerminal) {
         ui.addLog(`⚡ [Terminal-First Architecture] Files confirmed written cleanly to container disk via Terminal! Monaco editor completely bypassed.`, 'ok');
         for (const f of filesToWrite) {
@@ -1306,11 +1368,11 @@
       const editorStatus = await sendMsg({ op: 'AP_QUERY_EDITOR' }, 5000);
       if (editorStatus && editorStatus.ok && editorStatus.code && editorStatus.activeFile) {
         if (/base64\s*-d|mkdir\s*-p|=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ===/i.test(editorStatus.code)) {
-          ui.addLog(`⚠️ Notice: Active editor contains terminal command artifact. Auto-repairing with clean solution...`, 'warn');
-          for (const f of filesToWrite) {
-            await writeCodeToEditor(f.code, f.filePath);
-          }
-          await sleep(600);
+          ui.addLog(`⚠️ Notice: Active editor contains terminal command artifact. Stripping artifact cleanly...`, 'warn');
+          try {
+            await sendMsg({ op: 'AP_CLEAN_EDITOR_ARTIFACTS' }, 3000);
+          } catch(e) {}
+          await sleep(400);
         }
         const curActive = sanitizeActiveFile(editorStatus.activeFile).toLowerCase();
         const isTargetFile = filesToWrite.some(f => {

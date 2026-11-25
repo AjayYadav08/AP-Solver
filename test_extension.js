@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
-import { extractCodeBlock, buildPrompt, formatCodeIndentation, parseMultiFileSolution } from './utils/llm.js';
+import { extractCodeBlock, buildPrompt, formatCodeIndentation, parseMultiFileSolution, stripComments } from './utils/llm.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -966,28 +966,46 @@ console.log('31. Testing Strict Zero-Monaco-Corruption, Container Permissions & 
 if (!script30.includes('safe.directory') ||
     !script30.includes('sudo chmod -R 777') ||
     !script30.includes('git checkout -- src/index.js') ||
+    !script30.includes('sed -i \'/mkdir -p/d\'') ||
     !script30.includes('npx -y prisma')) {
-  throw new Error('Terminal script must contain safe.directory, sudo chmod, starter index checkout, and non-interactive npx -y!');
+  throw new Error('Terminal script must contain safe.directory, sudo chmod, starter index checkout, sed -i cleanups, and non-interactive npx -y!');
 }
 
-// 2. background.js writeFilesViaTerminal must NEVER call document.execCommand('insertText')
+// 2. background.js writeFilesViaTerminal and frame-editor.js must NEVER call document.execCommand('insertText')
 const bgJs31 = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf-8');
 const termWriterSection = bgJs31.substring(bgJs31.indexOf('writeFilesViaTerminal'));
-if (termWriterSection.includes("document.execCommand('insertText'")) {
+if (stripComments(termWriterSection).includes('document.execCommand')) {
   throw new Error('background.js writeFilesViaTerminal must NOT call document.execCommand to prevent Monaco editor buffer corruption!');
 }
+const frameEditorJs31 = fs.readFileSync(path.join(__dirname, 'content/frame-editor.js'), 'utf-8');
+const termFrameSection = frameEditorJs31.substring(frameEditorJs31.indexOf('AP_INJECT_TERMINAL_COMMAND'));
+if (stripComments(termFrameSection).includes('document.execCommand')) {
+  throw new Error('content/frame-editor.js AP_INJECT_TERMINAL_COMMAND must NOT call document.execCommand to prevent Monaco editor buffer corruption!');
+}
 
-// 3. content/content.js handleWriteCode must NEVER call writeCodeToEditor
+// 3. content/content.js handleWriteCode and verifyCodeCompleteness must NEVER call writeCodeToEditor
 const contentJs31 = fs.readFileSync(path.join(__dirname, 'content/content.js'), 'utf-8');
 const handleWriteSection = contentJs31.substring(contentJs31.indexOf('async function handleWriteCode'), contentJs31.indexOf('async function verifyCodeCompleteness'));
 if (handleWriteSection.includes('writeCodeToEditor(')) {
   throw new Error('content.js handleWriteCode must NEVER call writeCodeToEditor! Monaco editor writes are strictly forbidden in Terminal architecture.');
 }
+const verifySection = contentJs31.substring(contentJs31.indexOf('async function verifyCodeCompleteness'), contentJs31.indexOf('async function handleSubmit'));
+if (verifySection.includes('writeCodeToEditor(')) {
+  throw new Error('content.js verifyCodeCompleteness must NEVER call writeCodeToEditor! Monaco editor writes are strictly forbidden in Terminal architecture.');
+}
 
-// 4. solver-ui.js copy terminal script must include safe.directory and npx -y
+// 4. Proactive Monaco Artifact Cleaning across main-world-bridge, frame-editor, and background
+const bridgeJs31 = fs.readFileSync(path.join(__dirname, 'content/main-world-bridge.js'), 'utf-8');
+if (!bridgeJs31.includes('AP_CLEAN_EDITOR_ARTIFACTS') ||
+    !frameEditorJs31.includes('AP_CLEAN_EDITOR_ARTIFACTS') ||
+    !bgJs31.includes('AP_CLEAN_EDITOR_ARTIFACTS')) {
+  throw new Error('AP_CLEAN_EDITOR_ARTIFACTS must be implemented across main-world-bridge.js, frame-editor.js, and background.js!');
+}
+
+// 5. solver-ui.js copy terminal script must include safe.directory, sed cleanups, and npx -y
 const uiJs31 = fs.readFileSync(path.join(__dirname, 'content/solver-ui.js'), 'utf-8');
-if (!uiJs31.includes('safe.directory') || !uiJs31.includes('npx -y prisma')) {
-  throw new Error('solver-ui.js 1-click terminal script must include safe.directory and npx -y!');
+if (!uiJs31.includes('safe.directory') || !uiJs31.includes('npx -y prisma') || !uiJs31.includes('sed -i')) {
+  throw new Error('solver-ui.js 1-click terminal script must include safe.directory, sed cleanups, and npx -y!');
 }
 
 console.log('   ✓ Strict Zero-Monaco-Corruption, Container Permissions & Clean Terminal Execution verified');

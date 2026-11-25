@@ -416,6 +416,29 @@
       return true;
     }
 
+    if (msg.op === 'AP_CLEAN_EDITOR_ARTIFACTS') {
+      (async () => {
+        try {
+          const reqId = 'ap_clean_' + Date.now();
+          const handler = (evt) => {
+            if (evt.data && evt.data.action === 'AP_CLEAN_EDITOR_ARTIFACTS_RESULT' && evt.data.id === reqId) {
+              window.removeEventListener('message', handler);
+              sendResponse({ ok: !!evt.data.ok, cleanedCount: evt.data.cleanedCount || 0 });
+            }
+          };
+          window.addEventListener('message', handler);
+          window.postMessage({ action: 'AP_CLEAN_EDITOR_ARTIFACTS', id: reqId }, '*');
+          setTimeout(() => {
+            window.removeEventListener('message', handler);
+            sendResponse({ ok: true, cleanedCount: 0 });
+          }, 600);
+        } catch (e) {
+          sendResponse({ ok: false, error: e.message });
+        }
+      })();
+      return true;
+    }
+
     if (msg.op === 'AP_INJECT_TERMINAL_COMMAND') {
       (async () => {
         const cmd = msg.data?.command || msg.command || msg.data?.script || '';
@@ -425,11 +448,15 @@
           return;
         }
 
+        // STRICT SAFETY GUARD: Unfocus Monaco editor textareas immediately!
+        document.querySelectorAll('.monaco-editor textarea, textarea.inputarea').forEach(t => { try { t.blur(); } catch(e) {} });
+
         const ta = termInfo.textarea || document.querySelector('textarea.xterm-helper-textarea, .terminal textarea, .integrated-terminal textarea, [class*="xterm" i] textarea');
         if (ta && ta.closest('.monaco-editor')) {
           sendResponse({ ok: false, error: 'Targeted editor instead of terminal' });
           return;
         }
+
         if (ta) {
           try { ta.focus(); } catch(e) {}
         }
@@ -438,17 +465,42 @@
         }
 
         let pasted = false;
-        const termEl = termInfo.element;
-        for (const k of ['xterm', '_xterm', '__xterm']) {
-          if (termEl && termEl[k] && typeof termEl[k].paste === 'function') {
-            try {
-              termEl[k].paste(cmd + '\n');
-              pasted = true;
-              break;
-            } catch(e) {}
+
+        // 1. Try Main-World xterm.paste via postMessage to main-world-bridge
+        try {
+          const reqId = 'ap_term_' + Date.now();
+          const mainPromise = new Promise((resolve) => {
+            const h = (evt) => {
+              if (evt.data && evt.data.action === 'AP_INJECT_TERMINAL_MAIN_RESULT' && evt.data.id === reqId) {
+                window.removeEventListener('message', h);
+                resolve(!!evt.data.pasted);
+              }
+            };
+            window.addEventListener('message', h);
+            setTimeout(() => {
+              window.removeEventListener('message', h);
+              resolve(false);
+            }, 300);
+          });
+          window.postMessage({ action: 'AP_INJECT_TERMINAL_MAIN', id: reqId, data: { command: cmd } }, '*');
+          pasted = await mainPromise;
+        } catch (e) {}
+
+        // 2. Try direct element xterm property if available in current scope
+        if (!pasted) {
+          const termEl = termInfo.element;
+          for (const k of ['xterm', '_xterm', '__xterm']) {
+            if (termEl && termEl[k] && typeof termEl[k].paste === 'function') {
+              try {
+                termEl[k].paste(cmd + '\n');
+                pasted = true;
+                break;
+              } catch(e) {}
+            }
           }
         }
 
+        // 3. Try xterm-helper-textarea input event (NEVER document.execCommand!)
         if (!pasted && ta) {
           try {
             const dt = new DataTransfer();
@@ -459,18 +511,18 @@
               cancelable: true
             });
             ta.dispatchEvent(pasteEvt);
-            pasted = true;
           } catch(e) {}
+
+          // STRICT SAFETY RULE: NEVER call document.execCommand('insertText') here!
+          // Calling document.execCommand in VS Code web targets Monaco editor if xterm is not natively active.
           try {
-            ta.value = '';
-            document.execCommand('insertText', false, cmd + '\n');
-          } catch(e) {}
-          try {
+            ta.value = cmd + '\n';
+            ta.dispatchEvent(new InputEvent('input', { data: cmd + '\n', inputType: 'insertText', bubbles: true }));
             ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
           } catch(e) {}
         }
 
-        sendResponse({ ok: true, pasted, rect: termInfo.rect });
+        sendResponse({ ok: pasted, pasted, rect: termInfo.rect });
       })();
       return true;
     }
