@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
-import { extractCodeBlock, buildPrompt, formatCodeIndentation, parseMultiFileSolution, stripComments } from './utils/llm.js';
+import { extractCodeBlock, buildPrompt, formatCodeIndentation, parseMultiFileSolution, stripComments, callGroq, callGemini } from './utils/llm.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1206,5 +1206,117 @@ if (!optionsHtml36.includes('gemini-2.5-pro')) {
   throw new Error('options.html must include gemini-2.5-pro option!');
 }
 console.log('   ✓ Debug Model Escalation (Pro / High Thinking) & Dual Error Property Rules verified');
+
+// ---------------------------------------------------------------------------
+// 37. Empty Response Fallback (Groq/Gemini) & Mocha/ANSI Log Parser Recovery
+// ---------------------------------------------------------------------------
+console.log('37. Testing Empty Response Fallback (Groq/Gemini) & Mocha/ANSI Log Parser Recovery...');
+const contentJs37 = fs.readFileSync(path.join(__dirname, 'content/content.js'), 'utf-8');
+
+if (contentJs37.includes('\\z')) {
+  throw new Error('content.js must NOT use invalid JavaScript RegExp escape \\z! Use (?![\\s\\S]) for end-of-string.');
+}
+
+// Extract diagnoseErrorMessage & parseAndStructureFailures to verify runtime parsing
+const diagStart = contentJs37.indexOf('  function diagnoseErrorMessage(');
+const buildStart = contentJs37.indexOf('  // Shared helper: Builds comprehensive debugging prompt');
+if (diagStart === -1 || buildStart === -1) {
+  throw new Error('Could not locate diagnoseErrorMessage/parseAndStructureFailures in content.js');
+}
+const parserChunk = contentJs37.slice(diagStart, buildStart);
+const runParser = new Function('terminalOutput', 'subRes', `${parserChunk}\nreturn parseAndStructureFailures(terminalOutput, subRes);`);
+
+// Case A: Mocha output with colons in test titles AND no trailing "2 failing" line (EOF test)
+const mochaNoFooter = [
+  '  1) Auth API',
+  '       POST /login: should set session cookie:',
+  '     AssertionError: expected 500 to equal 200',
+  '      -500',
+  '      +200',
+  '      at Context.<anonymous> (test/auth.test.js:25:16)',
+  '',
+  '  2) Protected route: returns 401 without token:',
+  '     AssertionError: expected 200 to equal 401',
+  '      at Context.<anonymous> (test/auth.test.js:40:16)'
+].join('\n');
+const parsedMocha = runParser(mochaNoFooter, null);
+if (parsedMocha.length !== 2 || !parsedMocha[0].title.includes('POST /login') || !parsedMocha[1].title.includes('Protected route')) {
+  throw new Error(`Expected 2 parsed Mocha failures at EOF with colons in titles, got ${parsedMocha.length}: ${JSON.stringify(parsedMocha)}`);
+}
+
+// Case B: Unnumbered ANSI-colored AssertionError output (must not yield 0 parsed failures)
+const rawAnsiTrace = '\u001b[31mAssertionError: expected 400 to equal 201\u001b[0m\n    at Context.<anonymous> (test/api.test.js:12:10)\n    at processImmediate (node:internal/timers:478:21)';
+const parsedFallback = runParser(rawAnsiTrace, null);
+if (parsedFallback.length === 0 || !parsedFallback[0].diagnosis.includes('HTTP Status mismatch')) {
+  throw new Error(`Expected fallback parser to extract ANSI AssertionError with HTTP Status diagnosis, got: ${JSON.stringify(parsedFallback)}`);
+}
+
+// Case C: Mock fetch to verify Groq & Gemini recover from empty reasoning responses instead of crashing
+const origFetch = globalThis.fetch;
+try {
+  let groqAttempt = 0;
+  globalThis.fetch = async (_url, init) => {
+    groqAttempt++;
+    const reqBody = JSON.parse(init.body);
+    if (reqBody.reasoning_effort === 'high') {
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: '' }, finish_reason: 'length' }] })
+      };
+    }
+    if (reqBody.reasoning_effort === 'medium') {
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: null }, finish_reason: 'length' }] })
+      };
+    }
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: "```javascript\nconsole.log('recovered-groq');\n```" }, finish_reason: 'stop' }]
+      })
+    };
+  };
+  const groqRes = await callGroq('fix code', {
+    groqKey: 'test-groq-key',
+    isDebugMode: true,
+    activeFile: 'src/index.js',
+    workspaceFiles: ['src/index.js']
+  });
+  if (groqAttempt < 3 || !groqRes.code.includes('recovered-groq')) {
+    throw new Error(`Expected callGroq to recover after empty reasoning payloads, attempt=${groqAttempt}, code=${groqRes.code}`);
+  }
+
+  let geminiAttempt = 0;
+  globalThis.fetch = async () => {
+    geminiAttempt++;
+    if (geminiAttempt === 1) {
+      return {
+        ok: true,
+        json: async () => ({
+          candidates: [{ content: { parts: [{ thought: true, text: 'internal thoughts only' }] }, finishReason: 'MAX_TOKENS' }]
+        })
+      };
+    }
+    return {
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: "```javascript\nconsole.log('recovered-gemini');\n```" }] }, finishReason: 'STOP' }]
+      })
+    };
+  };
+  const geminiRes = await callGemini('fix code', {
+    geminiKey: 'test-gemini-key',
+    isDebugMode: true,
+    activeFile: 'src/index.js',
+    workspaceFiles: ['src/index.js']
+  });
+  if (geminiAttempt < 2 || !geminiRes.code.includes('recovered-gemini')) {
+    throw new Error(`Expected callGemini to recover after empty thought-only response, attempt=${geminiAttempt}, code=${geminiRes.code}`);
+  }
+} finally {
+  globalThis.fetch = origFetch;
+}
+console.log('   ✓ Empty Response Fallback (Groq/Gemini) & Mocha/ANSI Log Parser Recovery verified');
 
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');

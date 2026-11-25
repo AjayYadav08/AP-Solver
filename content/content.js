@@ -1504,16 +1504,27 @@
     const seenErrors = new Set();
 
     if (terminalOutput) {
+      // Strip ANSI escapes & normalize CRLF before regex matching
+      const cleanTerm = terminalOutput
+        .replace(/\u001b\[[0-9;]*[a-zA-Z]/g, '')
+        .replace(/\r\n?/g, '\n');
+
       // 1. Parse Mocha failure blocks ("1) Suite test name:\n   AssertionError: ...")
-      const mochaFailureRegex = /(?:^|\n)\s*(\d+)\)\s+([^\n:]+):?\s*\n([\s\S]*?)(?=(?:\n\s*\d+\)\s+[^\n:]+:?|\n\s*(?:\d+\s+failing|\d+\s+passing|\z)))/g;
+      // Supports colons inside test titles (e.g. "POST /login: should ...") and true EOF via (?![\s\S])
+      const mochaFailureRegex = /(?:^|\n)\s*(\d+)\)\s+([^\n]+?)\s*:?\s*\n([\s\S]*?)(?=(?:\n\s*\d+\)\s+\S[^\n]*\n|\n\s*(?:\d+\s+failing|\d+\s+passing)|(?![\s\S])))/g;
       let match;
-      while ((match = mochaFailureRegex.exec(terminalOutput)) !== null) {
+      while ((match = mochaFailureRegex.exec(cleanTerm)) !== null) {
         const num = match[1];
-        const title = match[2].trim();
+        let title = match[2].replace(/:\s*$/, '').trim();
         const block = match[3].trim();
         const lines = block.split('\n').map(l => l.trim()).filter(Boolean);
 
-        const errLine = lines.find(l => /AssertionError|TypeError|ReferenceError|SyntaxError|PrismaClient|Cannot find module|Error:|timeout of/i.test(l)) || lines[0] || 'Assertion Failure';
+        // Merge multi-line Mocha suite + sub-test title when lines[0] is the indented test name ending in ':'
+        if (lines.length > 1 && /:\s*$/.test(lines[0]) && !/^(?:AssertionError|TypeError|ReferenceError|SyntaxError|Error:|PrismaClient|at\s+)/i.test(lines[0])) {
+          title = `${title} › ${lines.shift().replace(/:\s*$/, '').trim()}`;
+        }
+
+        const errLine = lines.find(l => /AssertionError|TypeError|ReferenceError|SyntaxError|PrismaClient|Cannot find module|Error:|timeout of|expected\s+/i.test(l)) || lines[0] || 'Assertion Failure';
         const diffLines = lines.filter(l => /^[+-]\s|expected\s+|actual\s+|to equal|to deeply equal/i.test(l));
         const diffText = diffLines.slice(0, 4).join('\n');
         const stackLine = lines.find(l => /^at\s+.+\((.+:\d+:\d+)\)/.test(l) || /^at\s+.+:\d+:\d+/.test(l)) || '';
@@ -1532,8 +1543,8 @@
       }
 
       // 2. Parse Jest failure blocks ("● Suite › Test Name")
-      const jestFailureRegex = /(?:^|\n)\s*●\s+([^\n]+)\n([\s\S]*?)(?=(?:\n\s*●\s+|\n\s*Test Suites:|\z))/g;
-      while ((match = jestFailureRegex.exec(terminalOutput)) !== null) {
+      const jestFailureRegex = /(?:^|\n)\s*●\s+([^\n]+)\n([\s\S]*?)(?=(?:\n\s*●\s+|\n\s*(?:Test Suites:|Ran all test suites)|(?![\s\S])))/g;
+      while ((match = jestFailureRegex.exec(cleanTerm)) !== null) {
         const title = match[1].trim();
         const block = match[2].trim();
         const key = title.toLowerCase();
@@ -1556,18 +1567,30 @@
         });
       }
 
-      // 3. Catch module/startup/crash errors when no individual Mocha test block executed
-      if (analysisItems.length === 0 && /Cannot find module|SyntaxError|ReferenceError|TypeError|PrismaClient|EADDRINUSE/i.test(terminalOutput)) {
-        const crashMatch = terminalOutput.match(/((?:SyntaxError|ReferenceError|TypeError|PrismaClient\w*Error|Error: Cannot find module|Error: listen EADDRINUSE)[^\n]*(?:\n[^\n]+){0,3})/);
-        if (crashMatch) {
-          analysisItems.push({
-            num: 1,
-            title: 'Startup / Runtime Crash',
-            error: crashMatch[1].trim(),
-            diff: null,
-            stack: null,
-            diagnosis: diagnoseErrorMessage(crashMatch[1], 'Startup Crash', '')
-          });
+      // 3. Fallback extractor when no numbered Mocha/Jest block matched (e.g. startup crashes, hooks, wrapped xterm lines, or AssertionError traces)
+      if (analysisItems.length === 0) {
+        const rawLines = cleanTerm.split('\n').map(l => l.trim()).filter(Boolean);
+        for (let i = 0; i < rawLines.length && analysisItems.length < 5; i++) {
+          const line = rawLines[i];
+          if (/^(?:AssertionError|SyntaxError|ReferenceError|TypeError|RangeError|PrismaClient\w*Error|Error:|Uncaught|FAIL\b|[✕✗×]\s+)/i.test(line) ||
+              /Cannot find module|EADDRINUSE|ECONNREFUSED|timeout of \d+ms exceeded|expected .+ to /i.test(line)) {
+            const snippet = rawLines.slice(i, Math.min(rawLines.length, i + 4)).join(' | ');
+            const sig = snippet.slice(0, 120).toLowerCase();
+            if (!seenErrors.has(sig)) {
+              seenErrors.add(sig);
+              const titleGuess = (i > 0 && rawLines[i - 1].length > 4 && rawLines[i - 1].length < 140 && !/^at\s+/.test(rawLines[i - 1]))
+                ? rawLines[i - 1].replace(/[:\-]\s*$/, '')
+                : 'Runtime / Test Failure';
+              analysisItems.push({
+                num: analysisItems.length + 1,
+                title: titleGuess,
+                error: snippet,
+                diff: null,
+                stack: rawLines.slice(i, Math.min(rawLines.length, i + 8)).find(l => /^at\s+/.test(l)) || null,
+                diagnosis: diagnoseErrorMessage(snippet, titleGuess, snippet)
+              });
+            }
+          }
         }
       }
     }

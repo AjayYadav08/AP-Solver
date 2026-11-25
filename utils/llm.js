@@ -812,8 +812,8 @@ export async function callGemini(prompt, settings) {
             continue;
           }
 
-          // If 404 (not found), 429 (quota exhausted on Pro/Debug tier), or 503 (high demand), try next model candidate
-          if (resp.status === 404 || resp.status === 503 || resp.status === 429 || /not found|no longer available|high demand|unavailable|quota/i.test(msg)) {
+          // If 404 (not found), 429 (quota exhausted), or 5xx (overload/transient), try next model candidate
+          if (resp.status === 404 || resp.status === 429 || resp.status >= 500 || /not found|no longer available|high demand|unavailable|quota/i.test(msg)) {
             console.warn(`[AP-Solver] Gemini model ${model} unavailable (${resp.status}), trying next candidate...`);
             lastError = new Error(msg);
             break; // Try next model in uniqueModels
@@ -823,13 +823,21 @@ export async function callGemini(prompt, settings) {
         }
 
         const data = await resp.json();
-        const parts = data.candidates?.[0]?.content?.parts || [];
-        // Extract text from non-thought parts
+        const candidate = data.candidates?.[0];
+        const parts = candidate?.content?.parts || [];
+        // Extract text ONLY from non-thought parts (never treat raw internal thought prose as code)
+        const hasThoughtParts = parts.some(p => p.thought);
         const codeParts = parts.filter(p => !p.thought && p.text).map(p => p.text);
-        const text = (codeParts.length > 0 ? codeParts.join('\n') : parts.map(p => p.text || '').join('\n')).trim();
+        const text = (codeParts.length > 0
+          ? codeParts.join('\n')
+          : (hasThoughtParts ? '' : parts.map(p => p.text || '').join('\n'))
+        ).trim();
 
         if (!text) {
-          throw new Error('Gemini returned an empty response.');
+          const finishReason = candidate?.finishReason || 'unknown';
+          console.warn(`[AP-Solver] Gemini model ${model} returned empty content (finishReason=${finishReason}), trying fallback config...`);
+          lastError = new Error(`Gemini returned an empty response (${finishReason}).`);
+          continue;
         }
 
         const files = parseMultiFileSolution(text, settings.activeFile, settings.workspaceFiles);
@@ -846,7 +854,7 @@ export async function callGemini(prompt, settings) {
           lastError = new Error(`Gemini model ${model} request timed out.`);
           break; // Try next model
         }
-        if (err.message && (err.message.includes('404') || err.message.includes('503') || err.message.includes('429') || /unavailable|no longer available|quota/i.test(err.message))) {
+        if (err.message && (err.message.includes('404') || err.message.includes('429') || /\b5\d{2}\b/.test(err.message) || /unavailable|no longer available|quota|empty response|Failed to fetch|network/i.test(err.message))) {
           lastError = err;
           break; // Try next model
         }
@@ -874,7 +882,8 @@ export async function callGroq(prompt, settings) {
     requestedModel,
     'openai/gpt-oss-120b',
     'qwen/qwen3.8-27b',
-    'openai/gpt-oss-20b'
+    'openai/gpt-oss-20b',
+    'llama-3.3-70b-versatile'
   ].filter(Boolean);
   const uniqueModels = [...new Set(modelsToTry)];
 
@@ -903,6 +912,16 @@ export async function callGroq(prompt, settings) {
               { role: 'user', content: prompt }
             ],
             temperature: 0.1,
+            max_tokens: 8192,
+            reasoning_effort: 'medium'
+          },
+          {
+            model,
+            messages: [
+              { role: 'system', content: SYSTEM_PROMPT },
+              { role: 'user', content: prompt }
+            ],
+            temperature: 0.1,
             max_tokens: 8192
           }
         ]
@@ -919,6 +938,10 @@ export async function callGroq(prompt, settings) {
         ];
 
     for (const payload of payloadsToTry) {
+      const controller = new AbortController();
+      const timeoutMs = payload.reasoning_effort ? 45000 : 35000;
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+
       try {
         const resp = await fetch(url, {
           method: 'POST',
@@ -926,8 +949,10 @@ export async function callGroq(prompt, settings) {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${apiKey}`
           },
-          body: JSON.stringify(payload)
+          body: JSON.stringify(payload),
+          signal: controller.signal
         });
+        clearTimeout(timer);
 
         if (!resp.ok) {
           const errText = await resp.text();
@@ -939,14 +964,15 @@ export async function callGroq(prompt, settings) {
             msg += `: ${errText}`;
           }
 
-          // If 400 Bad Request rejects reasoning_effort or max_tokens, fall back to standard payload
-          if (resp.status === 400 && /reasoning|max_tokens|unsupported|invalid/i.test(msg)) {
-            console.warn(`[AP-Solver] Groq debug parameter not supported for ${model}, retrying standard payload...`);
+          // If 400 Bad Request rejects reasoning_effort or max_tokens, fall back to next payload
+          if (resp.status === 400 && /reasoning|effort|max_tokens|unsupported|invalid/i.test(msg)) {
+            console.warn(`[AP-Solver] Groq debug parameter not supported for ${model}, retrying fallback payload...`);
+            lastError = new Error(msg);
             continue;
           }
 
-          // If 404 (model does not exist), 413 (TPM limit exceeded), or 429 (rate limit), try next model
-          if (resp.status === 404 || resp.status === 413 || resp.status === 429 || /does not exist|access|decommissioned|rate limit|too large|TPM|RPM/i.test(msg)) {
+          // If 404, 413 (TPM limit), 429 (rate limit), or 5xx (transient error), try next model
+          if (resp.status === 404 || resp.status === 413 || resp.status === 429 || resp.status >= 500 || /does not exist|access|decommissioned|rate limit|too large|TPM|RPM|unavailable|overloaded/i.test(msg)) {
             console.warn(`[AP-Solver] Groq model ${model} unavailable (${resp.status}), trying next model...`);
             lastError = new Error(msg);
             break;
@@ -956,9 +982,14 @@ export async function callGroq(prompt, settings) {
         }
 
         const data = await resp.json();
-        const text = data.choices?.[0]?.message?.content;
+        const choice = data.choices?.[0];
+        const rawContent = choice?.message?.content;
+        const text = typeof rawContent === 'string' ? rawContent.trim() : '';
         if (!text) {
-          throw new Error('Groq returned an empty response.');
+          const finishReason = choice?.finish_reason || 'unknown';
+          console.warn(`[AP-Solver] Groq ${model} returned empty content (finish_reason=${finishReason}), retrying fallback payload/model...`);
+          lastError = new Error(`Groq returned an empty response (${finishReason}).`);
+          continue;
         }
 
         const files = parseMultiFileSolution(text, settings.activeFile, settings.workspaceFiles);
@@ -970,7 +1001,13 @@ export async function callGroq(prompt, settings) {
           debugEscalated: isDebug
         };
       } catch (err) {
-        if (err.message && (err.message.includes('404') || err.message.includes('413') || err.message.includes('429') || /too large|TPM|RPM|rate limit/i.test(err.message))) {
+        clearTimeout(timer);
+        if (err.name === 'AbortError') {
+          console.warn(`[AP-Solver] Groq ${model} timed out after ${timeoutMs}ms, trying fallback...`);
+          lastError = new Error(`Groq model ${model} timed out.`);
+          continue;
+        }
+        if (err.message && (err.message.includes('404') || err.message.includes('413') || err.message.includes('429') || /\b5\d{2}\b/.test(err.message) || /too large|TPM|RPM|rate limit|empty response|Failed to fetch|network/i.test(err.message))) {
           lastError = err;
           break;
         }
