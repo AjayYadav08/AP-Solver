@@ -130,12 +130,17 @@
       }
     }
 
-    // From Explorer tree DOM
+    // From Explorer tree DOM (preserve aria-label folder hints when present)
     const treeRows = [...document.querySelectorAll('.monaco-list-row, [role="treeitem"]')];
     for (const row of treeRows) {
       const labelEl = row.querySelector('.label-name') || row;
       const text = labelEl.textContent.trim();
+      const aria = (row.getAttribute('aria-label') || '').trim();
       if (text && text.includes('.') && !/^\s*$/.test(text)) {
+        if (aria && /[/\\]/.test(aria)) {
+          const pathMatch = aria.match(/((?:src|test|tests|__tests__|prisma|db|routes|controllers|middleware|models|utils)\/[^\s,]+)/i);
+          if (pathMatch) files.add(pathMatch[1]);
+        }
         files.add(text);
       }
     }
@@ -420,17 +425,18 @@
           }
         }
 
-        // Also extract all loaded workspace files in Monaco (JS, TS, Prisma, JSON, TXT)
+        // Also extract all loaded workspace files in Monaco (JS, TS, Prisma, JSON, TXT, .env)
         const referenceFiles = {};
         if (monaco && monaco.editor) {
           const models = monaco.editor.getModels ? monaco.editor.getModels() : [];
           for (const m of models) {
             const p = m.uri?.path || '';
             const fname = p.split('/').pop();
-            if (fname && (fname.endsWith('.js') || fname.endsWith('.ts') || fname.endsWith('.prisma') || fname.endsWith('.json') || fname.endsWith('.txt')) &&
-                !fname.includes('package-lock') && !fname.includes('node_modules') && !/inmemory|workbench/i.test(p) && !/^\d+$/.test(fname)) {
+            if (fname && (fname.endsWith('.js') || fname.endsWith('.ts') || fname.endsWith('.prisma') || fname.endsWith('.json') || fname.endsWith('.txt') || fname === '.env') &&
+                !fname.includes('package-lock') && !fname.includes('node_modules') && !p.includes('node_modules') && !/inmemory|workbench/i.test(p) && !/^\d+$/.test(fname)) {
               const val = m.getValue();
-              const cleanKey = p.includes('src/') ? 'src/' + fname : (p.includes('test/') ? 'test/' + fname : (p.includes('__tests__/') ? '__tests__/' + fname : fname));
+              const subMatch = p.match(/\/((?:test|tests|__tests__|prisma|db|routes|controllers|middleware|models|utils)\/[^/]+)$/i);
+              const cleanKey = subMatch ? subMatch[1] : (p.includes('src/') ? 'src/' + fname : fname);
               if (val && val.length < 35000) {
                 referenceFiles[cleanKey] = val;
               }
@@ -699,7 +705,7 @@
 
     if (action === 'AP_INJECT_TERMINAL_MAIN') {
       try {
-        const cmd = data?.command || '';
+        const cmd = payload?.command || '';
         // Strict guard: Unfocus all Monaco editors to guarantee Monaco is untouched
         document.querySelectorAll('.monaco-editor textarea, textarea.inputarea').forEach(t => { try { t.blur(); } catch(e) {} });
 

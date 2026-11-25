@@ -816,7 +816,34 @@
 
     // 2. Read Editor
     cachedEditor = await queryActiveEditor();
-    if (cachedEditor) {
+    if (!cachedEditor) {
+      cachedEditor = { code: '', language: 'javascript', activeFile: 'src/index.js', allFiles: [], referenceFiles: {} };
+    }
+
+    // 3. Probe Container Workspace via Terminal (reads package.json, schema.prisma, .env, & test/*.js files)
+    try {
+      ui.addLog('🔎 [Workspace Probe] Scanning package.json & test suite files in container...', 'normal');
+      const probeResp = await sendMsg({ op: 'AP_PROBE_WORKSPACE' }, 10000);
+      if (probeResp && probeResp.ok && probeResp.files && Object.keys(probeResp.files).length > 0) {
+        const combinedRefs = { ...(cachedEditor.referenceFiles || {}) };
+        for (const [k, v] of Object.entries(probeResp.files)) {
+          if (v && (!combinedRefs[k] || k === 'package.json' || /(?:test|spec|\.prisma|\.env)/i.test(k))) {
+            combinedRefs[k] = v;
+          }
+        }
+        cachedEditor.referenceFiles = combinedRefs;
+        const mergedList = new Set([...(cachedEditor.allFiles || []), ...(probeResp.allFiles || []), ...Object.keys(probeResp.files)]);
+        cachedEditor.allFiles = [...mergedList];
+
+        const testCount = Object.keys(probeResp.files).filter(f => /(?:^|\/)(?:test|tests|__tests__)\/|(?:\.test|\.spec)\.(?:js|ts|mjs|cjs)$/i.test(f)).length;
+        const hasPkg = !!probeResp.files['package.json'];
+        ui.addLog(`✓ [Workspace Probe] Loaded ${hasPkg ? 'package.json, ' : ''}${testCount} test file(s), ${cachedEditor.allFiles.length} total workspace file(s)!`, 'ok');
+      }
+    } catch (probeErr) {
+      console.warn('[AP-Solver] Workspace probe skipped cleanly:', probeErr);
+    }
+
+    if (cachedEditor && cachedEditor.code !== undefined) {
       cachedEditor.activeFile = sanitizeActiveFile(cachedEditor.activeFile);
       const fileCount = cachedEditor.allFiles?.length || 1;
       ui.addLog(`Editor detected: "${cachedEditor.activeFile}" (${cachedEditor.code.split('\n').length} lines, ${fileCount} file(s) in workspace)`, 'ok');
@@ -865,16 +892,19 @@
       cachedEditor = await queryActiveEditor();
     }
 
+    const isDebug = !!feedback;
     const provider = ui.options.provider || 'race';
-    const providerName = provider === 'gemini' 
-      ? 'Google Gemini (3.8 Flash)' 
-      : provider === 'groq' 
-        ? 'Groq AI (GPT OSS 120B)' 
-        : provider === 'race'
-          ? '⚡ Turbo Race (Groq vs Gemini Parallel)'
-          : 'OpenAI';
+    const providerName = isDebug
+      ? '🧠 Debug Escalation (High-Reasoning Pro)'
+      : (provider === 'gemini'
+          ? 'Google Gemini (3.8 Flash)'
+          : provider === 'groq'
+            ? 'Groq AI (GPT OSS 120B)'
+            : provider === 'race'
+              ? '⚡ Turbo Race (Groq vs Gemini Parallel)'
+              : 'OpenAI');
 
-    ui.setStatus(`Generating solution with ${providerName}...`, feedback ? 'Refining code based on failed test cases...' : 'Crafting 100% test-compliant code...', 'running', true);
+    ui.setStatus(`Generating solution with ${providerName}...`, feedback ? 'Deep-analyzing failure traces & escalating model...' : 'Crafting 100% test-compliant code...', 'running', true);
     ui.addLog(`Calling AI solver (${providerName})...`);
 
     // Ensure all currently written files from previous attempt are in referenceFiles
@@ -1221,7 +1251,6 @@
       bashScript += `if [ -f src/seed.js ]; then node src/seed.js || true; elif [ -f seed.js ]; then node seed.js || true; fi && `;
     }
     bashScript += `(git add -A && git commit -m "solution" 2>/dev/null || true) && `;
-    bashScript += `(npm test 2>&1 || npx mocha 2>&1 || true) > /tmp/ap_test_run.log 2>&1 && head -n 35 /tmp/ap_test_run.log 2>/dev/null || true && `;
     bashScript += `echo "=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ==="`;
 
     // Auto-copy terminal script to clipboard as an instant superpower
@@ -1272,9 +1301,16 @@
 
     // Wait up to 25 seconds for the user or automated runner to confirm terminal paste
     for (let waitSec = 0; waitSec < 25; waitSec++) {
-      if (filesWrittenViaTerminal) break;
+      if (filesWrittenViaTerminal) {
+        ui.addLog(`⚡ [Terminal-First Architecture] Files confirmed written cleanly to container disk via Terminal! Monaco editor completely bypassed.`, 'ok');
+        for (const f of filesToWrite) {
+          ui.addLog(`Erasing initial code & writing complete solution into "${f.filePath}"...`, 'info');
+          ui.setFileStatus(f.filePath, 'injected');
+        }
+        return { ok: true, updatedFiles: filesToWrite.map(f => f.filePath), failedFiles: [] };
+      }
 
-      // Active Terminal Output Monitor: Check if script finished executing in terminal
+      // Active Terminal Output Monitor: Check if manual paste script finished executing in terminal
       try {
         const termCandidates = [...document.querySelectorAll('.xterm-rows, pre, code, [class*="terminal" i]')];
         for (const ifr of document.querySelectorAll('iframe')) {
@@ -1284,16 +1320,16 @@
           } catch(e) {}
         }
         for (const el of termCandidates) {
-          if ((el.innerText || el.textContent || '').includes('=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ===')) {
+          const rows = (el.innerText || el.textContent || '').split('\n');
+          if (rows.some(r => r.trim() === '=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ===')) {
             filesWrittenViaTerminal = true;
-            ui.addLog(`⚡ [Terminal-First Architecture] Detected "=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ===" in terminal output! Auto-proceeding to submit...`, 'ok');
+            ui.addLog(`⚡ [Terminal-First Architecture] Detected "=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ===" in terminal output! Auto-proceeding...`, 'ok');
             break;
           }
         }
       } catch(e) {}
 
       if (filesWrittenViaTerminal) {
-        ui.addLog(`⚡ [Terminal-First Architecture] Files confirmed written cleanly to container disk via Terminal! Monaco editor completely bypassed.`, 'ok');
         for (const f of filesToWrite) {
           ui.addLog(`Erasing initial code & writing complete solution into "${f.filePath}"...`, 'info');
           ui.setFileStatus(f.filePath, 'injected');
@@ -1422,11 +1458,54 @@
     }
   }
 
+  function diagnoseErrorMessage(errText, title = '', diffText = '') {
+    const combined = `${errText || ''} ${diffText || ''}`;
+    if (/Cannot find module\s+['"]([^'"]+)['"]/i.test(combined)) {
+      const m = combined.match(/Cannot find module\s+['"]([^'"]+)['"]/i);
+      return `Missing Dependency: Module "${m[1]}" is NOT installed! Check package.json dependencies (e.g. use 'bcryptjs' instead of 'bcrypt' if listed) and ONLY import installed packages or Node built-ins.`;
+    }
+    if (/PrismaClientKnownRequestError|P2002|Unique constraint failed/i.test(combined)) {
+      return `Prisma Unique Constraint Failure: Query database (findFirst/findUnique) BEFORE calling create(), and return 400/409 if the record already exists.`;
+    }
+    if (/P2025|Record to .* does not exist|Foreign key constraint/i.test(combined)) {
+      return `Prisma Missing Record / FK Error: Verify record exists first (return 404 if null) and confirm relation/deleteMany cascade order.`;
+    }
+    if (/EADDRINUSE|address already in use/i.test(combined)) {
+      return `Port Conflict (EADDRINUSE): Guard server startup with 'if (process.env.NODE_ENV !== "test") { app.listen(...); }' and ensure 'module.exports = app;' is exported cleanly.`;
+    }
+    if (/expected\s+(\d+)\s+to equal\s+(\d+)/i.test(combined) || /-(\d+)\s*\+(\d+)/.test(combined)) {
+      const m = combined.match(/expected\s+(\d+)\s+to equal\s+(\d+)/i) || combined.match(/-(\d+)\s*\+(\d+)/);
+      if (m) {
+        return `HTTP Status mismatch: Test expects HTTP ${m[2]}, but endpoint returned HTTP ${m[1]}. Return res.status(${m[2]}).json(...) for this condition.`;
+      }
+      return `HTTP Status code mismatch. Check status code sent in response.`;
+    }
+    if (/timeout of\s+\d+ms exceeded|Async callback was not invoked/i.test(combined)) {
+      return `Unhandled Async Timeout: Request hung. Ensure EVERY branch (if, else, catch) uses 'return res.status(...).json(...)' or 'res.send(...)', and all DB/Prisma operations are awaited.`;
+    }
+    if (/SyntaxError.*JSON|Unexpected token/i.test(combined)) {
+      return `JSON SyntaxError / Parse Failure: Add Express malformed-JSON error handler '(err, req, res, next) => ... return res.status(400)...' and check module syntax vs package.json.`;
+    }
+    if (/Cannot read propert|is not defined|TypeError|ReferenceError/i.test(combined)) {
+      return `Runtime / Type Error: Variable, request body, or Prisma model accessed incorrectly. Check req.body || {}, imports, Prisma model casing, and null guards.`;
+    }
+    if (/to deeply equal|to have property|toEqual|toMatchObject/i.test(combined) || (diffText && diffText.length > 0)) {
+      return `Response Body Mismatch: Returned JSON keys/values differ from assertion. Include { error: msg, message: msg } on error responses unless exact single key is required, and omit password fields cleanly.`;
+    }
+    const codeMatch = (title || '').match(/(?:return|status|code)\s+(\d{3})|(\d{3})\s+status/i);
+    if (codeMatch) {
+      const expCode = codeMatch[1] || codeMatch[2];
+      return `Status code requirement: Test explicitly expects HTTP ${expCode}. Ensure endpoint returns res.status(${expCode}).json(...) under these conditions.`;
+    }
+    return 'Verify route handler logic against test assertion.';
+  }
+
   function parseAndStructureFailures(terminalOutput, subRes) {
     const analysisItems = [];
     const seenErrors = new Set();
 
     if (terminalOutput) {
+      // 1. Parse Mocha failure blocks ("1) Suite test name:\n   AssertionError: ...")
       const mochaFailureRegex = /(?:^|\n)\s*(\d+)\)\s+([^\n:]+):?\s*\n([\s\S]*?)(?=(?:\n\s*\d+\)\s+[^\n:]+:?|\n\s*(?:\d+\s+failing|\d+\s+passing|\z)))/g;
       let match;
       while ((match = mochaFailureRegex.exec(terminalOutput)) !== null) {
@@ -1435,26 +1514,10 @@
         const block = match[3].trim();
         const lines = block.split('\n').map(l => l.trim()).filter(Boolean);
 
-        const errLine = lines.find(l => /AssertionError|TypeError|ReferenceError|SyntaxError|Error:|timeout of/i.test(l)) || lines[0] || 'Assertion Failure';
+        const errLine = lines.find(l => /AssertionError|TypeError|ReferenceError|SyntaxError|PrismaClient|Cannot find module|Error:|timeout of/i.test(l)) || lines[0] || 'Assertion Failure';
         const diffLines = lines.filter(l => /^[+-]\s|expected\s+|actual\s+|to equal|to deeply equal/i.test(l));
+        const diffText = diffLines.slice(0, 4).join('\n');
         const stackLine = lines.find(l => /^at\s+.+\((.+:\d+:\d+)\)/.test(l) || /^at\s+.+:\d+:\d+/.test(l)) || '';
-
-        let diagnosis = '';
-        const combined = errLine + ' ' + diffLines.join(' ');
-        if (/expected\s+(\d+)\s+to equal\s+(\d+)/i.test(combined) || /-(\d+)\s*\+(\d+)/.test(combined)) {
-          const m = combined.match(/expected\s+(\d+)\s+to equal\s+(\d+)/i) || combined.match(/-(\d+)\s*\+(\d+)/);
-          if (m) {
-            diagnosis = `HTTP Status mismatch: Test expects HTTP ${m[2]}, but endpoint returned HTTP ${m[1]}. Return res.status(${m[2]}).json(...) for this failure case.`;
-          } else {
-            diagnosis = `HTTP Status code mismatch. Check status code sent in response.`;
-          }
-        } else if (/timeout of\s+\d+ms exceeded/i.test(errLine)) {
-          diagnosis = `Unhandled Async Timeout: Request hung. Ensure EVERY branch (if, else, catch) calls res.status().json() or res.send(), and all DB/Prisma operations are awaited.`;
-        } else if (/Cannot read propert|is not defined|TypeError/i.test(errLine)) {
-          diagnosis = `Runtime / Type Error: Variable or model accessed incorrectly. Check imports, Prisma model casing, and input validation guards.`;
-        } else if (/to deeply equal|to have property/i.test(errLine) || diffLines.length > 0) {
-          diagnosis = `Response Body Mismatch: Returned JSON shape does not match assertions. Ensure exact property keys, types, and values are returned.`;
-        }
 
         const key = title.toLowerCase();
         seenErrors.add(key);
@@ -1463,10 +1526,50 @@
           num,
           title,
           error: errLine,
-          diff: diffLines.slice(0, 4).join('\n') || null,
+          diff: diffText || null,
           stack: stackLine || null,
-          diagnosis: diagnosis || 'Verify route handler logic against test assertion.'
+          diagnosis: diagnoseErrorMessage(errLine, title, diffText)
         });
+      }
+
+      // 2. Parse Jest failure blocks ("● Suite › Test Name")
+      const jestFailureRegex = /(?:^|\n)\s*●\s+([^\n]+)\n([\s\S]*?)(?=(?:\n\s*●\s+|\n\s*Test Suites:|\z))/g;
+      while ((match = jestFailureRegex.exec(terminalOutput)) !== null) {
+        const title = match[1].trim();
+        const block = match[2].trim();
+        const key = title.toLowerCase();
+        if (seenErrors.has(key)) continue;
+        seenErrors.add(key);
+
+        const lines = block.split('\n').map(l => l.trim()).filter(Boolean);
+        const errLine = lines.find(l => /expect\(|Expected:|Received:|Error:|Cannot find module|TypeError/i.test(l)) || lines[0] || 'Jest Assertion Failure';
+        const diffLines = lines.filter(l => /Expected:|Received:|^[+-]\s/i.test(l));
+        const diffText = diffLines.slice(0, 4).join('\n');
+        const stackLine = lines.find(l => /^at\s+.+:\d+:\d+/.test(l)) || '';
+
+        analysisItems.push({
+          num: analysisItems.length + 1,
+          title,
+          error: errLine,
+          diff: diffText || null,
+          stack: stackLine || null,
+          diagnosis: diagnoseErrorMessage(errLine, title, diffText)
+        });
+      }
+
+      // 3. Catch module/startup/crash errors when no individual Mocha test block executed
+      if (analysisItems.length === 0 && /Cannot find module|SyntaxError|ReferenceError|TypeError|PrismaClient|EADDRINUSE/i.test(terminalOutput)) {
+        const crashMatch = terminalOutput.match(/((?:SyntaxError|ReferenceError|TypeError|PrismaClient\w*Error|Error: Cannot find module|Error: listen EADDRINUSE)[^\n]*(?:\n[^\n]+){0,3})/);
+        if (crashMatch) {
+          analysisItems.push({
+            num: 1,
+            title: 'Startup / Runtime Crash',
+            error: crashMatch[1].trim(),
+            diff: null,
+            stack: null,
+            diagnosis: diagnoseErrorMessage(crashMatch[1], 'Startup Crash', '')
+          });
+        }
       }
     }
 
@@ -1475,17 +1578,9 @@
       for (const fi of failItems) {
         const key = fi.name.toLowerCase();
         if (![...seenErrors].some(k => key.includes(k) || k.includes(key))) {
-          let autoDiag = 'Implement missing functionality or fix validation logic for this test case.';
-          const codeMatch = fi.name.match(/(?:return|status|code)\s+(\d{3})|(\d{3})\s+status/i);
-          if (codeMatch) {
-            const expCode = codeMatch[1] || codeMatch[2];
-            autoDiag = `Status code requirement: Test explicitly expects HTTP ${expCode}. Ensure endpoint returns res.status(${expCode}).json(...) under these conditions.`;
-          }
+          let autoDiag = diagnoseErrorMessage(fi.error || '', fi.name, '');
           if (/duplicate|already exists/i.test(fi.name)) {
             autoDiag += ` Query database to check if record already exists before creating.`;
-          }
-          if (/timeout|hang/i.test(fi.name)) {
-            autoDiag += ` Ensure response is sent in all branches to prevent timeout.`;
           }
           if (/token|auth|header/i.test(fi.name)) {
             autoDiag += ` Check authorization header validation and JWT verification.`;
@@ -1505,17 +1600,9 @@
       for (const ft of subRes.failedTests) {
         const key = ft.toLowerCase();
         if (![...seenErrors].some(k => key.includes(k) || k.includes(key))) {
-          let autoDiag = 'Implement missing functionality or fix validation logic for this test case.';
-          const codeMatch = ft.match(/(?:return|status|code)\s+(\d{3})|(\d{3})\s+status/i);
-          if (codeMatch) {
-            const expCode = codeMatch[1] || codeMatch[2];
-            autoDiag = `Status code requirement: Test explicitly expects HTTP ${expCode}. Ensure endpoint returns res.status(${expCode}).json(...) under these conditions.`;
-          }
+          let autoDiag = diagnoseErrorMessage('', ft, '');
           if (/duplicate|already exists/i.test(ft)) {
             autoDiag += ` Query database to check if record already exists before creating.`;
-          }
-          if (/timeout|hang/i.test(ft)) {
-            autoDiag += ` Ensure response is sent in all branches to prevent timeout.`;
           }
 
           analysisItems.push({
@@ -1531,6 +1618,113 @@
     }
 
     return analysisItems;
+  }
+
+  // Shared helper: Builds comprehensive debugging prompt from terminal traces, test failures, and current solution files
+  async function buildDebugFeedback(terminalOutput, subRes, attemptLabel = '1') {
+    const timeStr = subRes?.timestamp || new Date().toLocaleTimeString();
+    const failureItems = parseAndStructureFailures(terminalOutput, subRes);
+
+    const feedbackBlocks = [];
+    feedbackBlocks.push(`=== PREVIOUS ATTEMPT ${attemptLabel} FAILED (${subRes?.passed || 0}/${subRes?.total || 0} PASSED AT ${timeStr}) ===`);
+
+    if (failureItems.length > 0) {
+      feedbackBlocks.push(
+        `🚨 COMPLETE ITEMIZED BREAKDOWN OF ALL ${failureItems.length} FAILING TESTS:\n` +
+        `You MUST simultaneously fix EVERY SINGLE test failure listed below in one shot. Do NOT leave any test unresolved:\n\n` +
+        failureItems.map(item => (
+          `🔴 FAILURE #${item.num}: "${item.title}"\n` +
+          `   - Exact Error: ${item.error}\n` +
+          (item.diff ? `   - Diff / Assertion: ${item.diff}\n` : '') +
+          (item.stack ? `   - Source Location: ${item.stack}\n` : '') +
+          `   - Root Cause & Required Fix: ${item.diagnosis}`
+        )).join('\n\n')
+      );
+    }
+
+    if (subRes?.tests && subRes.tests.length > 0) {
+      const failItems = subRes.tests.filter(t => t.fail);
+      for (const item of failItems) {
+        feedbackBlocks.push(`FAILED TEST: ${item.name}${item.error ? `\nERROR: ${item.error}` : ''}`);
+      }
+    } else if (subRes?.failedTests && subRes.failedTests.length > 0) {
+      feedbackBlocks.push(`FAILED TEST CASES (FROM TAB 2 - ALL SUBMISSIONS TABLE AT ${timeStr}):\n` + subRes.failedTests.map((t) => `- ❌ ${t}`).join('\n'));
+    }
+
+    if (terminalOutput && terminalOutput.length > 25) {
+      const cleanTermTrace = terminalOutput.length > 14000 ? terminalOutput.slice(-14000) : terminalOutput;
+      feedbackBlocks.push(`SIDE BAR TERMINAL & MOCHA ERROR TRACES (FROM TAB 3):\n\`\`\`\n${cleanTermTrace}\n\`\`\``);
+      ui.addLog(`📄 Captured error logs (${terminalOutput.split('\n').length} lines, ${failureItems.length} parsed failure(s)).`, 'ok');
+    }
+
+    // Gather CURRENT CODE of ALL files in src/ (and workspace) — NEVER overwrite terminal-written solution with stale Monaco starter code!
+    const currentFilesMap = new Map();
+
+    // 1. Authoritative code generated & written in previous attempt
+    if (cachedGeneratedFiles && cachedGeneratedFiles.length > 0) {
+      for (const f of cachedGeneratedFiles) {
+        if (f.filePath && f.code) {
+          currentFilesMap.set(f.filePath, f.code);
+        }
+      }
+    }
+
+    // 2. Supplement only untouched workspace files (package.json, test files, config) from editor/probe models
+    if (cachedEditor?.referenceFiles) {
+      for (const [fname, content] of Object.entries(cachedEditor.referenceFiles)) {
+        if (content && !currentFilesMap.has(fname)) {
+          currentFilesMap.set(fname, content);
+        }
+      }
+    }
+    try {
+      const latestEd = await sendMsg({ op: 'AP_QUERY_EDITOR' }, 3000);
+      if (latestEd?.referenceFiles) {
+        for (const [fname, content] of Object.entries(latestEd.referenceFiles)) {
+          if (content && !currentFilesMap.has(fname)) {
+            currentFilesMap.set(fname, content);
+          }
+        }
+      }
+      if (!filesWrittenViaTerminal && latestEd?.activeFile && latestEd?.code) {
+        const act = sanitizeActiveFile(latestEd.activeFile);
+        if (!currentFilesMap.has(act)) {
+          currentFilesMap.set(act, latestEd.code);
+        }
+      }
+    } catch(e) {}
+
+    // 3. Attach full code of all current files to feedbackBlocks
+    if (currentFilesMap.size > 0) {
+      const fileEntries = [];
+      for (const [fname, code] of currentFilesMap.entries()) {
+        const ext = fname.split('.').pop().toLowerCase();
+        const lang = ext === 'json' ? 'json' : (ext === 'prisma' ? 'prisma' : (ext === 'ts' ? 'typescript' : 'javascript'));
+        fileEntries.push(`### File: \`${fname}\`\n\`\`\`${lang}\n${code}\n\`\`\``);
+      }
+      feedbackBlocks.push(
+        `=== CURRENT CODE OF ALL WORKSPACE FILES (SRC) AT TIME OF FAILURE ===\n` +
+        `The test failed with the following exact code currently in the files. Inspect these files thoroughly, identify the root bugs, and return the complete corrected replacement for any file that needs fixing:\n\n` +
+        fileEntries.join('\n\n')
+      );
+      ui.addLog(`📂 Attached current code of ${currentFilesMap.size} workspace file(s) to AI debug prompt.`, 'ok');
+    }
+
+    feedbackBlocks.push(
+      `🔥 MANDATORY ONE-SHOT COMPREHENSIVE DEBUGGING DIRECTIVES:\n` +
+      `1. SIMULTANEOUS RESOLUTION: You MUST resolve EVERY single failed test case #1 through #${Math.max(failureItems.length, 1)} in this single output. Do NOT cherry-pick or fix only one error.\n` +
+      `2. EXAMINE CURRENT CODE & TEST FILES: Cross-reference each failure with the CURRENT CODE of all files above and any discovered grading test files.\n` +
+      `3. STATUS CODE, DUAL ERROR BODY & SYNTAX HANDLER PRECISION:\n` +
+      `   - Return { error: msg, message: msg } on error responses unless exact single-key object equality is tested.\n` +
+      `   - Validate inputs upfront -> res.status(400). Creation routes -> res.status(201). Not found -> res.status(404). Duplicates -> res.status(400/409).\n` +
+      `   - Include Express JSON SyntaxError middleware so malformed payloads return 400.\n` +
+      `4. PREVENT TIMEOUTS: Ensure EVERY route handler wraps async work in try/catch and calls 'return res.status(...).json(...)' in EVERY code branch.\n` +
+      `5. INSTALLED PACKAGES ONLY: Use ONLY dependencies listed in package.json (e.g. bcryptjs vs bcrypt) and match CommonJS vs ESM.\n` +
+      `6. MULTI-FILE OUTPUT: Output EVERY file needing fixes (and keep prisma/schema.prisma + src/seed.js complete if used) with exact filepath on Line 1.\n` +
+      `7. ZERO COMMENTS: Output 100% clean, executable code without any comments.`
+    );
+
+    return feedbackBlocks.join('\n\n');
   }
 
   async function handleOneClickSolve() {
@@ -1581,7 +1775,7 @@
       filesWrittenViaTerminal = false;
 
       // Step 1: Read full question & initial code of all files
-      ui.setStatus('Step 1/6: Reading Full Question & Initial Files...', '', 'running', true);
+      ui.setStatus('Step 1/6: Reading Question, Packages & Test Files...', '', 'running', true);
       ui.addLog('📋 [Step 1/6] Giving full question and initial code of files to AI...', 'ok');
       switchToQuestionTab();
       await sleep(300);
@@ -1596,35 +1790,82 @@
           ui.addLog(`🔁 [Attempt ${attempt}/${maxAttempts}] Generating fix from side bar terminal & retrying steps 4 & 5...`, 'warn');
         }
 
-        // Generate clean complete replacement using multi-tab feedback
-        ui.setStatus(`Attempt ${attempt}/${maxAttempts}: Generating Solution...`, feedback ? 'Refining solution using side bar terminal failure traces...' : 'Generating initial test-compliant solution...', 'running', true);
-        const code = await handleGenerate(feedback);
+        // Inner bounded Local Pre-Test Loop: validates & debugs locally in container Terminal BEFORE clicking slow remote Submit!
+        const maxLocalTries = ui.options.autoRetry ? 3 : 1;
+        let writeBlockedOrIncomplete = false;
 
-        // Step 2 & Step 3: Check files, create any missing files, and write code one by one
-        ui.setStatus(`Attempt ${attempt}/${maxAttempts} - Step 2 & 3: Checking Files & Writing Code...`, 'Checking missing files and writing code one by one...', 'running', true);
-        ui.addLog(`🔍 [Step 2/6] Determining required files & creating any missing files at given location...`, 'ok');
-        ui.addLog('✍️ [Step 3/6] Writing code into all files one by one, erasing initial code...', 'ok');
-        const writeResult = await handleWriteCode();
-        if (!writeResult || !writeResult.ok) {
+        for (let localTry = 1; localTry <= maxLocalTries; localTry++) {
+          filesWrittenViaTerminal = false;
+          const stepTag = localTry > 1 ? `Attempt ${attempt} (Local Debug ${localTry}/${maxLocalTries})` : `Attempt ${attempt}/${maxAttempts}`;
+
+          // Generate clean complete replacement using feedback
+          ui.setStatus(`${stepTag}: Generating Solution...`, feedback ? 'Debug Escalation: analyzing error traces with High-Reasoning model...' : 'Generating initial test-compliant solution...', 'running', true);
+          await handleGenerate(feedback);
+
+          // Step 2 & Step 3: Check files, create any missing files, and write code cleanly via Terminal
+          ui.setStatus(`${stepTag} - Step 2 & 3: Checking Files & Writing Code...`, 'Writing solution files directly to disk via Terminal...', 'running', true);
+          ui.addLog(`🔍 [Step 2/6] Determining required files & creating any missing files at given location...`, 'ok');
+          ui.addLog('✍️ [Step 3/6] Writing code into all files one by one, erasing initial code...', 'ok');
+          const writeResult = await handleWriteCode();
+          if (!writeResult || !writeResult.ok) {
+            const filesToCheck = (cachedGeneratedFiles && cachedGeneratedFiles.length > 0)
+              ? cachedGeneratedFiles
+              : [{ filePath: sanitizeActiveFile(cachedEditor?.activeFile), code: cachedGeneratedCode }];
+            const pending = writeResult?.failedFiles?.length
+              ? writeResult.failedFiles
+              : filesToCheck.map(f => f.filePath);
+
+            ui.addLog(`🛑 [Policy Enforcement] Submission BLOCKED: Do not click submit until each required file's code is updated! (${pending.join(', ')} pending)`, 'bad');
+            ui.setStatus('Submission Blocked', `Waiting for all required files to be updated: ${pending.join(', ')}`, 'error');
+            writeBlockedOrIncomplete = true;
+            break; // STRICT ENFORCEMENT: NEVER CLICK SUBMIT UNTIL EACH REQUIRED FILE'S CODE IS UPDATED!
+          }
+
+          // Code Completeness Check: Submit ONLY when code is complete and non-placeholder!
           const filesToCheck = (cachedGeneratedFiles && cachedGeneratedFiles.length > 0)
             ? cachedGeneratedFiles
             : [{ filePath: sanitizeActiveFile(cachedEditor?.activeFile), code: cachedGeneratedCode }];
-          const pending = writeResult?.failedFiles?.length
-            ? writeResult.failedFiles
-            : filesToCheck.map(f => f.filePath);
+          const isComplete = await verifyCodeCompleteness(filesToCheck);
+          if (!isComplete) {
+            writeBlockedOrIncomplete = true;
+            break;
+          }
 
-          ui.addLog(`🛑 [Policy Enforcement] Submission BLOCKED: Do not click submit until each required file's code is updated! (${pending.join(', ')} pending)`, 'bad');
-          ui.setStatus('Submission Blocked', `Waiting for all required files to be updated: ${pending.join(', ')}`, 'error');
-          ui.setRunning(false);
-          break; // STRICT ENFORCEMENT: NEVER CLICK SUBMIT UNTIL EACH REQUIRED FILE'S CODE IS UPDATED!
+          // Automated Local Pre-Test Verification (runs npm test / Mocha in container Terminal before slow remote submit)
+          ui.setStatus(`${stepTag} - Local Pre-Test Check...`, 'Running container test suite in Terminal first...', 'running', true);
+          ui.addLog(`🧪 [Local Pre-Test] Running local container tests before remote submission...`, 'running');
+          const localRes = await sendMsg({ op: 'AP_RUN_LOCAL_TESTS' }, 42000);
+
+          if (localRes && localRes.status === 'passed') {
+            ui.addLog(`✅ [Local Pre-Test] Passed (${localRes.passed || 'all'} tests passing)! Submitting with confidence...`, 'ok');
+            break;
+          } else if (localRes && localRes.status === 'failed') {
+            ui.addLog(`❌ [Local Pre-Test] Failed locally (${localRes.passed || 0} passed, ${localRes.failed || 0} failed)!`, 'bad');
+            if (ui.options.autoRetry && localTry < maxLocalTries) {
+              feedback = await buildDebugFeedback(
+                localRes.output || '',
+                {
+                  passed: localRes.passed || 0,
+                  total: (localRes.passed || 0) + (localRes.failed || 0),
+                  failedTests: localRes.failed > 0 ? [`${localRes.failed} test(s) failed during local Terminal npm test`] : []
+                },
+                `${attempt}.${localTry} (Local Pre-Test)`
+              );
+              ui.addLog(`🧠 Skipping slow remote Submit — escalating to Debug Model for fast local fix (${localTry + 1}/${maxLocalTries})...`, 'warn');
+              continue;
+            }
+            ui.addLog(`⚠️ Max local debug tries reached (${maxLocalTries}); proceeding to remote Submit...`, 'warn');
+            break;
+          } else {
+            const skipMsg = localRes?.status === 'no_local_tests'
+              ? 'No local test suite present (tests run remotely on Newton grader).'
+              : 'Proceeding directly to remote Newton grader.';
+            ui.addLog(`ℹ️ [Local Pre-Test] ${skipMsg}`, 'normal');
+            break;
+          }
         }
 
-        // Code Completeness Check: Submit ONLY when code is complete and non-placeholder!
-        const filesToCheck = (cachedGeneratedFiles && cachedGeneratedFiles.length > 0)
-          ? cachedGeneratedFiles
-          : [{ filePath: sanitizeActiveFile(cachedEditor?.activeFile), code: cachedGeneratedCode }];
-        const isComplete = await verifyCodeCompleteness(filesToCheck);
-        if (!isComplete) {
+        if (writeBlockedOrIncomplete) {
           ui.setRunning(false);
           break;
         }
@@ -1661,105 +1902,7 @@
           ui.setStatus(`Attempt ${attempt}/${maxAttempts} - Step 5/6: Analyzing Terminal Errors...`, 'Checking error messages in side bar terminal...', 'running', true);
 
           const terminalOutput = await readTerminalOutput(5500);
-
-          const failureItems = parseAndStructureFailures(terminalOutput, subRes);
-
-          // Build rich combined feedback from BOTH Tab 2 (Failed tests) and Tab 3 (Terminal logs)
-          const feedbackBlocks = [];
-          feedbackBlocks.push(`=== PREVIOUS ATTEMPT ${attempt} FAILED (${subRes?.passed || 0}/${subRes?.total || 0} PASSED AT ${timeStr}) ===`);
-
-          if (failureItems.length > 0) {
-            feedbackBlocks.push(
-              `🚨 COMPLETE ITEMIZED BREAKDOWN OF ALL ${failureItems.length} FAILING TESTS:\n` +
-              `You MUST simultaneously fix EVERY SINGLE test failure listed below in one shot. Do NOT leave any test unresolved:\n\n` +
-              failureItems.map(item => (
-                `🔴 FAILURE #${item.num}: "${item.title}"\n` +
-                `   - Exact Error: ${item.error}\n` +
-                (item.diff ? `   - Diff / Assertion: ${item.diff}\n` : '') +
-                (item.stack ? `   - Source Location: ${item.stack}\n` : '') +
-                `   - Root Cause & Required Fix: ${item.diagnosis}`
-              )).join('\n\n')
-            );
-          }
-
-          if (subRes?.tests && subRes.tests.length > 0) {
-            const failItems = subRes.tests.filter(t => t.fail);
-            for (const item of failItems) {
-              feedbackBlocks.push(`FAILED TEST: ${item.name}${item.error ? `\nERROR: ${item.error}` : ''}`);
-            }
-          } else if (subRes?.failedTests && subRes.failedTests.length > 0) {
-            feedbackBlocks.push(`FAILED TEST CASES (FROM TAB 2 - ALL SUBMISSIONS TABLE AT ${timeStr}):\n` + subRes.failedTests.map((t) => `- ❌ ${t}`).join('\n'));
-          }
-
-          if (terminalOutput && terminalOutput.length > 25) {
-            const cleanTermTrace = terminalOutput.length > 14000 ? terminalOutput.slice(-14000) : terminalOutput;
-            feedbackBlocks.push(`SIDE BAR TERMINAL & MOCHA ERROR TRACES (FROM TAB 3):\n\`\`\`\n${cleanTermTrace}\n\`\`\``);
-            ui.addLog(`📄 Captured side bar terminal error logs (${terminalOutput.split('\n').length} lines, ${failureItems.length} parsed failure(s)).`, 'ok');
-          }
-
-          // Gather CURRENT CODE of ALL files in src/ (and workspace) as requested by user
-          const currentFilesMap = new Map();
-
-          // 1. Files from previous write / cachedGeneratedFiles
-          if (cachedGeneratedFiles && cachedGeneratedFiles.length > 0) {
-            for (const f of cachedGeneratedFiles) {
-              if (f.filePath && f.code) {
-                currentFilesMap.set(f.filePath, f.code);
-              }
-            }
-          }
-
-          // 2. Query editor models to get the latest in-memory code of all open files
-          try {
-            const latestEd = await sendMsg({ op: 'AP_QUERY_EDITOR' }, 3000);
-            if (latestEd?.referenceFiles) {
-              for (const [fname, content] of Object.entries(latestEd.referenceFiles)) {
-                if (content && (fname.includes('src/') || !currentFilesMap.has(fname))) {
-                  currentFilesMap.set(fname, content);
-                }
-              }
-            }
-            if (latestEd?.activeFile && latestEd?.code) {
-              const act = sanitizeActiveFile(latestEd.activeFile);
-              currentFilesMap.set(act, latestEd.code);
-            }
-          } catch(e) {}
-
-          // 3. Attach full code of all current files to feedbackBlocks
-          if (currentFilesMap.size > 0) {
-            const fileEntries = [];
-            for (const [fname, code] of currentFilesMap.entries()) {
-              const ext = fname.split('.').pop().toLowerCase();
-              const lang = ext === 'json' ? 'json' : (ext === 'prisma' ? 'prisma' : (ext === 'ts' ? 'typescript' : 'javascript'));
-              fileEntries.push(`### File: \`${fname}\`\n\`\`\`${lang}\n${code}\n\`\`\``);
-            }
-            feedbackBlocks.push(
-              `=== CURRENT CODE OF ALL WORKSPACE FILES (SRC) AT TIME OF FAILURE ===\n` +
-              `The test failed with the following exact code currently in the files. Inspect these files thoroughly, identify the root bugs, and return the complete corrected replacement for any file that needs fixing:\n\n` +
-              fileEntries.join('\n\n')
-            );
-            ui.addLog(`📂 Attached current code of ${currentFilesMap.size} file(s) from src/ to AI prompt for debugging.`, 'ok');
-          }
-
-          feedbackBlocks.push(
-            `🔥 MANDATORY ONE-SHOT COMPREHENSIVE DEBUGGING DIRECTIVES:\n` +
-            `1. SIMULTANEOUS RESOLUTION: You MUST resolve EVERY single failed test case #1 through #${Math.max(failureItems.length, 1)} in this single output. Do NOT cherry-pick or fix only one error.\n` +
-            `2. EXAMINE CURRENT CODE: Cross-reference each failure with the CURRENT CODE of all files above. Fix the exact lines where status codes, schemas, or logic diverge.\n` +
-            `3. STATUS CODE & RESPONSE SHAPE PRECISION:\n` +
-            `   - If test expects 400 for invalid/missing input, validate req.body fields upfront and return res.status(400).json({ error: '...' }).\n` +
-            `   - If test expects 201 for resource creation, return res.status(201).json(...).\n` +
-            `   - If test expects 404 for not found, return res.status(404).json(...).\n` +
-            `   - If test expects 409 or 400 for duplicate records (e.g. email exists), check database first and return appropriate error status.\n` +
-            `4. PREVENT TIMEOUTS: Ensure every endpoint handler calls res.status(...).json(...) or res.send(...) in EVERY code branch (including if/else and catch blocks). Always await async DB calls.\n` +
-            `5. PRISMA & SEEDING RELATIONS:\n` +
-            `   - In prisma/schema.prisma, ensure relations have correct references and unique foreign keys (e.g. userId Int @unique, user User @relation(fields: [userId], references: [id])).\n` +
-            `   - In src/seed.js, clean existing records with deleteMany() before seeding, and disconnect Prisma in finally.\n` +
-            `   - When returning user objects, never return plain or hashed passwords unless explicitly required.\n` +
-            `6. MULTI-FILE OUTPUT: Output EVERY file that requires changes in separate code blocks with the exact file path on Line 1 (e.g. \`// src/index.js\`, \`// prisma/schema.prisma\`, \`// src/seed.js\`).\n` +
-            `7. ZERO COMMENTS: Output clean, production-ready, comment-free code.`
-          );
-
-          feedback = feedbackBlocks.join('\n\n');
+          feedback = await buildDebugFeedback(terminalOutput, subRes, String(attempt));
 
           // Step 6: Repeat step 4 & 5 again
           ui.addLog(`🔁 [Step 6/6] Repeating steps 4 and 5 with targeted fix on Attempt ${attempt + 1}/${maxAttempts}...`, 'warn');

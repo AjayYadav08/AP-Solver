@@ -966,12 +966,12 @@ console.log('31. Testing Strict Zero-Monaco-Corruption, Container Permissions & 
 if (!script30.includes('safe.directory') ||
     !script30.includes('sudo chmod -R 777') ||
     !script30.includes('git checkout -- src/index.js') ||
-    !script30.includes('sed -i \'/mkdir -p/d\'') ||
+    !script30.includes("sed -i '/mkdir -p/d'") ||
     !script30.includes('npx -y prisma')) {
   throw new Error('Terminal script must contain safe.directory, sudo chmod, starter index checkout, sed -i cleanups, and non-interactive npx -y!');
 }
 
-// 2. background.js writeFilesViaTerminal and frame-editor.js must NEVER call document.execCommand('insertText')
+// 2. background.js writeFilesViaTerminal and frame-editor.js must NEVER call document.execCommand
 const bgJs31 = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf-8');
 const termWriterSection = bgJs31.substring(bgJs31.indexOf('writeFilesViaTerminal'));
 if (stripComments(termWriterSection).includes('document.execCommand')) {
@@ -1080,54 +1080,129 @@ if (!llmJs33.includes('MASTER DEBUGGING & ROOT CAUSE RESOLUTION PROTOCOL') ||
 console.log('   ✓ Elite Debugging Skill: Fresh State per Attempt, File Merging & RCA Protocol verified');
 
 // ---------------------------------------------------------------------------
-// 34. 5-Star Supercharged Debugging: Exposed Tests, Pro Escalation, Local Run & Deps
+// 34. Workspace Context Probe, package.json Adherence & Grading Test Injection
 // ---------------------------------------------------------------------------
-console.log('34. Testing 5-Star Supercharged Debugging: Exposed Tests, Pro Escalation, Local Run & Deps...');
-const contentJs34 = fs.readFileSync(path.join(__dirname, 'content/content.js'), 'utf-8');
+console.log('34. Testing Workspace Context Probe, package.json Adherence & Grading Test Injection...');
 const bgJs34 = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf-8');
-const uiJs34 = fs.readFileSync(path.join(__dirname, 'content/solver-ui.js'), 'utf-8');
-const llmJs34 = fs.readFileSync(path.join(__dirname, 'utils/llm.js'), 'utf-8');
+const contentJs34 = fs.readFileSync(path.join(__dirname, 'content/content.js'), 'utf-8');
+const frameJs34 = fs.readFileSync(path.join(__dirname, 'content/frame-editor.js'), 'utf-8');
 
-// 1. Verify Feature 1 & 4 in buildPrompt: Exposed Test Suites & package.json dependencies
-const samplePromptWithTestAndPkg = buildPrompt({
-  questionTitle: 'User API',
-  questionDetails: 'Implement registration',
-  testCases: ['should return 201 when registered'],
-  currentCode: 'app.post("/register", ...)',
+// 1. Verify AP_PROBE_WORKSPACE handler and probeWorkspaceViaTerminal exist with quote-split echo guard
+if (!bgJs34.includes('AP_PROBE_WORKSPACE') ||
+    !bgJs34.includes('async function probeWorkspaceViaTerminal') ||
+    !bgJs34.includes("===AP'+'_'") && !bgJs34.includes("===AP'+")) {
+  // Check exact split pattern used inside probeJs
+  if (!bgJs34.includes("const S='===AP'+'_CTX_START==='")) {
+    throw new Error('background.js must implement probeWorkspaceViaTerminal with split anti-echo markers!');
+  }
+}
+
+// 2. Verify buildPrompt highlights installed package.json dependencies, module system, and discovered grading test files
+const pkgSample = JSON.stringify({
+  name: 'auth-api',
+  type: 'commonjs',
+  scripts: { test: 'mocha test/*.test.js' },
+  dependencies: { express: '^4.18.2', bcryptjs: '^2.4.3', '@prisma/client': '^5.10.0' }
+});
+const sampleTestCode = `const request = require('supertest');
+const app = require('../src/index');
+describe('POST /register', () => {
+  it('returns 400 when email is missing', async () => {
+    await request(app).post('/register').send({}).expect(400);
+  });
+});`;
+const enrichedPrompt = buildPrompt({
+  questionTitle: 'Auth API',
+  questionDetails: 'Build POST /register',
+  testCases: ['returns 400 when email is missing'],
+  currentCode: 'const app = require("express")();',
   referenceFiles: {
-    'package.json': JSON.stringify({ dependencies: { bcryptjs: '^2.4.3', express: '^4.18.2' } }),
-    'test/index.test.js': 'it("should return 201 when registered", async () => { ... });'
+    'package.json': pkgSample,
+    'test/auth.test.js': sampleTestCode,
+    'src/index.js': 'const app = require("express")();'
   }
 });
 
-if (!samplePromptWithTestAndPkg.includes('EXPOSED TEST SUITE CODE (SOURCE OF TRUTH)') ||
-    !samplePromptWithTestAndPkg.includes('test/index.test.js') ||
-    !samplePromptWithTestAndPkg.includes('INSTALLED PROJECT DEPENDENCIES') ||
-    !samplePromptWithTestAndPkg.includes('bcryptjs: ^2.4.3')) {
-  throw new Error('buildPrompt must inject exposed test suite code and package.json dependencies!');
+if (!enrichedPrompt.includes('INSTALLED PACKAGES & SCRIPTS') ||
+    !enrichedPrompt.includes('bcryptjs (^2.4.3)') ||
+    !enrichedPrompt.includes('CommonJS') ||
+    !enrichedPrompt.includes('EXACT GRADING TEST SUITE FILES DISCOVERED IN WORKSPACE') ||
+    !enrichedPrompt.includes('test/auth.test.js') ||
+    !enrichedPrompt.includes('Initial Workspace Files & Starter Code')) {
+  throw new Error('buildPrompt must extract package.json deps/module type and highlight grading test suite files!');
 }
 
-// 2. Verify Feature 2: High Reasoning Model Escalation during Debugging
-if (!llmJs34.includes('debuggingActive ? debugModels : standardModels') ||
-    !llmJs34.includes('gemini-2.5-pro') ||
-    !llmJs34.includes("thinkingLevel: debuggingActive ? 'high' : 'low'")) {
-  throw new Error('utils/llm.js callGemini must escalate to gemini-2.5-pro and high thinkingLevel during debugging!');
+// Test ESM ("type": "module") detection
+const esmPrompt = buildPrompt({
+  questionTitle: 'ESM API',
+  questionDetails: 'Build API',
+  testCases: [],
+  referenceFiles: { 'package.json': JSON.stringify({ type: 'module', dependencies: { express: '^4.18.0' } }) }
+});
+if (!esmPrompt.includes('ES Modules ("type": "module"')) {
+  throw new Error('buildPrompt must detect "type": "module" from package.json!');
 }
 
-// 3. Verify Feature 3: Local Pre-Test Execution in Terminal across background, content, and solver-ui
-if (!bgJs34.includes('npm test 2>&1 || npx mocha 2>&1') ||
-    !contentJs34.includes('npm test 2>&1 || npx mocha 2>&1') ||
-    !uiJs34.includes('npm test 2>&1 || npx mocha 2>&1')) {
-  throw new Error('All scripts (background, content, solver-ui) must execute local pre-test (npm test / npx mocha) in terminal!');
+// 3. Verify content.js calls AP_PROBE_WORKSPACE in handleReadContext
+if (!contentJs34.includes("sendMsg({ op: 'AP_PROBE_WORKSPACE' }")) {
+  throw new Error('content.js must invoke AP_PROBE_WORKSPACE during handleReadContext!');
 }
 
-// 4. Verify main-world-bridge preserves test/ and __tests__/ in referenceFiles
-const bridgeJs34 = fs.readFileSync(path.join(__dirname, 'content/main-world-bridge.js'), 'utf-8');
-if (!bridgeJs34.includes("p.includes('test/') ? 'test/' + fname") ||
-    !bridgeJs34.includes("p.includes('__tests__/') ? '__tests__/' + fname")) {
-  throw new Error('main-world-bridge.js must preserve test/ and __tests__/ paths in referenceFiles!');
+// 4. Verify frame-editor.js eliminated execCommand insertText in terminal injector
+const frameTermSection34 = frameJs34.substring(frameJs34.indexOf('AP_INJECT_TERMINAL_COMMAND'));
+if (frameTermSection34.includes("document.execCommand('insertText'")) {
+  throw new Error("frame-editor.js AP_INJECT_TERMINAL_COMMAND must NOT call document.execCommand('insertText') to guarantee zero Monaco pollution!");
+}
+console.log('   ✓ Workspace Context Probe, package.json Adherence & Grading Test Injection verified');
+
+// ---------------------------------------------------------------------------
+// 35. Automated Pre-Submission Local Terminal Test Loop & Deep Error Diagnostics
+// ---------------------------------------------------------------------------
+console.log('35. Testing Automated Pre-Submission Local Terminal Test Loop & Deep Error Diagnostics...');
+if (!bgJs34.includes('AP_RUN_LOCAL_TESTS') ||
+    !bgJs34.includes('async function runLocalTestsViaTerminal') ||
+    !bgJs34.includes('no_local_tests')) {
+  throw new Error('background.js must implement AP_RUN_LOCAL_TESTS and runLocalTestsViaTerminal with graceful no_local_tests fallback!');
 }
 
-console.log('   ✓ 5-Star Supercharged Debugging: Exposed Tests, Pro Escalation, Local Run & Deps verified');
+if (!contentJs34.includes('AP_RUN_LOCAL_TESTS') ||
+    !contentJs34.includes('async function buildDebugFeedback') ||
+    !contentJs34.includes('maxLocalTries') ||
+    !contentJs34.includes('function diagnoseErrorMessage')) {
+  throw new Error('content.js must execute local terminal pre-test checks before remote submit and share buildDebugFeedback!');
+}
+
+// Verify stale Monaco starter code does NOT overwrite cachedGeneratedFiles in buildDebugFeedback
+if (!contentJs34.includes('!filesWrittenViaTerminal && latestEd?.activeFile') ||
+    !contentJs34.includes('!currentFilesMap.has(fname)')) {
+  throw new Error('content.js buildDebugFeedback must never overwrite terminal-written files with stale Monaco starter code!');
+}
+console.log('   ✓ Automated Pre-Submission Local Terminal Test Loop & Deep Error Diagnostics verified');
+
+// ---------------------------------------------------------------------------
+// 36. Debug Model Escalation (Pro / High Thinking) & Dual Error Property Rules
+// ---------------------------------------------------------------------------
+console.log('36. Testing Debug Model Escalation (Pro / High Thinking) & Dual Error Property Rules...');
+const llmJs36 = fs.readFileSync(path.join(__dirname, 'utils/llm.js'), 'utf-8');
+const optionsHtml36 = fs.readFileSync(path.join(__dirname, 'options/options.html'), 'utf-8');
+
+if (!llmJs36.includes('isDebugMode') ||
+    !llmJs36.includes('gemini-2.5-pro') ||
+    !llmJs36.includes("thinkingLevel: 'high'") ||
+    !llmJs36.includes('thinkingBudget: 8192') ||
+    !llmJs36.includes("reasoning_effort: 'high'") ||
+    !llmJs36.includes('Debug Escalation Mode')) {
+  throw new Error('utils/llm.js must escalate to Pro / High Thinking / high reasoning effort when debugging failed tests!');
+}
+
+if (!llmJs36.includes('SyntaxError && err.status === 400') ||
+    !llmJs36.includes('INSTALLED PACKAGES & MODULE ADHERENCE')) {
+  throw new Error('utils/llm.js SYSTEM_PROMPT must include JSON SyntaxError middleware rule and package adherence protocol!');
+}
+
+if (!optionsHtml36.includes('gemini-2.5-pro')) {
+  throw new Error('options.html must include gemini-2.5-pro option!');
+}
+console.log('   ✓ Debug Model Escalation (Pro / High Thinking) & Dual Error Property Rules verified');
 
 console.log('\n🎉 ALL TESTS PASSED! AP-Solver is ready for installation and use.');

@@ -448,19 +448,19 @@
           return;
         }
 
-        // STRICT SAFETY GUARD: Unfocus Monaco editor textareas immediately!
-        document.querySelectorAll('.monaco-editor textarea, textarea.inputarea').forEach(t => { try { t.blur(); } catch(e) {} });
-
         const ta = termInfo.textarea || document.querySelector('textarea.xterm-helper-textarea, .terminal textarea, .integrated-terminal textarea, [class*="xterm" i] textarea');
         if (ta && ta.closest('.monaco-editor')) {
           sendResponse({ ok: false, error: 'Targeted editor instead of terminal' });
           return;
         }
-
+        // Blur all Monaco editors BEFORE focusing terminal so activeElement cannot leak into editor
+        document.querySelectorAll('.monaco-editor textarea, textarea.inputarea').forEach(t => {
+          try { t.blur(); } catch(e) {}
+        });
         if (ta) {
           try { ta.focus(); } catch(e) {}
         }
-        if (termInfo.element) {
+        if (termInfo.element && !ta) {
           try { termInfo.element.focus(); termInfo.element.click(); } catch(e) {}
         }
 
@@ -482,11 +482,11 @@
               resolve(false);
             }, 300);
           });
-          window.postMessage({ action: 'AP_INJECT_TERMINAL_MAIN', id: reqId, data: { command: cmd } }, '*');
+          window.postMessage({ action: 'AP_INJECT_TERMINAL_MAIN', id: reqId, payload: { command: cmd } }, '*');
           pasted = await mainPromise;
         } catch (e) {}
 
-        // 2. Try direct element xterm property if available in current scope
+        // 2. Direct element xterm property fallback
         if (!pasted) {
           const termEl = termInfo.element;
           for (const k of ['xterm', '_xterm', '__xterm']) {
@@ -500,8 +500,10 @@
           }
         }
 
-        // 3. Try xterm-helper-textarea input event (NEVER document.execCommand!)
-        if (!pasted && ta) {
+        // Strict focus guard: ONLY dispatch ClipboardEvent if xterm textarea holds confirmed exclusive focus!
+        // Terminal injection strictly avoids execCommand insertText to prevent corrupting Monaco buffers.
+        const isConfirmedTerminalFocus = ta && document.activeElement === ta && !document.activeElement.closest('.monaco-editor');
+        if (!pasted && isConfirmedTerminalFocus) {
           try {
             const dt = new DataTransfer();
             dt.setData('text/plain', cmd + '\n');
@@ -511,18 +513,17 @@
               cancelable: true
             });
             ta.dispatchEvent(pasteEvt);
-          } catch(e) {}
-
-          // STRICT SAFETY RULE: NEVER call document.execCommand('insertText') here!
-          // Calling document.execCommand in VS Code web targets Monaco editor if xterm is not natively active.
-          try {
-            ta.value = cmd + '\n';
-            ta.dispatchEvent(new InputEvent('input', { data: cmd + '\n', inputType: 'insertText', bubbles: true }));
             ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+            pasted = true;
           } catch(e) {}
         }
 
-        sendResponse({ ok: pasted, pasted, rect: termInfo.rect });
+        if (!pasted) {
+          sendResponse({ ok: false, pasted: false, error: 'Terminal focus not confirmed for safe in-frame paste' });
+          return;
+        }
+
+        sendResponse({ ok: true, pasted, rect: termInfo.rect });
       })();
       return true;
     }

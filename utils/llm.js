@@ -229,10 +229,15 @@ STRICT GUIDELINES:
      * 'expected 500 to equal 404': Uncaught error or non-existent record threw 500 instead of returning 404 Not Found. Add null check: if (!record) return res.status(404).json({ error: 'Not found', message: 'Not found' });
      * 'expected 200 to equal 409' or 'expected 500 to equal 400' on duplicate: Check uniqueness before inserting (e.g. findUnique/findFirst); return error status if record exists.
    - DUAL ERROR PROPERTY SUPPORT:
-     Newton School test assertions frequently check either res.body.error or res.body.message. When returning error responses, ALWAYS provide both properties:
-     res.status(code).json({ error: msg, message: msg });
-   - PREVENT MOCHA 2000MS TIMEOUTS:
-     Every async route handler MUST be wrapped in try/catch, and EVERY code branch (if, else, catch) MUST send a response with return res.status(...).json(...). Never omit 'return' before res.status().
+     Newton School test assertions frequently check either res.body.error or res.body.message.
+     * If the Question Description or discovered Test Suite explicitly checks an exact JSON object equality (e.g. deep.equal({ error: "..." }) or deep.equal({ message: "..." })), return THAT exact key.
+     * Otherwise, ALWAYS provide BOTH properties on error responses: res.status(code).json({ error: msg, message: msg });
+   - INSTALLED PACKAGES & MODULE ADHERENCE:
+     * Strictly inspect package.json dependencies. NEVER require/import an uninstalled package (e.g. do NOT require('bcrypt') if package.json lists 'bcryptjs'; use the exact package listed).
+     * Respect "type": "module" if set in package.json (ESM import/export); otherwise use CommonJS require/module.exports.
+   - EXPRESS JSON SYNTAX ERROR MIDDLEWARE & ZERO HANGING TIMEOUTS:
+     * In Express apps, add malformed-JSON body error handler after routes so invalid JSON payloads return 400 instead of 500: app.use((err, req, res, next) => { if (err instanceof SyntaxError && err.status === 400 && 'body' in err) return res.status(400).json({ error: 'Invalid JSON', message: 'Invalid JSON' }); return res.status(err.status || 500).json({ error: err.message || 'Server error', message: err.message || 'Server error' }); });
+     * PREVENT MOCHA 2000MS TIMEOUTS: Every async route handler MUST be wrapped in try/catch, and EVERY code branch (if, else, catch) MUST send a response with return res.status(...).json(...). Never omit 'return' before res.status().
    - COMPLETE WORKSPACE SYNCHRONIZATION:
      Always return all required files (e.g. prisma/schema.prisma, src/seed.js, src/index.js) so the entire project remains complete and functioning.`;
 
@@ -518,35 +523,46 @@ export function buildPrompt({
   }
 
   if (referenceFiles && Object.keys(referenceFiles).length > 0) {
-    const refs = Object.entries(referenceFiles).map(([fname, content]) => {
-      const ext = fname.split('.').pop().toLowerCase();
-      const lang = ext === 'json' ? 'json' : (ext === 'prisma' ? 'prisma' : (ext === 'ts' ? 'typescript' : 'javascript'));
-      return `### Initial Starter File: \`${fname}\`\n\`\`\`${lang}\n${content}\n\`\`\``;
-    }).join('\n\n');
-    parts.push(`## Initial Workspace Files & Starter Code:\n${refs}`);
-
-    // Feature 1: Check for exposed test suite files (Golden Source of Truth)
-    const testFileEntries = Object.entries(referenceFiles).filter(([fname]) => {
-      return fname.includes('test/') || fname.includes('__tests__/') || fname.endsWith('.test.js') || fname.endsWith('.spec.js');
-    });
-    if (testFileEntries.length > 0) {
-      const testSnippets = testFileEntries.map(([fname, content]) => {
-        return `### Test File: \`${fname}\`\n\`\`\`javascript\n${content}\n\`\`\``;
-      }).join('\n\n');
-      parts.push(`## 🎯 EXPOSED TEST SUITE CODE (SOURCE OF TRUTH):\nThe test suite code has been extracted from the workspace. Implement your solution to strictly satisfy these exact test assertions, status codes, and response bodies:\n${testSnippets}`);
+    // 1. Parse package.json explicitly so LLM never imports missing packages (e.g. bcrypt vs bcryptjs) or wrong module syntax
+    const pkgKey = Object.keys(referenceFiles).find(k => k === 'package.json' || k.endsWith('/package.json'));
+    if (pkgKey && referenceFiles[pkgKey]) {
+      try {
+        const pkg = JSON.parse(referenceFiles[pkgKey]);
+        const deps = pkg.dependencies ? Object.entries(pkg.dependencies).map(([k, v]) => `${k} (${v})`) : [];
+        const devDeps = pkg.devDependencies ? Object.entries(pkg.devDependencies).map(([k, v]) => `${k} (${v})`) : [];
+        const moduleType = pkg.type === 'module'
+          ? 'ES Modules ("type": "module" -> MUST use `import`/`export` syntax)'
+          : 'CommonJS (default -> MUST use `require()`/`module.exports`)';
+        const scriptsStr = pkg.scripts ? JSON.stringify(pkg.scripts) : '{}';
+        parts.push(`## 📦 INSTALLED PACKAGES & SCRIPTS (\`package.json\` — STRICT CONTRACT):
+- **Module System**: ${moduleType}
+- **Installed Dependencies**: ${deps.length > 0 ? deps.join(', ') : 'None listed'}
+- **Dev Dependencies**: ${devDeps.length > 0 ? devDeps.join(', ') : 'None listed'}
+- **NPM Scripts**: \`${scriptsStr}\`
+- **CRITICAL IMPORT RULE**: ONLY import/require packages explicitly listed above or built-in Node modules (\`node:http\`, \`fs\`, \`path\`, \`crypto\`, \`events\`, \`url\`). NEVER import an uninstalled package (e.g. do NOT write \`require('bcrypt')\` if only \`bcryptjs\` is installed!).`);
+      } catch (e) {}
     }
 
-    // Feature 4: Check for package.json dependencies
-    const pkgEntry = Object.entries(referenceFiles).find(([fname]) => fname.endsWith('package.json'));
-    if (pkgEntry && pkgEntry[1]) {
-      try {
-        const pkg = JSON.parse(pkgEntry[1]);
-        const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
-        if (Object.keys(deps).length > 0) {
-          const depList = Object.entries(deps).map(([k, v]) => `- ${k}: ${v}`).join('\n');
-          parts.push(`## 📦 INSTALLED PROJECT DEPENDENCIES:\nThe project package.json specifies the following installed dependencies. You MUST use these exact packages (e.g. require('bcryptjs') if bcryptjs is installed):\n${depList}`);
-        }
-      } catch(e) {}
+    // 2. Separate discovered test files from starter files so grader assertions get top focus
+    const testEntries = [];
+    const starterEntries = [];
+    for (const [fname, content] of Object.entries(referenceFiles)) {
+      if (!content) continue;
+      const ext = fname.split('.').pop().toLowerCase();
+      const lang = ext === 'json' ? 'json' : (ext === 'prisma' ? 'prisma' : (ext === 'ts' ? 'typescript' : 'javascript'));
+      if (/(?:^|\/)(?:test|tests|__tests__)\/|(?:\.test|\.spec)\.(?:js|ts|mjs|cjs)$/i.test(fname)) {
+        testEntries.push(`### Grading Test File: \`${fname}\`\n\`\`\`${lang}\n${content}\n\`\`\``);
+      } else {
+        starterEntries.push(`### Initial Starter File: \`${fname}\`\n\`\`\`${lang}\n${content}\n\`\`\``);
+      }
+    }
+
+    if (testEntries.length > 0) {
+      parts.push(`## 🎯 EXACT GRADING TEST SUITE FILES DISCOVERED IN WORKSPACE:\nInspect EVERY \`describe\`, \`it\`, \`test\`, route path, status code, and property assertion in these actual test files! Your implementation MUST satisfy 100% of them:\n${testEntries.join('\n\n')}`);
+    }
+
+    if (starterEntries.length > 0) {
+      parts.push(`## Initial Workspace Files & Starter Code:\n${starterEntries.join('\n\n')}`);
     }
   }
 
@@ -679,60 +695,81 @@ DO NOT OMIT prisma/schema.prisma! It is required for the database tables to be c
   return parts.join('\n\n');
 }
 
-export async function callGemini(prompt, settings, isDebugging = false) {
+export async function callGemini(prompt, settings) {
   const apiKey = settings.geminiKey?.trim();
   if (!apiKey) {
     throw new Error('Gemini API key is missing. Please set it in AP-Solver settings.');
   }
 
-  const debuggingActive = isDebugging || !!settings.isDebugging;
-
   let requestedModel = settings.geminiModel || 'gemini-3.8-flash';
-  if (requestedModel === 'gemini-2.5-flash' || requestedModel === 'gemini-1.5-flash') {
+  if (requestedModel === 'gemini-1.5-flash') {
     requestedModel = 'gemini-3.8-flash';
   }
 
-  // Feature 2: High Reasoning Model Escalation during Debugging
-  const debugModels = [
-    'gemini-2.5-pro',
-    requestedModel,
-    'gemini-3.8-flash',
-    'gemini-flash-latest'
-  ];
-  const standardModels = [
-    requestedModel,
-    'gemini-3.8-flash',
-    'gemini-flash-latest',
-    'gemini-3.5-flash',
-    'gemini-2.5-flash-lite'
-  ];
-
-  const modelsToTry = debuggingActive ? debugModels : standardModels;
-  const uniqueModels = [...new Set(modelsToTry.filter(Boolean))];
+  const isDebug = !!settings.isDebugMode;
+  const modelsToTry = isDebug
+    ? (
+        /pro/i.test(requestedModel)
+          ? [requestedModel, 'gemini-2.5-pro', 'gemini-pro-latest', 'gemini-2.5-flash', 'gemini-3.8-flash', 'gemini-flash-latest']
+          : ['gemini-2.5-pro', 'gemini-pro-latest', requestedModel, 'gemini-2.5-flash', 'gemini-3.8-flash', 'gemini-flash-latest']
+      ).filter(Boolean)
+    : [
+        requestedModel === 'gemini-2.5-flash' ? 'gemini-3.8-flash' : requestedModel,
+        'gemini-3.8-flash',
+        'gemini-flash-latest',
+        'gemini-3.5-flash',
+        'gemini-2.5-flash-lite'
+      ].filter(Boolean);
+  const uniqueModels = [...new Set(modelsToTry)];
 
   let lastError = null;
 
   for (const model of uniqueModels) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    const maxOut = /1\.5|2\.0/.test(model) ? 8192 : (isDebug ? 16384 : 8192);
 
-    // Config options to try:
-    // 1. With thinkingConfig (thinkingLevel: "high" when debugging for deep reasoning; "low" for initial speed)
-    // 2. Standard config without thinkingConfig (for models that don't support thinkingConfig)
-    const configsToTry = [
-      {
-        temperature: 0.1,
-        topP: 0.95,
-        maxOutputTokens: 8192,
-        thinkingConfig: {
-          thinkingLevel: debuggingActive ? 'high' : 'low'
-        }
-      },
-      {
-        temperature: 0.1,
-        topP: 0.95,
-        maxOutputTokens: 8192
-      }
-    ];
+    // Config options:
+    // Debug Escalation: Try high thinkingLevel / deep thinkingBudget first, then high-token standard fallback
+    // Initial Fast Solve: Try low thinkingLevel first, then standard config fallback
+    const configsToTry = isDebug
+      ? [
+          {
+            temperature: 0.1,
+            topP: 0.95,
+            maxOutputTokens: maxOut,
+            thinkingConfig: {
+              thinkingLevel: 'high'
+            }
+          },
+          {
+            temperature: 0.1,
+            topP: 0.95,
+            maxOutputTokens: maxOut,
+            thinkingConfig: {
+              thinkingBudget: 8192
+            }
+          },
+          {
+            temperature: 0.1,
+            topP: 0.95,
+            maxOutputTokens: maxOut
+          }
+        ]
+      : [
+          {
+            temperature: 0.1,
+            topP: 0.95,
+            maxOutputTokens: maxOut,
+            thinkingConfig: {
+              thinkingLevel: 'low'
+            }
+          },
+          {
+            temperature: 0.1,
+            topP: 0.95,
+            maxOutputTokens: maxOut
+          }
+        ];
 
     for (const genConfig of configsToTry) {
       const payload = {
@@ -748,7 +785,7 @@ export async function callGemini(prompt, settings, isDebugging = false) {
       };
 
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 60000);
+      const timer = setTimeout(() => controller.abort(), isDebug ? 90000 : 60000);
 
       try {
         const resp = await fetch(url, {
@@ -769,14 +806,14 @@ export async function callGemini(prompt, settings, isDebugging = false) {
             msg += `: ${errText}`;
           }
 
-          // If 400 Bad Request mentions thinkingConfig, retry without thinkingConfig
-          if (resp.status === 400 && /thinking/i.test(msg)) {
-            console.warn(`[AP-Solver] thinkingConfig not supported by ${model}, retrying standard config...`);
+          // If 400 Bad Request mentions thinkingConfig / parameter, try next config
+          if (resp.status === 400 && /thinking|budget|level|invalid/i.test(msg)) {
+            console.warn(`[AP-Solver] config not supported by ${model}, trying fallback config...`);
             continue;
           }
 
-          // If 404 (model not found / deprecated) or 503 (high demand), try next model candidate
-          if (resp.status === 404 || resp.status === 503 || /not found|no longer available|high demand|unavailable/i.test(msg)) {
+          // If 404 (not found), 429 (quota exhausted on Pro/Debug tier), or 503 (high demand), try next model candidate
+          if (resp.status === 404 || resp.status === 503 || resp.status === 429 || /not found|no longer available|high demand|unavailable|quota/i.test(msg)) {
             console.warn(`[AP-Solver] Gemini model ${model} unavailable (${resp.status}), trying next candidate...`);
             lastError = new Error(msg);
             break; // Try next model in uniqueModels
@@ -800,7 +837,8 @@ export async function callGemini(prompt, settings, isDebugging = false) {
           raw: text,
           code: files.length > 0 ? files[0].code : extractCodeBlock(text),
           files,
-          model
+          model,
+          debugEscalated: isDebug
         };
       } catch (err) {
         clearTimeout(timer);
@@ -808,7 +846,7 @@ export async function callGemini(prompt, settings, isDebugging = false) {
           lastError = new Error(`Gemini model ${model} request timed out.`);
           break; // Try next model
         }
-        if (err.message && (err.message.includes('404') || err.message.includes('503') || err.message.includes('unavailable') || err.message.includes('no longer available'))) {
+        if (err.message && (err.message.includes('404') || err.message.includes('503') || err.message.includes('429') || /unavailable|no longer available|quota/i.test(err.message))) {
           lastError = err;
           break; // Try next model
         }
@@ -840,70 +878,104 @@ export async function callGroq(prompt, settings) {
   ].filter(Boolean);
   const uniqueModels = [...new Set(modelsToTry)];
 
+  const isDebug = !!settings.isDebugMode;
   let lastError = null;
 
   for (const model of uniqueModels) {
     const url = 'https://api.groq.com/openai/v1/chat/completions';
 
-    const payload = {
-      model,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: prompt }
-      ],
-      temperature: 0.1,
-      max_tokens: 8192
-    };
+    const payloadsToTry = isDebug
+      ? [
+          {
+            model,
+            messages: [
+              { role: 'system', content: SYSTEM_PROMPT },
+              { role: 'user', content: prompt }
+            ],
+            temperature: 0.1,
+            max_tokens: 16384,
+            reasoning_effort: 'high'
+          },
+          {
+            model,
+            messages: [
+              { role: 'system', content: SYSTEM_PROMPT },
+              { role: 'user', content: prompt }
+            ],
+            temperature: 0.1,
+            max_tokens: 8192
+          }
+        ]
+      : [
+          {
+            model,
+            messages: [
+              { role: 'system', content: SYSTEM_PROMPT },
+              { role: 'user', content: prompt }
+            ],
+            temperature: 0.1,
+            max_tokens: 8192
+          }
+        ];
 
-    try {
-      const resp = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify(payload)
-      });
+    for (const payload of payloadsToTry) {
+      try {
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: JSON.stringify(payload)
+        });
 
-      if (!resp.ok) {
-        const errText = await resp.text();
-        let msg = `Groq API error (${resp.status})`;
-        try {
-          const errJson = JSON.parse(errText);
-          msg += `: ${errJson.error?.message || errText}`;
-        } catch {
-          msg += `: ${errText}`;
+        if (!resp.ok) {
+          const errText = await resp.text();
+          let msg = `Groq API error (${resp.status})`;
+          try {
+            const errJson = JSON.parse(errText);
+            msg += `: ${errJson.error?.message || errText}`;
+          } catch {
+            msg += `: ${errText}`;
+          }
+
+          // If 400 Bad Request rejects reasoning_effort or max_tokens, fall back to standard payload
+          if (resp.status === 400 && /reasoning|max_tokens|unsupported|invalid/i.test(msg)) {
+            console.warn(`[AP-Solver] Groq debug parameter not supported for ${model}, retrying standard payload...`);
+            continue;
+          }
+
+          // If 404 (model does not exist), 413 (TPM limit exceeded), or 429 (rate limit), try next model
+          if (resp.status === 404 || resp.status === 413 || resp.status === 429 || /does not exist|access|decommissioned|rate limit|too large|TPM|RPM/i.test(msg)) {
+            console.warn(`[AP-Solver] Groq model ${model} unavailable (${resp.status}), trying next model...`);
+            lastError = new Error(msg);
+            break;
+          }
+
+          throw new Error(msg);
         }
 
-        // If 404 (model does not exist), 413 (TPM limit exceeded), or 429 (rate limit), try next model
-        if (resp.status === 404 || resp.status === 413 || resp.status === 429 || /does not exist|access|decommissioned|rate limit|too large|TPM|RPM/i.test(msg)) {
-          console.warn(`[AP-Solver] Groq model ${model} unavailable (${resp.status}), trying next model...`);
-          lastError = new Error(msg);
-          continue;
+        const data = await resp.json();
+        const text = data.choices?.[0]?.message?.content;
+        if (!text) {
+          throw new Error('Groq returned an empty response.');
         }
 
-        throw new Error(msg);
+        const files = parseMultiFileSolution(text, settings.activeFile, settings.workspaceFiles);
+        return {
+          raw: text,
+          code: files.length > 0 ? files[0].code : extractCodeBlock(text),
+          files,
+          model,
+          debugEscalated: isDebug
+        };
+      } catch (err) {
+        if (err.message && (err.message.includes('404') || err.message.includes('413') || err.message.includes('429') || /too large|TPM|RPM|rate limit/i.test(err.message))) {
+          lastError = err;
+          break;
+        }
+        throw err;
       }
-
-      const data = await resp.json();
-      const text = data.choices?.[0]?.message?.content;
-      if (!text) {
-        throw new Error('Groq returned an empty response.');
-      }
-
-      const files = parseMultiFileSolution(text, settings.activeFile, settings.workspaceFiles);
-      return {
-        raw: text,
-        code: files.length > 0 ? files[0].code : extractCodeBlock(text),
-        files,
-        model
-      };
-    } catch (err) {
-      if (err.message && (err.message.includes('404') || err.message.includes('413') || err.message.includes('429') || /too large|TPM|RPM|rate limit/i.test(err.message))) {
-        lastError = err;
-        continue;
-      }
-      throw err;
     }
   }
 
@@ -979,10 +1051,10 @@ export async function generateSolution(promptData, settingsOverride = null) {
       }
     }
   }
+  const isDebugMode = !!(promptData.feedback && String(promptData.feedback).trim().length > 0);
+  settings.isDebugMode = isDebugMode;
   settings.activeFile = promptData.activeFile || 'src/index.js';
   settings.workspaceFiles = promptData.workspaceFiles || [];
-  const isDebugging = !!(promptData && promptData.feedback);
-  settings.isDebugging = isDebugging;
 
   const prompt = buildPrompt(promptData);
 
@@ -997,7 +1069,40 @@ export async function generateSolution(promptData, settingsOverride = null) {
 
   let provider = settings.provider || 'race';
 
-  // SPECULATIVE TURBO PARALLEL RACE:
+  // MODEL ESCALATION FOR DEBUGGING (Attempt 2+ / Local Test Fix):
+  // On failure debug iterations, prioritize Deep Reasoning (Gemini Pro / High Thinking) instead of letting
+  // a 300ms fast Flash/Groq guess cancel deeper analysis in Promise.any.
+  if (isDebugMode) {
+    console.log('[AP-Solver] 🧠 Debug Escalation Mode active: prioritizing High-Reasoning analysis...');
+    const debugOrder = [];
+    if (provider === 'openai' && hasOpenAI) debugOrder.push('openai');
+    if (provider === 'groq' && hasGroq) debugOrder.push('groq');
+    if (hasGemini) debugOrder.push('gemini');
+    if (hasOpenAI) debugOrder.push('openai');
+    if (hasGroq) debugOrder.push('groq');
+    const uniqueOrder = [...new Set(debugOrder)];
+
+    let lastDebugErr = null;
+    for (const p of uniqueOrder) {
+      try {
+        const t0 = Date.now();
+        let res;
+        if (p === 'gemini') res = await callGemini(prompt, settings);
+        else if (p === 'groq') res = await callGroq(prompt, settings);
+        else res = await callOpenAI(prompt, settings);
+        res.latencyMs = Date.now() - t0;
+        res.debugEscalated = true;
+        res.raceWinner = `🧠 Debug Escalated (${p === 'gemini' ? 'Gemini High-Reasoning' : p}: ${res.model})`;
+        return res;
+      } catch (err) {
+        console.warn(`[AP-Solver] Debug Escalation provider (${p}) failed:`, err);
+        lastDebugErr = err;
+      }
+    }
+    throw lastDebugErr || new Error('All debug escalation AI solvers failed.');
+  }
+
+  // SPECULATIVE TURBO PARALLEL RACE (Attempt 1 Fast Solve):
   // If provider is 'race' OR if both Groq and Gemini keys are available, race them concurrently!
   // Whichever provider returns valid code first WINS and solves the problem in sub-second time!
   const shouldRace = (provider === 'race' || provider === 'auto') ? (hasGroq && hasGemini) : (hasGroq && hasGemini && (provider === 'groq' || provider === 'gemini'));

@@ -573,7 +573,12 @@ async function queryEditorInTab(tabId) {
             for (const row of treeRows) {
               const labelEl = row.querySelector('.label-name') || row;
               const text = labelEl.textContent.trim();
+              const aria = (row.getAttribute('aria-label') || '').trim();
               if (text && text.includes('.') && !/^\d+$/.test(text) && !/^\s*$/.test(text)) {
+                if (aria && /[/\\]/.test(aria)) {
+                  const pathMatch = aria.match(/((?:src|test|tests|__tests__|prisma|db|routes|controllers|middleware|models|utils)\/[^\s,]+)/i);
+                  if (pathMatch) files.add(pathMatch[1]);
+                }
                 files.add(text);
               }
             }
@@ -613,15 +618,19 @@ async function queryEditorInTab(tabId) {
             for (const mod of models) {
               const p = mod.uri?.path || '';
               const fname = p.split('/').pop();
-              if (fname && (fname.endsWith('.json') || fname.endsWith('.txt') || fname.endsWith('.prisma') || fname.endsWith('.js') || fname.endsWith('.ts')) &&
-                  !fname.includes('package-lock') && !fname.includes('node_modules') && !/inmemory|workbench/i.test(p) && !/^\d+$/.test(fname)) {
+              if (fname && (fname.endsWith('.json') || fname.endsWith('.txt') || fname.endsWith('.prisma') || fname.endsWith('.js') || fname.endsWith('.ts') || fname === '.env') &&
+                  !fname.includes('package-lock') && !fname.includes('node_modules') && !p.includes('node_modules') && !/inmemory|workbench/i.test(p) && !/^\d+$/.test(fname)) {
                 const val = mod.getValue();
-                const cleanKey = p.includes('src/') ? 'src/' + fname : fname;
+                const subMatch = p.match(/\/((?:test|tests|__tests__|prisma|db|routes|controllers|middleware|models|utils)\/[^/]+)$/i);
+                const cleanKey = subMatch ? subMatch[1] : (p.includes('src/') ? 'src/' + fname : fname);
                 if (val && val.length < 35000) {
                   referenceFiles[cleanKey] = val;
                 }
               }
-              if (fname && fname.includes('.') && !/^\d+$/.test(fname)) workspaceFiles.push(p.includes('src/') ? 'src/' + fname : fname);
+              if (fname && fname.includes('.') && !/^\d+$/.test(fname)) {
+                const subMatch = p.match(/\/((?:test|tests|__tests__|prisma|db|routes|controllers|middleware|models|utils)\/[^/]+)$/i);
+                workspaceFiles.push(subMatch ? subMatch[1] : (p.includes('src/') ? 'src/' + fname : fname));
+              }
             }
 
             // If a specific active file was detected, find its model first
@@ -1527,188 +1536,500 @@ export function buildBase64TerminalScript(files) {
     cmd += `if [ -f src/seed.js ]; then node src/seed.js || true; elif [ -f seed.js ]; then node seed.js || true; fi && `;
   }
   cmd += `(git add -A && git commit -m "solution" 2>/dev/null || true) && `;
-  cmd += `(npm test 2>&1 || npx mocha 2>&1 || true) > /tmp/ap_test_run.log 2>&1 && head -n 35 /tmp/ap_test_run.log 2>/dev/null || true && `;
   cmd += `echo "=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ==="`;
   return cmd;
+}
+
+// Shared Helper: Locate Integrated Terminal frame across tabs/iframes
+async function findTerminalFrameInfo(tabId) {
+  const scanRes = await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    func: () => {
+      const candidates = [
+        ...document.querySelectorAll('.terminal-outer-container, .terminal-wrapper, .terminal.xterm, .pane-body.integrated-terminal, canvas.xterm-text-layer, canvas.xterm-cursor-layer, .xterm-screen, textarea.xterm-helper-textarea')
+      ];
+      for (const term of candidates) {
+        const parent = term.closest('.terminal, .terminal-wrapper, .integrated-terminal') || term;
+        if (parent.closest('.monaco-editor')) continue;
+        const r = parent.getBoundingClientRect();
+        if (r.width > 40 && r.height > 30) {
+          return {
+            found: true,
+            x: r.left + Math.min(r.width / 2, 200),
+            y: r.top + Math.min(r.height / 2, 80),
+            width: r.width,
+            height: r.height
+          };
+        }
+      }
+      return { found: false };
+    }
+  });
+
+  let match = scanRes?.find(r => r.result && r.result.found);
+  if (!match) {
+    await ensureTerminalOpen(tabId);
+    await sleep(350);
+    const retryScan = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: () => {
+        const ta = document.querySelector('textarea.xterm-helper-textarea, .terminal textarea, .integrated-terminal textarea, [class*="xterm" i] textarea');
+        if (ta && !ta.closest('.monaco-editor')) {
+          const r = ta.getBoundingClientRect();
+          return { found: true, x: r.left, y: r.top, width: r.width, height: r.height };
+        }
+        return { found: false };
+      }
+    });
+    match = retryScan?.find(r => r.result && r.result.found);
+  }
+  return match || null;
+}
+
+// Shared Helper: Execute command in Integrated Terminal strictly protecting Monaco editor focus
+async function dispatchCommandToTerminal(tabId, cmdText, settleMs = 1500) {
+  await ensureTerminalOpen(tabId);
+  const match = await findTerminalFrameInfo(tabId);
+  const targetFrameId = match?.frameId;
+
+  // 1. In-frame xterm.paste (directly into xterm instance if attached)
+  if (targetFrameId !== undefined) {
+    try {
+      const inFrameRes = await chrome.scripting.executeScript({
+        target: { tabId, frameIds: [targetFrameId] },
+        func: (cmd) => {
+          document.querySelectorAll('.monaco-editor textarea, textarea.inputarea').forEach(t => { try { t.blur(); } catch(e) {} });
+
+          const ta = document.querySelector('textarea.xterm-helper-textarea, .terminal textarea, .integrated-terminal textarea, [class*="xterm" i] textarea');
+          if (ta && !ta.closest('.monaco-editor')) {
+            try { ta.focus(); } catch(e) {}
+
+            const termEl = document.querySelector('.terminal-wrapper, .terminal.xterm, .pane-body.integrated-terminal');
+            for (const k of ['xterm', '_xterm', '__xterm']) {
+              if (termEl && termEl[k] && typeof termEl[k].paste === 'function') {
+                try {
+                  termEl[k].paste(cmd + '\n');
+                  return true;
+                } catch(e) {}
+              }
+            }
+            return false;
+          }
+          return false;
+        },
+        args: [cmdText]
+      });
+
+      if (inFrameRes?.[0]?.result === true) {
+        if (settleMs > 0) await sleep(settleMs);
+        return { ok: true, method: 'terminal.inFrameScript', targetFrameId };
+      }
+    } catch (e) {
+      console.warn('[AP-Solver Terminal] inFrameScript error:', e);
+    }
+  }
+
+  // 2. Secondary fallback: in-frame content script sendMessage
+  if (targetFrameId !== undefined) {
+    try {
+      const injectResp = await chrome.tabs.sendMessage(tabId, {
+        op: 'AP_INJECT_TERMINAL_COMMAND',
+        data: { command: cmdText }
+      }, { frameId: targetFrameId });
+      if (injectResp && injectResp.ok) {
+        if (settleMs > 0) await sleep(settleMs);
+        return { ok: true, method: 'terminal.inFrame', targetFrameId };
+      }
+    } catch (e) {}
+  }
+
+  // 3. HARDWARE CDP FALLBACK: STRICT FOCUS GUARD
+  // ONLY allowed if document.activeElement is CONFIRMED to be the xterm-helper-textarea!
+  // NEVER type via CDP if Monaco editor is focused or if terminal focus cannot be proven!
+  const attached = await attachCDP(tabId);
+  if (attached && match) {
+    if (targetFrameId !== undefined) {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId, frameIds: [targetFrameId] },
+          func: () => {
+            document.querySelectorAll('.monaco-editor textarea, textarea.inputarea').forEach(t => { try { t.blur(); } catch(e) {} });
+            const ta = document.querySelector('textarea.xterm-helper-textarea, .terminal textarea, .integrated-terminal textarea');
+            if (ta && !ta.closest('.monaco-editor')) {
+              try { ta.focus(); ta.click(); } catch(e) {}
+            }
+          }
+        });
+      } catch(e) {}
+    }
+
+    const focusCheck = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: () => {
+        const el = document.activeElement;
+        if (!el) return { isTerminal: false, isMonaco: false };
+        const isTerminal = el.classList.contains('xterm-helper-textarea') || (el.tagName === 'TEXTAREA' && !!el.closest('.terminal, .integrated-terminal'));
+        const isMonaco = el.classList.contains('inputarea') || !!el.closest('.monaco-editor');
+        return { isTerminal, isMonaco };
+      }
+    });
+
+    const isTerminalFocused = focusCheck?.some(f => f.result?.isTerminal);
+    const isMonacoFocused = focusCheck?.some(f => f.result?.isMonaco);
+
+    if (isTerminalFocused && !isMonacoFocused) {
+      // Double-check focus to protect editor: explicitly click terminal canvas coordinates first
+      if (match.x && match.y) {
+        await cdpNativeClick(tabId, match.x, match.y);
+        await sleep(150);
+      }
+      await cdpNativeKey(tabId, 'c', 'KeyC', 67, 2); // Ctrl+C
+      await sleep(120);
+      await cdpNativeInsertText(tabId, cmdText);
+      await sleep(120);
+      await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
+      if (settleMs > 0) await sleep(settleMs);
+      return { ok: true, method: 'terminal.cdp', targetFrameId };
+    } else {
+      console.warn('[AP-Solver Terminal] Focus guard: Terminal does not have confirmed exclusive focus (isTerminal:', isTerminalFocused, 'isMonaco:', isMonacoFocused, '). Aborting CDP typing to protect editor.');
+      return { ok: false, error: 'Terminal does not have active focus. Command copied to clipboard.' };
+    }
+  }
+
+  return { ok: false, error: 'Terminal not found across frames' };
+}
+
+// Read terminal screen/scrollback text from Integrated Terminal frame (supports xterm buffer API, DOM renderer, and Accessibility Tree)
+async function readIntegratedTerminalText(tabId, targetFrameId = undefined) {
+  try {
+    const target = targetFrameId !== undefined ? { tabId, frameIds: [targetFrameId] } : { tabId, allFrames: true };
+    const res = await chrome.scripting.executeScript({
+      target,
+      func: () => {
+        const texts = [];
+        // 1. Check exposed xterm buffer instance (gives full scrollback)
+        const termWrappers = document.querySelectorAll('.terminal-wrapper, .terminal.xterm, .pane-body.integrated-terminal, .xterm');
+        for (const el of termWrappers) {
+          for (const k of ['xterm', '_xterm', '__xterm']) {
+            const inst = el[k];
+            const buf = inst?.buffer?.active || inst?._core?.buffer?.lines;
+            if (buf) {
+              try {
+                const len = buf.length || 0;
+                const lines = [];
+                const startIdx = Math.max(0, len - 300);
+                for (let i = startIdx; i < len; i++) {
+                  const line = buf.getLine ? buf.getLine(i) : (buf.get ? buf.get(i) : null);
+                  if (line && line.translateToString) {
+                    lines.push(line.translateToString(true));
+                  }
+                }
+                const joined = lines.join('\n').trim();
+                if (joined) texts.push(joined);
+              } catch(e) {}
+            }
+          }
+        }
+
+        // 2. Check DOM renderer rows (.xterm-rows > div)
+        const xtermRowContainers = document.querySelectorAll('.xterm-rows');
+        for (const container of xtermRowContainers) {
+          if (container.closest('.monaco-editor') || container.closest('#ap-solver-host')) continue;
+          const rows = [...container.querySelectorAll(':scope > div, div')];
+          if (rows.length > 0) {
+            const joined = rows.map(r => (r.textContent || '').replace(/\u00a0/g, ' ')).join('\n').trim();
+            if (joined) texts.push(joined);
+          }
+        }
+
+        // 3. Check Accessibility tree rows (.xterm-accessibility-tree / [role="listitem"])
+        const a11yContainers = document.querySelectorAll('.xterm-accessibility-tree, .xterm-accessibility');
+        for (const acc of a11yContainers) {
+          if (acc.closest('.monaco-editor') || acc.closest('#ap-solver-host')) continue;
+          const items = [...acc.querySelectorAll('div, [role="listitem"]')];
+          if (items.length > 0) {
+            const joined = items.map(i => (i.textContent || '').replace(/\u00a0/g, ' ')).join('\n').trim();
+            if (joined) texts.push(joined);
+          }
+        }
+
+        if (texts.length === 0) return '';
+        texts.sort((a, b) => b.length - a.length);
+        return texts[0];
+      }
+    });
+
+    const combined = (res || []).map(r => r?.result || '').filter(Boolean);
+    if (combined.length === 0) return '';
+    combined.sort((a, b) => b.length - a.length);
+    return combined[0];
+  } catch (e) {
+    return '';
+  }
+}
+
+// Helper: Decode GZ:<base64> or RAW:<base64> JSON output captured from terminal
+async function decodeTerminalJsonPayload(rawInner) {
+  const txt = (rawInner || '').trim();
+  const gzMatch = txt.match(/GZ:([A-Za-z0-9+/=\s]+)/);
+  if (gzMatch) {
+    try {
+      const cleanB64 = gzMatch[1].replace(/[^A-Za-z0-9+/=]/g, '');
+      const binStr = atob(cleanB64);
+      const bytes = new Uint8Array(binStr.length);
+      for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+      if (typeof DecompressionStream !== 'undefined') {
+        const ds = new DecompressionStream('gzip');
+        const stream = new Blob([bytes]).stream().pipeThrough(ds);
+        const decompressed = await new Response(stream).text();
+        return JSON.parse(decompressed);
+      }
+    } catch (e) {
+      console.warn('[AP-Solver] GZ decode failed:', e);
+    }
+  }
+  const rawMatch = txt.match(/RAW:([A-Za-z0-9+/=\s]+)/);
+  if (rawMatch) {
+    try {
+      const cleanB64 = rawMatch[1].replace(/[^A-Za-z0-9+/=]/g, '');
+      const binStr = atob(cleanB64);
+      const bytes = new Uint8Array(binStr.length);
+      for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+      const jsonStr = new TextDecoder().decode(bytes);
+      return JSON.parse(jsonStr);
+    } catch (e) {
+      console.warn('[AP-Solver] RAW decode failed:', e);
+    }
+  }
+  return null;
+}
+
+// Execute bash command in Integrated Terminal and capture decoded output between sentinels
+async function runTerminalCommandWithCapture(tabId, { bashCmd, startMarker, endMarker, timeoutMs = 15000 }) {
+  try {
+    // Attempt to enable CDP Accessibility silently so headless/Canvas terminals expose DOM tree if supported
+    try {
+      const att = await attachCDP(tabId);
+      if (att) await sendCDP(tabId, 'Accessibility.enable');
+    } catch (e) {}
+
+    const baseText = await readIntegratedTerminalText(tabId);
+    const countOccurrences = (str, sub) => {
+      if (!str || !sub) return 0;
+      let count = 0, pos = 0;
+      while ((pos = str.indexOf(sub, pos)) !== -1) {
+        count++;
+        pos += sub.length;
+      }
+      return count;
+    };
+    const baseEndCount = countOccurrences(baseText, endMarker);
+
+    const execRes = await dispatchCommandToTerminal(tabId, bashCmd, 300);
+    if (!execRes || !execRes.ok) {
+      return { ok: false, error: execRes?.error || 'Could not dispatch terminal command' };
+    }
+
+    const tStart = Date.now();
+    let sawOutputChange = false;
+    while (Date.now() - tStart < timeoutMs) {
+      await sleep(350);
+      const curText = await readIntegratedTerminalText(tabId, execRes.targetFrameId);
+      if (curText && curText !== baseText) {
+        sawOutputChange = true;
+      }
+
+      const curEndCount = countOccurrences(curText, endMarker);
+      if (curEndCount > baseEndCount) {
+        // Locate the new endMarker position
+        const endIdx = curText.lastIndexOf(endMarker);
+        const startIdx = curText.lastIndexOf(startMarker, endIdx);
+        const sliceStart = startIdx !== -1 ? startIdx + startMarker.length : Math.max(0, endIdx - 6000);
+        const rawBlock = curText.substring(sliceStart, endIdx);
+        return { ok: true, raw: rawBlock, fullText: curText };
+      }
+
+      // Fast-exit if terminal renders via pure WebGL canvas without readable DOM/buffer text
+      if (!sawOutputChange && (Date.now() - tStart > 3500)) {
+        return { ok: false, unreadable: true, error: 'Terminal output unavailable in DOM/buffer' };
+      }
+    }
+
+    return { ok: false, timedOut: true, error: 'Terminal capture timed out waiting for completion marker' };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+}
+
+// Probe container workspace cleanly via terminal: reads package.json, prisma schema, .env, and test/*.js files
+async function probeWorkspaceViaTerminal(tabId) {
+  const probeJs = `
+const fs=require('fs'),zlib=require('zlib');
+const S='===AP'+'_CTX_START===',E='===AP'+'_CTX_END===';
+const out={files:{},allFiles:[]};
+let pkgRaw='';
+try{
+  if(fs.existsSync('package.json')){
+    const raw=fs.readFileSync('package.json','utf8');
+    try{const p=JSON.parse(raw);pkgRaw=JSON.stringify({name:p.name,type:p.type,scripts:p.scripts,dependencies:p.dependencies,devDependencies:p.devDependencies},null,2);}
+    catch(e){pkgRaw=raw.slice(0,2500);}
+    out.files['package.json']=pkgRaw;
+  }
+}catch(e){}
+try{if(fs.existsSync('.env'))out.files['.env']=fs.readFileSync('.env','utf8').slice(0,1000);}catch(e){}
+const testCands=[],keyCands=[];
+function walk(d,depth){
+  if(depth>3)return;
+  let ents=[];try{ents=fs.readdirSync(d,{withFileTypes:true});}catch(e){return;}
+  for(const ent of ents){
+    if(ent.name==='node_modules'||ent.name==='.git'||ent.name==='dist'||ent.name==='build')continue;
+    const p=d==='.'?ent.name:d+'/'+ent.name;
+    if(ent.isDirectory()){walk(p,depth+1);}
+    else{
+      out.allFiles.push(p);
+      if(/(?:^|\\/)(?:test|tests|__tests__)\\/|\\.(?:test|spec)\\.(?:js|ts|mjs|cjs)$/i.test(p))testCands.push(p);
+      else if(/\\.prisma$|^db\\/.*\\.js$|^src\\/.*\\.js$/i.test(p))keyCands.push(p);
+    }
+  }
+}
+walk('.',0);
+for(const p of testCands.slice(0,4)){try{out.files[p]=fs.readFileSync(p,'utf8').slice(0,4500);}catch(e){}}
+for(const p of keyCands.slice(0,5)){try{if(fs.statSync(p).size<8000)out.files[p]=fs.readFileSync(p,'utf8').slice(0,1800);}catch(e){}}
+let gz=zlib.gzipSync(Buffer.from(JSON.stringify(out))).toString('base64');
+if(gz.length>1600){
+  for(const p of keyCands){if(out.files[p]&&p!=='prisma/schema.prisma'&&!p.endsWith('schema.prisma'))delete out.files[p];}
+  gz=zlib.gzipSync(Buffer.from(JSON.stringify(out))).toString('base64');
+}
+if(gz.length>1600){
+  for(const p of testCands){if(out.files[p])out.files[p]=out.files[p].slice(0,2200);}
+  gz=zlib.gzipSync(Buffer.from(JSON.stringify(out))).toString('base64');
+}
+console.log('\\n'+S+'\\nGZ:'+gz+'\\n'+E);
+`.trim();
+
+  const b64 = typeof Buffer !== 'undefined' ? Buffer.from(probeJs).toString('base64') : btoa(unescape(encodeURIComponent(probeJs)));
+  const bashCmd = `echo "${b64}" | base64 -d | node 2>/dev/null || printf "===AP""_CTX_START===\\nRAW:e30=\\n===AP""_CTX_END===\\n"`;
+
+  const cap = await runTerminalCommandWithCapture(tabId, {
+    bashCmd,
+    startMarker: '===AP_CTX_START===',
+    endMarker: '===AP_CTX_END===',
+    timeoutMs: 8000
+  });
+
+  if (!cap.ok) return cap;
+  const decoded = await decodeTerminalJsonPayload(cap.raw);
+  if (!decoded) return { ok: false, error: 'Failed to parse probe payload' };
+  return { ok: true, files: decoded.files || {}, allFiles: decoded.allFiles || [] };
+}
+
+// Run local container test suite (`npm test` / Mocha / Jest) BEFORE clicking Submit Solution
+async function runLocalTestsViaTerminal(tabId) {
+  const runnerJs = `
+const fs=require('fs'),zlib=require('zlib'),{spawnSync}=require('child_process');
+const S='===AP'+'_LTEST_START===',E='===AP'+'_LTEST_END===';
+let pkg={};try{pkg=JSON.parse(fs.readFileSync('package.json','utf8'));}catch(e){}
+const script=(pkg.scripts&&pkg.scripts.test)||'';
+const hasScript=Boolean(script&&!/no test specified/i.test(script));
+const dirs=['test','tests','__tests__','src/__tests__','src/test'].filter(d=>fs.existsSync(d));
+const rootTests=fs.readdirSync('.').filter(f=>/\\.(test|spec)\\.(js|ts|mjs|cjs)$/i.test(f));
+if(!hasScript&&dirs.length===0&&rootTests.length===0){
+  const p=zlib.gzipSync(Buffer.from(JSON.stringify({skip:true}))).toString('base64');
+  console.log('\\n'+S+'\\nGZ:'+p+'\\n'+E);
+  process.exit(0);
+}
+const cmd=hasScript?'npm test':('npx -y mocha '+(dirs.length?dirs.map(d=>"'"+d+"/**/*.{js,ts}'").join(' '):"'*.test.js'"));
+const r=spawnSync('sh',['-c',cmd],{encoding:'utf8',timeout:30000,env:{...process.env,NODE_ENV:'test',CI:'true'}});
+const raw=((r.stdout||'')+'\\n'+(r.stderr||'')).replace(/\\x1b\\[[0-9;]*m/g,'');
+const clean=raw.split('\\n').filter(l=>!/^\\s*at .*(?:node_modules|node:internal)/.test(l)).join('\\n');
+const passM=raw.match(/(\\d+)\\s+passing/i);
+const failM=raw.match(/(\\d+)\\s+failing/i);
+const jestFailM=raw.match(/Tests:\\s*(\\d+)\\s+failed/i);
+const passed=passM?parseInt(passM[1],10):0;
+const failed=failM?parseInt(failM[1],10):(jestFailM?parseInt(jestFailM[1],10):(r.status===0?0:1));
+const timedOut=!!(r.error&&r.error.code==='ETIMEDOUT');
+let limit=8000,gz='';
+while(limit>=1200){
+  const payload={skip:false,exitCode:r.status===null?1:r.status,timedOut,passed,failed,output:clean.slice(-limit)};
+  gz=zlib.gzipSync(Buffer.from(JSON.stringify(payload))).toString('base64');
+  if(gz.length<=1650)break;
+  limit=Math.floor(limit*0.65);
+}
+console.log('\\n[Local Test] pass='+passed+' fail='+failed+' exit='+(r.status===null?1:r.status));
+console.log(S+'\\nGZ:'+gz+'\\n'+E);
+`.trim();
+
+  const b64 = typeof Buffer !== 'undefined' ? Buffer.from(runnerJs).toString('base64') : btoa(unescape(encodeURIComponent(runnerJs)));
+  const bashCmd = `echo "${b64}" | base64 -d | node`;
+
+  const cap = await runTerminalCommandWithCapture(tabId, {
+    bashCmd,
+    startMarker: '===AP_LTEST_START===',
+    endMarker: '===AP_LTEST_END===',
+    timeoutMs: 36000
+  });
+
+  if (!cap.ok) {
+    return {
+      ok: false,
+      status: cap.unreadable ? 'unreadable' : 'error',
+      error: cap.error
+    };
+  }
+
+  const decoded = await decodeTerminalJsonPayload(cap.raw);
+  if (!decoded) {
+    return { ok: false, status: 'unreadable', error: 'Could not decode local test payload' };
+  }
+  if (decoded.skip) {
+    return { ok: true, status: 'no_local_tests' };
+  }
+
+  const allPassed = decoded.exitCode === 0 && decoded.failed === 0 && !decoded.timedOut;
+  return {
+    ok: true,
+    status: allPassed ? 'passed' : 'failed',
+    exitCode: decoded.exitCode,
+    passed: decoded.passed || 0,
+    failed: decoded.failed || 0,
+    timedOut: decoded.timedOut,
+    output: decoded.output || ''
+  };
 }
 
 // Direct Terminal File Injection Engine (Zero-Click Linux Disk Writer)
 async function writeFilesViaTerminal(tabId, files, customScript = null) {
   if (!files || files.length === 0) return { ok: false, error: 'No files provided' };
 
-  // Ensure Terminal is open
-  await ensureTerminalOpen(tabId);
-
-  // Generate atomic base64 bash command
   const bashScript = customScript || buildBase64TerminalScript(files);
 
   try {
-    // 1. Scan all frames to find the frame containing the Integrated Terminal
-    const scanRes = await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
-      func: () => {
-        const candidates = [
-          ...document.querySelectorAll('.terminal-outer-container, .terminal-wrapper, .terminal.xterm, .pane-body.integrated-terminal, canvas.xterm-text-layer, canvas.xterm-cursor-layer, .xterm-screen, textarea.xterm-helper-textarea')
-        ];
-        for (const term of candidates) {
-          const parent = term.closest('.terminal, .terminal-wrapper, .integrated-terminal') || term;
-          if (parent.closest('.monaco-editor')) continue;
-          const r = parent.getBoundingClientRect();
-          if (r.width > 40 && r.height > 30) {
-            return {
-              found: true,
-              x: r.left + Math.min(r.width / 2, 200),
-              y: r.top + Math.min(r.height / 2, 80),
-              width: r.width,
-              height: r.height
-            };
-          }
-        }
-        return { found: false };
-      }
-    });
-
-    let match = scanRes?.find(r => r.result && r.result.found);
-    if (!match) {
-      await ensureTerminalOpen(tabId);
-      await sleep(350);
-      const retryScan = await chrome.scripting.executeScript({
-        target: { tabId, allFrames: true },
-        func: () => {
-          const ta = document.querySelector('textarea.xterm-helper-textarea, .terminal textarea, .integrated-terminal textarea, [class*="xterm" i] textarea');
-          if (ta && !ta.closest('.monaco-editor')) {
-            const r = ta.getBoundingClientRect();
-            return { found: true, x: r.left, y: r.top, width: r.width, height: r.height };
-          }
-          return { found: false };
-        }
-      });
-      match = retryScan?.find(r => r.result && r.result.found);
+    const res = await dispatchCommandToTerminal(tabId, bashScript, 0);
+    if (!res || !res.ok) {
+      return res;
     }
 
-    const targetFrameId = match?.frameId;
+    // Wait dynamically for heavy setup commands (prisma install/db push/seed) to complete cleanly before returning
+    const hasHeavyCmd = /prisma|npm install/i.test(bashScript);
+    const maxWait = hasHeavyCmd ? 14000 : 3000;
+    const baseline = await readIntegratedTerminalText(tabId, res.targetFrameId);
+    const baseDoneCount = (baseline.match(/AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY/g) || []).length;
+    const t0 = Date.now();
+    await sleep(900);
 
-    // 2. PRIMARY DIRECT METHOD: In-Frame DOM Injection into xterm textarea
-    // This executes directly inside the target frame on the verified terminal textarea,
-    // guaranteeing Monaco editor buffer is 100% UNTOUCHED!
-    if (targetFrameId !== undefined) {
-      try {
-        const inFrameRes = await chrome.scripting.executeScript({
-          target: { tabId, frameIds: [targetFrameId] },
-          func: (cmd) => {
-            // Unfocus any monaco editor
-            document.querySelectorAll('.monaco-editor textarea, textarea.inputarea').forEach(t => { try { t.blur(); } catch(e) {} });
-
-            const ta = document.querySelector('textarea.xterm-helper-textarea, .terminal textarea, .integrated-terminal textarea, [class*="xterm" i] textarea');
-            if (ta && !ta.closest('.monaco-editor')) {
-              try { ta.focus(); } catch(e) {}
-
-              // Try xterm.paste if available on element
-              const termEl = document.querySelector('.terminal-wrapper, .terminal.xterm, .pane-body.integrated-terminal');
-              let pasted = false;
-              for (const k of ['xterm', '_xterm', '__xterm']) {
-                if (termEl && termEl[k] && typeof termEl[k].paste === 'function') {
-                  try {
-                    termEl[k].paste(cmd + '\n');
-                    pasted = true;
-                    break;
-                  } catch(e) {}
-                }
-              }
-
-              if (pasted) {
-                return true;
-              }
-              // STRICT SAFETY GUARD: NEVER execute document.execCommand here!
-              // Calling document.execCommand in VS Code web targets Monaco editor if xterm is not natively active.
-              return false;
-            }
-            return false;
-          },
-          args: [bashScript]
-        });
-
-        if (inFrameRes?.[0]?.result === true) {
-          console.log('[AP-Solver Terminal] In-frame script injection executed successfully in frame', targetFrameId);
-          await sleep(1500);
-          return { ok: true, method: 'terminal.inFrameScript' };
-        }
-      } catch (e) {
-        console.warn('[AP-Solver Terminal] inFrameScript error:', e);
+    while (Date.now() - t0 < maxWait) {
+      const curText = await readIntegratedTerminalText(tabId, res.targetFrameId);
+      const curDoneCount = (curText.match(/AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY/g) || []).length;
+      if (curDoneCount > baseDoneCount + 1 || (curDoneCount > baseDoneCount && /(?:^|\n)[^\n]*[$#]\s*$/.test(curText.trimEnd()))) {
+        break;
       }
+      if (!curText && (Date.now() - t0 > (hasHeavyCmd ? 4500 : 1400))) {
+        break;
+      }
+      await sleep(450);
     }
 
-    // Secondary fallback: in-frame sendMessage
-    if (targetFrameId !== undefined) {
-      try {
-        const injectResp = await chrome.tabs.sendMessage(tabId, {
-          op: 'AP_INJECT_TERMINAL_COMMAND',
-          data: { command: bashScript }
-        }, { frameId: targetFrameId });
-        if (injectResp && injectResp.ok) {
-          console.log('[AP-Solver Terminal] In-frame message injection succeeded.');
-          await sleep(1500);
-          return { ok: true, method: 'terminal.inFrame' };
-        }
-      } catch (e) {}
-    }
-
-    // 3. HARDWARE CDP FALLBACK: STRICT FOCUS GUARD
-    // ONLY allowed if document.activeElement is CONFIRMED to be the xterm-helper-textarea!
-    // NEVER type via CDP if Monaco editor is focused or if terminal focus cannot be proven!
-    const attached = await attachCDP(tabId);
-    if (attached && match) {
-      // Focus xterm helper textarea explicitly
-      if (targetFrameId !== undefined) {
-        try {
-          await chrome.scripting.executeScript({
-            target: { tabId, frameIds: [targetFrameId] },
-            func: () => {
-              document.querySelectorAll('.monaco-editor textarea, textarea.inputarea').forEach(t => { try { t.blur(); } catch(e) {} });
-              const ta = document.querySelector('textarea.xterm-helper-textarea, .terminal textarea, .integrated-terminal textarea');
-              if (ta && !ta.closest('.monaco-editor')) {
-                try { ta.focus(); ta.click(); } catch(e) {}
-              }
-            }
-          });
-        } catch(e) {}
-      }
-
-      // Check focus across all frames
-      const focusCheck = await chrome.scripting.executeScript({
-        target: { tabId, allFrames: true },
-        func: () => {
-          const el = document.activeElement;
-          if (!el) return { isTerminal: false, isMonaco: false };
-          const isTerminal = el.classList.contains('xterm-helper-textarea') || (el.tagName === 'TEXTAREA' && !!el.closest('.terminal, .integrated-terminal'));
-          const isMonaco = el.classList.contains('inputarea') || !!el.closest('.monaco-editor');
-          return { isTerminal, isMonaco };
-        }
-      });
-
-      const isTerminalFocused = focusCheck?.some(f => f.result?.isTerminal);
-      const isMonacoFocused = focusCheck?.some(f => f.result?.isMonaco);
-
-      if (isTerminalFocused && !isMonacoFocused) {
-        // Double-check focus to protect editor: explicitly click terminal canvas coordinates first
-        if (match.x && match.y) {
-          await cdpNativeClick(tabId, match.x, match.y);
-          await sleep(150);
-        }
-        await cdpNativeKey(tabId, 'c', 'KeyC', 67, 2); // Ctrl+C
-        await sleep(120);
-        await cdpNativeInsertText(tabId, bashScript);
-        await sleep(120);
-        await cdpNativeKey(tabId, 'Enter', 'Enter', 13, 0);
-        await sleep(1500);
-        return { ok: true, method: 'terminal.cdp' };
-      } else {
-        console.warn('[AP-Solver Terminal] Focus guard: Terminal does not have confirmed exclusive focus (isTerminal:', isTerminalFocused, 'isMonaco:', isMonacoFocused, '). Aborting CDP typing to protect editor.');
-        return { ok: false, error: 'Terminal does not have active focus. Command copied to clipboard.' };
-      }
-    }
-
-    return { ok: false, error: 'Terminal not found across frames' };
+    return { ok: true, method: res.method };
   } catch (e) {
     console.warn('[AP-Solver Terminal] writeFilesViaTerminal error:', e);
     return { ok: false, error: e.message || String(e) };
@@ -1738,6 +2059,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return;
         }
         const resp = await queryEditorInTab(tabId);
+        sendResponse(resp);
+      } else if (op === 'AP_PROBE_WORKSPACE') {
+        const tabId = sender.tab?.id;
+        if (!tabId) {
+          sendResponse({ ok: false, error: 'No tab ID found in sender.' });
+          return;
+        }
+        const resp = await probeWorkspaceViaTerminal(tabId);
+        sendResponse(resp);
+      } else if (op === 'AP_RUN_LOCAL_TESTS') {
+        const tabId = sender.tab?.id;
+        if (!tabId) {
+          sendResponse({ ok: false, error: 'No tab ID found in sender.' });
+          return;
+        }
+        const resp = await runLocalTestsViaTerminal(tabId);
         sendResponse(resp);
       } else if (op === 'AP_WRITE_EDITOR') {
         const tabId = sender.tab?.id;

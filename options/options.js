@@ -34,7 +34,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (radio) radio.checked = true;
 
   geminiKeyInput.value = settings.geminiKey || '';
-  geminiModelSelect.value = (settings.geminiModel && settings.geminiModel !== 'gemini-2.5-flash') ? settings.geminiModel : 'gemini-3.8-flash';
+  const loadedGeminiModel = (settings.geminiModel && settings.geminiModel !== 'gemini-1.5-flash') ? settings.geminiModel : 'gemini-3.8-flash';
+  geminiModelSelect.value = [...geminiModelSelect.options].some(o => o.value === loadedGeminiModel) ? loadedGeminiModel : 'gemini-3.8-flash';
 
   groqKeyInput.value = settings.groqKey || '';
   groqModelSelect.value = (!settings.groqModel || settings.groqModel.includes('llama') || settings.groqModel.includes('mixtral')) ? 'openai/gpt-oss-120b' : settings.groqModel;
