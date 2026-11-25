@@ -51,9 +51,9 @@
 
 /* Expanded Card */
 .ap-card {
-  width: 620px;
+  width: 650px;
   max-width: 95vw;
-  max-height: 92vh;
+  max-height: 94vh;
   background: rgba(15, 23, 42, 0.96);
   backdrop-filter: blur(16px);
   border: 1px solid rgba(56, 189, 248, 0.25);
@@ -181,11 +181,11 @@
 
 /* Body */
 .ap-body {
-  padding: 16px;
+  padding: 14px 16px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  max-height: calc(90vh - 55px);
+  gap: 10px;
+  max-height: calc(94vh - 48px);
   overflow-y: auto;
 }
 
@@ -237,35 +237,6 @@
   font-size: 11.5px;
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-/* Question Info Box */
-.ap-info-box {
-  background: rgba(15, 23, 42, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  border-radius: 10px;
-  padding: 10px 12px;
-  font-size: 12px;
-}
-
-.ap-info-row {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 4px;
-}
-
-.ap-info-label {
-  color: #64748b;
-  font-weight: 500;
-}
-
-.ap-info-val {
-  color: #e2e8f0;
-  font-weight: 600;
-  max-width: 280px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* Primary Action Button */
@@ -379,17 +350,22 @@
   border-color: #38bdf8;
 }
 
-/* Log Console */
+/* Log Console (Expanded vertical area for full terminal/execution visibility) */
 .ap-log-container {
   background: rgba(10, 15, 26, 0.85);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 8px;
-  padding: 10px 12px;
-  max-height: 250px;
-  min-height: 100px;
+  padding: 12px 14px;
+  flex: 1 1 auto;
+  flex-shrink: 0;
+  min-height: 320px;
+  max-height: 56vh;
   overflow-y: auto;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 11px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .ap-log-entry {
@@ -546,31 +522,6 @@
   border-color: #10b981;
   color: #fff;
   box-shadow: 0 0 10px rgba(16, 185, 129, 0.3);
-}
-
-.ap-btn-copy-terminal-big {
-  background: linear-gradient(135deg, #059669, #10b981);
-  color: #ffffff;
-  border: none;
-  border-radius: 8px;
-  font-size: 11px;
-  font-weight: 700;
-  padding: 8px 12px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  transition: all 0.2s ease;
-  box-shadow: 0 2px 10px rgba(16, 185, 129, 0.3);
-  margin-top: 6px;
-  width: 100%;
-}
-
-.ap-btn-copy-terminal-big:hover {
-  background: linear-gradient(135deg, #10b981, #34d399);
-  box-shadow: 0 4px 15px rgba(16, 185, 129, 0.5);
-  transform: translateY(-1px);
 }
 
 .ap-multi-files-hint {

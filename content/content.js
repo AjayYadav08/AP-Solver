@@ -1295,11 +1295,10 @@
     // STRICT ZERO-TOUCH POLICY: NEVER TOUCH OR POLLUTE MONACO EDITOR!
     // All files must be written strictly to the Linux container disk via terminal commands.
     ui.addLog(`📋 Multi-file bash script is COPIED in your clipboard!`, 'ok');
-    ui.addLog(`👉 Press Cmd+V (or right-click Paste) in the bottom Terminal & press Enter!`, 'warn');
-    ui.addLog(`⚡ Once executed in Terminal, click "⚡ I Pasted in Terminal (Proceed to Submit)" below!`, 'ok');
-    ui.setStatus('Action Required: Paste in Terminal', 'Script is in clipboard. Paste into bottom Terminal and click "⚡ I Pasted in Terminal".', 'warn');
+    ui.addLog(`👉 Press Cmd+V (or right-click Paste) in the bottom Terminal & press Enter to run!`, 'warn');
+    ui.setStatus('Action Required: Paste in Terminal', 'Script is in clipboard. Paste into bottom Terminal and press Enter.', 'warn');
 
-    // Wait up to 25 seconds for the user or automated runner to confirm terminal paste
+    // Wait up to 25 seconds for the terminal output monitor to confirm execution
     for (let waitSec = 0; waitSec < 25; waitSec++) {
       if (filesWrittenViaTerminal) {
         ui.addLog(`⚡ [Terminal-First Architecture] Files confirmed written cleanly to container disk via Terminal! Monaco editor completely bypassed.`, 'ok');
@@ -1356,7 +1355,7 @@
 
     if (failedFiles.length > 0) {
       ui.addLog(`🛑 Submission BLOCKED: Do not click submit until each required file's code is updated!`, 'bad');
-      ui.addLog(`⚠️ Terminal paste pending. Please paste into terminal and click "⚡ I Pasted in Terminal".`, 'warn');
+      ui.addLog(`⚠️ Terminal write did not complete in time. Paste clipboard command into Terminal or click Solve again.`, 'warn');
       return { ok: false, updatedFiles, failedFiles };
     }
 

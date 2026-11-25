@@ -194,27 +194,7 @@ window.APSolverUI = class APSolverUI {
             <div class="ap-status-detail">Click "Solve" to solve and submit automatically.</div>
           </div>
 
-          <!-- Problem & Editor Detected Box -->
-          <div class="ap-info-box">
-            <div class="ap-info-row">
-              <span class="ap-info-label">Question:</span>
-              <span class="ap-info-val ap-val-title" title="${this.problemInfo.title}">${this.problemInfo.title}</span>
-            </div>
-            <div class="ap-info-row">
-              <span class="ap-info-label">Difficulty / XP:</span>
-              <span class="ap-info-val ap-val-diff">${this.problemInfo.difficulty} (${this.problemInfo.points})</span>
-            </div>
-            <div class="ap-info-row">
-              <span class="ap-info-label">Test Cases:</span>
-              <span class="ap-info-val ap-val-tests">${testDisplay}</span>
-            </div>
-            <div class="ap-info-row">
-              <span class="ap-info-label">Active File:</span>
-              <span class="ap-info-val ap-val-file" title="${this.problemInfo.activeFile}">${this.problemInfo.activeFile}</span>
-            </div>
-          </div>
-
-          <!-- Multi-File Solution Manager (Shows each file with instant ⚡ Inject & 📋 Copy & 💻 Terminal Script) -->
+          <!-- Multi-File Solution Manager (Compact cards with individual Copy & Inject + small header Terminal Script copy) -->
           ${this.generatedFiles && this.generatedFiles.length > 0 ? `
             <div class="ap-multi-files-box">
               <div class="ap-multi-files-head">
@@ -237,12 +217,6 @@ window.APSolverUI = class APSolverUI {
                   </div>
                 `).join('')}
               </div>
-              <button class="ap-btn-copy-terminal-big" title="Copies a single bash command for all files. Paste into bottom terminal and press Enter!">
-                💻 Copy 1-Click Terminal Script (All Files)
-              </button>
-              <button class="ap-btn-confirm-terminal-pasted" style="margin-top: 6px; background: linear-gradient(135deg, #059669, #10b981); color: #ffffff; border: 1px solid rgba(16,185,129,0.3); border-radius: 6px; padding: 7px 12px; font-weight: 600; font-size: 12px; cursor: pointer; width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);" title="If you pasted the script into the terminal, click this to proceed to submission immediately!">
-                ⚡ I Pasted in Terminal (Proceed to Submit)
-              </button>
             </div>
           ` : ''}
 
@@ -251,7 +225,7 @@ window.APSolverUI = class APSolverUI {
             ${this.isRunning ? '<span class="ap-spinner"></span> Solving...' : '⚡ Solve'}
           </button>
 
-          <!-- Real-Time Log Console -->
+          <!-- Expanded Terminal & Real-Time Log Console -->
           <div class="ap-log-container">
             ${this.logs.map((l) => `<div class="ap-log-entry ${l.type}"><span class="ap-log-time">[${l.time}]</span> ${l.msg}</div>`).join('')}
           </div>
@@ -264,27 +238,6 @@ window.APSolverUI = class APSolverUI {
 
   renderBodyContent() {
     if (this.isMinimized || !this.host) return;
-
-    const titleEl = this.host.querySelector('.ap-val-title');
-    if (titleEl) {
-      titleEl.textContent = this.problemInfo.title;
-      titleEl.title = this.problemInfo.title;
-    }
-    const diffEl = this.host.querySelector('.ap-val-diff');
-    if (diffEl) diffEl.textContent = `${this.problemInfo.difficulty} (${this.problemInfo.points})`;
-
-    const testsEl = this.host.querySelector('.ap-val-tests');
-    if (testsEl) {
-      testsEl.textContent = this.problemInfo.testCasesCount > 0
-        ? `${this.problemInfo.testCasesCount} detected`
-        : 'Extracted from Requirements';
-    }
-
-    const fileEl = this.host.querySelector('.ap-val-file');
-    if (fileEl) {
-      fileEl.textContent = this.problemInfo.activeFile;
-      fileEl.title = this.problemInfo.activeFile;
-    }
   }
 
   bindEvents() {
@@ -395,8 +348,8 @@ window.APSolverUI = class APSolverUI {
       return res.filter(l => l.trim().length > 0).join('\n');
     };
 
-    // Multi-File Copy All-in-One Terminal Script buttons (Base64 atomic single-line)
-    const termBtns = this.host.querySelectorAll('.ap-btn-copy-terminal-script, .ap-btn-copy-terminal-big');
+    // Multi-File Copy All-in-One Terminal Script button in header (Base64 atomic single-line)
+    const termBtns = this.host.querySelectorAll('.ap-btn-copy-terminal-script');
     termBtns.forEach((btn) => {
       btn.onclick = async () => {
         let bashScript = '';
@@ -476,24 +429,6 @@ window.APSolverUI = class APSolverUI {
         }
       };
     });
-
-    // Multi-File Confirm Terminal Pasted button
-    const confirmPastedBtn = this.host.querySelector('.ap-btn-confirm-terminal-pasted');
-    if (confirmPastedBtn) {
-      confirmPastedBtn.onclick = () => {
-        console.log('[AP-Solver] User confirmed script was pasted in terminal.');
-        if (this.generatedFiles && this.generatedFiles.length > 0) {
-          for (const f of this.generatedFiles) {
-            this.setFileStatus(f.filePath, 'injected');
-          }
-        }
-        this.addLog('⚡ Terminal paste confirmed! Proceeding with verification & submission...', 'ok');
-        this.setStatus('Verified via Terminal', 'All files saved to container disk.', 'success');
-        if (this.callbacks.onConfirmTerminalPasted) {
-          this.callbacks.onConfirmTerminalPasted();
-        }
-      };
-    }
 
     // Multi-File Individual Copy buttons
     const copyBtns = this.host.querySelectorAll('.ap-btn-file-copy');

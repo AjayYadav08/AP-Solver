@@ -780,12 +780,14 @@ if (!frameEditorJs27.includes('AP_CHECK_TERMINAL') ||
   throw new Error('frame-editor.js must support direct in-frame terminal operations!');
 }
 
-// 3. Verify confirm pasted button & callback
-if (!solverUiJs27.includes('ap-btn-confirm-terminal-pasted') ||
-    !contentJs27.includes('onConfirmTerminalPasted')) {
-  throw new Error('solver-ui.js and content.js must support 1-click confirm terminal pasted!');
+// 3. Verify compact UI: removed question info box & big green buttons while expanding log terminal output
+if (solverUiJs27.includes('ap-info-box') ||
+    solverUiJs27.includes('ap-btn-copy-terminal-big') ||
+    solverUiJs27.includes('ap-btn-confirm-terminal-pasted') ||
+    !stylesCss.includes('min-height: 320px')) {
+  throw new Error('solver-ui.js must remove ap-info-box and giant green buttons, and expand .ap-log-container height in styles.css!');
 }
-console.log('   ✓ Base64 Atomic Terminal Script, In-Frame Controller & 1-Click Paste Confirmation verified');
+console.log('   ✓ Base64 Atomic Terminal Script, In-Frame Controller & Expanded Terminal Output UI verified');
 
 console.log('28. Testing Current Code in SRC Attachment on Test Failures...');
 const bridgeJs28 = fs.readFileSync(path.join(__dirname, 'content/main-world-bridge.js'), 'utf8');
