@@ -486,9 +486,10 @@
         // Check green
         if (
           fill === '#009965' || fill.includes('green') || fill.includes('#10b981') || fill.includes('#22c55e') ||
-          stroke === '#009965' || stroke.includes('green') ||
-          cls.includes('green') || cls.includes('pass') || cls.includes('success') ||
-          style.includes('green') || style.includes('#009965') || style.includes('rgb(0, 153')
+          fill.includes('#16a34a') || fill.includes('#059669') ||
+          stroke === '#009965' || stroke.includes('green') || stroke.includes('#10b981') || stroke.includes('#16a34a') ||
+          cls.includes('green') || cls.includes('pass') || cls.includes('success') || cls.includes('check') ||
+          style.includes('green') || style.includes('#009965') || style.includes('#10b981') || style.includes('rgb(0, 153') || style.includes('rgb(16, 185')
         ) {
           isGreen = true;
         }
@@ -496,9 +497,10 @@
         // Check red
         if (
           fill === '#ef4444' || fill.includes('red') || fill.includes('#dc2626') || fill.includes('#e11d48') ||
-          stroke === '#ef4444' || stroke.includes('red') ||
-          cls.includes('red') || cls.includes('fail') || cls.includes('error') ||
-          style.includes('red') || style.includes('#ef4444') || style.includes('rgb(239,')
+          fill.includes('#f43f5e') || fill.includes('#b91c1c') ||
+          stroke === '#ef4444' || stroke.includes('red') || stroke.includes('#dc2626') || stroke.includes('#e11d48') ||
+          cls.includes('red') || cls.includes('rose') || cls.includes('fail') || cls.includes('error') ||
+          style.includes('red') || style.includes('#ef4444') || style.includes('#dc2626') || style.includes('rgb(239,') || style.includes('rgb(220,')
         ) {
           isRed = true;
         }
@@ -512,10 +514,18 @@
             const cs = window.getComputedStyle(svg);
             const col = cs.color || '';
             const fill = cs.fill || '';
-            if (col.includes('239,') || col.includes('220,') || fill.includes('239,') || fill.includes('220,')) isRed = true;
-            if (col.includes('0, 153') || col.includes('16, 185') || fill.includes('0, 153') || fill.includes('16, 185')) isGreen = true;
+            const stroke = cs.stroke || '';
+            if (col.includes('239,') || col.includes('220,') || col.includes('244,') || fill.includes('239,') || fill.includes('220,') || stroke.includes('239,') || stroke.includes('220,')) isRed = true;
+            if (col.includes('0, 153') || col.includes('16, 185') || col.includes('34, 197') || fill.includes('0, 153') || fill.includes('16, 185') || stroke.includes('0, 153') || stroke.includes('16, 185')) isGreen = true;
           } catch (e) {}
         }
+      }
+
+      // Text/badge fallback on row when SVG styling uses CSS variables or classes without explicit RGB
+      if (!isGreen && !isRed) {
+        const rowTxt = (row.innerText || '').trim();
+        if (/\bfailed\b|\bfail\b|✕|✖|❌/i.test(rowTxt) && !/\bpass(?:ed)?\b/i.test(rowTxt)) isRed = true;
+        else if (/\bpassed\b|✓|✅/i.test(rowTxt) && !/\bfail(?:ed)?\b/i.test(rowTxt)) isGreen = true;
       }
 
       const status = isRed ? 'FAIL' : (isGreen ? 'PASS' : 'PENDING');
@@ -883,6 +893,55 @@
   }
 
   let cachedGeneratedFiles = [];
+  let cachedCommands = [];
+  let attemptHistory = [];
+
+  /** Detect required safe post-write terminal commands (npm build/migrate/install, prisma, backtick CLI) in content frame. */
+  function detectClientPostWriteCommands(questionDetails = '', pkgStr = '', filesToWrite = [], errOutput = '') {
+    const cmds = [];
+    const pushCmd = (c) => {
+      const t = String(c || '').trim().replace(/^(?:\$|>\s*|#\s*)/, '').trim();
+      if (!t || t.startsWith('#') || t.startsWith('//') || t.length > 260) return;
+      if (/(?:rm\s+-[a-z]*rf?\s+\/(?:\s|$)|mkfs|shutdown|reboot|\|\s*(?:ba)?sh\b)/i.test(t)) return;
+      if (/^(?:npm\s+(?:test|t|start)|npm\s+run\s+(?:test|start|dev|watch)\b|nodemon\b|node\s+(?:src\/)?index\.js\b)/i.test(t)) return;
+      if (/^(?:npm\s+(?:install|i|ci|run\s+[\w:.-]+|exec)|npx\s+|node\s+|prisma\s+|tsc\b|psql\b|sqlite3\b|python3?\s+)/i.test(t) && !cmds.includes(t)) {
+        cmds.push(t);
+      }
+    };
+
+    let pkg = {};
+    try { if (pkgStr) pkg = JSON.parse(pkgStr); } catch (e) {}
+    const scripts = pkg.scripts || {};
+    const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+    const builtins = new Set(['assert','buffer','child_process','crypto','events','fs','http','http2','https','module','net','os','path','process','querystring','readline','stream','timers','tls','tty','url','util','zlib']);
+
+    if (errOutput) {
+      for (const m of String(errOutput).matchAll(/Cannot find module\s+['"]([^'"]+)['"]/gi)) {
+        const mod = (m[1] || '').trim();
+        if (!mod || mod.startsWith('.') || mod.startsWith('/') || mod.startsWith('node:')) continue;
+        const pkgName = mod.startsWith('@') ? mod.split('/').slice(0, 2).join('/') : mod.split('/')[0];
+        if (builtins.has(pkgName)) continue;
+        if (/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/i.test(pkgName)) {
+          pushCmd(deps[pkgName] ? 'npm install --no-audit --no-fund' : `npm install --no-audit --no-fund ${pkgName}`);
+        }
+      }
+      if (/sh:\s*\d+:\s*(?:mocha|jest|tsc|prisma):\s*not found/i.test(errOutput)) pushCmd('npm install --no-audit --no-fund');
+      if (/@prisma\/client did not initialize|PrismaClientInitializationError|table\s+.*\s+does not exist/i.test(errOutput)) {
+        pushCmd('npx -y prisma generate');
+        pushCmd('npx -y prisma db push --skip-generate');
+      }
+      if (/Cannot find module\s+['"]\.\/(?:dist|build)\//i.test(errOutput) && scripts.build) pushCmd('npm run build');
+    }
+
+    if ((filesToWrite || []).some(f => /\.ts$/i.test(f.filePath || '')) && scripts.build) pushCmd('npm run build');
+    if (scripts.migrate) pushCmd('npm run migrate');
+    if (questionDetails) {
+      for (const bm of String(questionDetails).matchAll(/`((?:npm\s+run\s+(?:build|seed|migrate|setup|db:[a-z0-9_-]+)|npx\s+(?:prisma\s+(?:migrate|db\s+push|generate)|tsc)[^`]*|node\s+src\/(?:seed|init|setup|migrate)[^`]*))`/gi)) {
+        pushCmd(bm[1]);
+      }
+    }
+    return cmds;
+  }
 
   async function handleGenerate(feedback = null) {
     if (!cachedQuestion) {
@@ -895,9 +954,9 @@
     const isDebug = !!feedback;
     const provider = ui.options.provider || 'race';
     const providerName = isDebug
-      ? '🧠 Debug Escalation (Gemini Pro → Groq Fallback)'
+      ? '🧠 Debug Escalation (Gemini Pro / Groq Fallback)'
       : (provider === 'gemini'
-          ? 'Google Gemini (3.8 Flash)'
+          ? 'Google Gemini (2.5 Flash)'
           : provider === 'groq'
             ? 'Groq AI (GPT OSS 120B)'
             : provider === 'race'
@@ -933,10 +992,18 @@
       feedback
     };
 
-    const resp = await sendMsg({
-      op: 'AP_GENERATE',
-      data: { promptData, settingsOverride: ui.options }
-    }, 150000);
+    const keepAliveTimer = setInterval(() => {
+      sendMsg({ op: 'AP_KEEPALIVE' }, 3000).catch(() => {});
+    }, 20000);
+    let resp;
+    try {
+      resp = await sendMsg({
+        op: 'AP_GENERATE',
+        data: { promptData, settingsOverride: ui.options }
+      }, 210000);
+    } finally {
+      clearInterval(keepAliveTimer);
+    }
 
     if (!resp || !resp.ok) {
       const err = resp?.error || 'Unknown generation failure';
@@ -946,6 +1013,7 @@
     }
 
     cachedGeneratedCode = resp.result.code;
+    cachedCommands = Array.isArray(resp.result.commands) ? resp.result.commands : [];
     const newFiles = resp.result.files || [{ filePath: sanitizeActiveFile(cachedEditor?.activeFile), code: cachedGeneratedCode }];
 
     // Merge new files into cachedGeneratedFiles to preserve all workspace files across debug iterations
@@ -972,6 +1040,9 @@
     const winnerTag = resp.result.raceWinner ? ` [Won by ${resp.result.raceWinner} in ${resp.result.latencyMs}ms]` : '';
     const fileSummary = cachedGeneratedFiles.map(f => f.filePath).join(', ');
     ui.addLog(`✓ Solution generated by ${resp.result.model}${winnerTag} for [${fileSummary}]`, 'ok');
+    if (cachedCommands.length > 0) {
+      ui.addLog(`⚙️ AI requested post-write command(s): ${cachedCommands.join(' && ')}`, 'normal');
+    }
     ui.setStatus('Solution Generated', `${cachedGeneratedFiles.length} file(s) ready [${fileSummary}].`, 'success');
 
     return cachedGeneratedCode;
@@ -1197,11 +1268,11 @@
 
     ui.setStatus(`Injecting solution into ${filesToWrite.length} file(s)...`, '', 'running', true);
 
-    // Build all-in-one atomic base64 terminal bash script for these files (Direct Linux Disk Writer)
+    // Build all-in-one atomic base64 terminal bash script (non-interactive sudo -n prevents password prompt hang)
     let bashScript = '';
     bashScript += `git config --global --add safe.directory /app/code 2>/dev/null || true && `;
-    bashScript += `sudo chmod -R 777 /app/code/.git 2>/dev/null || true && `;
-    bashScript += `sudo chown -R newton:newton /app/code 2>/dev/null || true && `;
+    bashScript += `(sudo -n true 2>/dev/null && sudo chmod -R 777 /app/code/.git 2>/dev/null && sudo chown -R newton:newton /app/code 2>/dev/null || true) && `;
+    bashScript += `(rm -f .git/index.lock 2>/dev/null || true) && `;
     bashScript += `sed -i '/mkdir -p/d' src/index.js 2>/dev/null || true && `;
     bashScript += `sed -i '/base64 -d/d' src/index.js 2>/dev/null || true && `;
     bashScript += `sed -i '/=== AP-SOLVER/d' src/index.js 2>/dev/null || true && `;
@@ -1253,6 +1324,24 @@
     if (hasSeed) {
       bashScript += `if [ -f src/seed.js ]; then node src/seed.js || true; elif [ -f seed.js ]; then node seed.js || true; fi && `;
     }
+
+    // Collect post-write setup/build/migration commands from AI & workspace specs (deduped against built-in Prisma steps)
+    const detectedPostCmds = detectClientPostWriteCommands(
+      cachedQuestion?.details || '',
+      cachedEditor?.referenceFiles?.['package.json'] || '',
+      filesToWrite
+    );
+    const mergedPostCmds = [...new Set([...(cachedCommands || []), ...detectedPostCmds])].filter(c => {
+      if ((hasPrisma || hasSeed) && /(?:prisma\s+(?:db\s+push|generate)|src\/seed\.js)/i.test(c)) return false;
+      return true;
+    });
+    if (mergedPostCmds.length > 0) {
+      for (const pc of mergedPostCmds) {
+        bashScript += `(${pc} || true) && `;
+      }
+      ui.addLog(`⚙️ [Post-Write Commands] Running in terminal before commit: ${mergedPostCmds.join(' && ')}`, 'normal');
+    }
+
     bashScript += `(rm -f .git/index.lock 2>/dev/null; git config user.email "solver@ap.dev" 2>/dev/null; git config user.name "AP-Solver" 2>/dev/null; git add -A && git commit -m "solution" 2>/dev/null || true) && `;
     bashScript += `echo "=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ==="`;
 
@@ -1267,7 +1356,7 @@
     for (let termAttempt = 1; termAttempt <= 2; termAttempt++) {
       try {
         ui.addLog(`⚡ [Terminal Turbo Engine] Writing ${filesToWrite.length} file(s) directly to disk via Integrated Terminal (Attempt ${termAttempt}/2)...`, 'ok');
-        const termResp = await sendMsg({ op: 'AP_WRITE_TERMINAL', data: { files: filesToWrite, script: bashScript } }, 15000);
+        const termResp = await sendMsg({ op: 'AP_WRITE_TERMINAL', data: { files: filesToWrite, script: bashScript, postCommands: mergedPostCmds } }, 28000);
         if (termResp && termResp.ok) {
           filesWrittenViaTerminal = true;
           ui.addLog(`⚡ [Terminal Turbo Engine] Successfully wrote ${filesToWrite.length} file(s) directly to disk via Terminal (${termResp.method || 'terminal'})!`, 'ok');
@@ -1577,8 +1666,8 @@
         const rawLines = cleanTerm.split('\n').map(l => l.trim()).filter(Boolean);
         for (let i = 0; i < rawLines.length && analysisItems.length < 5; i++) {
           const line = rawLines[i];
-          if (/^(?:AssertionError|SyntaxError|ReferenceError|TypeError|RangeError|PrismaClient\w*Error|Error:|Uncaught|FAIL\b|[✕✗×]\s+)/i.test(line) ||
-              /Cannot find module|EADDRINUSE|ECONNREFUSED|timeout of \d+ms exceeded|expected .+ to /i.test(line)) {
+          if (/^(?:AssertionError|SyntaxError|ReferenceError|TypeError|RangeError|PrismaClient\w*Error|Error:|Uncaught|FAIL\b|[✕✗×✖]\s+)/i.test(line) ||
+              /Cannot find module|EADDRINUSE|ECONNREFUSED|Response timeout|timeout of \d+ms exceeded|expected .+ to |Exit code [1-9]|Command failed/i.test(line)) {
             const snippet = rawLines.slice(i, Math.min(rawLines.length, i + 4)).join(' | ');
             const sig = snippet.slice(0, 120).toLowerCase();
             if (!seenErrors.has(sig)) {
@@ -1597,11 +1686,28 @@
             }
           }
         }
+        // 4. Last-resort terminal tail extractor when logs exist but no standard Mocha/Error header matched (never yield 0 failures on a 67-line error log!)
+        if (analysisItems.length === 0 && rawLines.length > 0 && subRes && (subRes.passed || 0) < (subRes.total || 1)) {
+          const meaningful = rawLines.filter(l => !/^(?:Cloning into|Already up to date|npm notice|npm warn|>|\+)/i.test(l));
+          const tailExcerpt = (meaningful.length > 0 ? meaningful : rawLines).slice(-12).join(' | ').slice(0, 500);
+          if (tailExcerpt.length > 15) {
+            analysisItems.push({
+              num: 1,
+              title: 'Grader / Container Execution Failure',
+              error: tailExcerpt,
+              diff: null,
+              stack: null,
+              diagnosis: diagnoseErrorMessage(tailExcerpt, '', '')
+            });
+          }
+        }
       }
     }
 
     if (subRes?.tests && subRes.tests.length > 0) {
-      const failItems = subRes.tests.filter(t => t.fail);
+      // Include non-passing tests whenever grader reports passed < total (fixes 0/13 where non-red SVG badges stayed PENDING!)
+      const hasFailedRun = (subRes.totalCount || subRes.tests.length) > (subRes.passedCount ?? subRes.passed ?? 0);
+      const failItems = subRes.tests.filter(t => t.fail || (!t.pass && hasFailedRun));
       for (const fi of failItems) {
         const key = fi.name.toLowerCase();
         if (![...seenErrors].some(k => key.includes(k) || k.includes(key))) {
@@ -1655,6 +1761,13 @@
     const feedbackBlocks = [];
     feedbackBlocks.push(`=== PREVIOUS ATTEMPT ${attemptLabel} FAILED (${subRes?.passed || 0}/${subRes?.total || 0} PASSED AT ${timeStr}) ===`);
 
+    if (attemptHistory.length > 0) {
+      feedbackBlocks.push(
+        `⚠️ PREVIOUS ATTEMPTS HISTORY (DO NOT REPEAT FAILED APPROACHES):\n` +
+        attemptHistory.slice(-4).map(h => `- ${h}`).join('\n')
+      );
+    }
+
     if (failureItems.length > 0) {
       // Group/cap repeated identical errors so prompt stays crisp and leaves ample output budget
       const seenErrSigs = new Map();
@@ -1669,20 +1782,24 @@
           compactItems.push(entry);
         }
       }
+      const detailedText = compactItems.slice(0, 6).map(item => (
+        `🔴 FAILURE #${item.num}: "${item.title}"` +
+        (item.alsoTests.length > 0 ? ` (also affects ${item.alsoTests.length} other test(s): ${item.alsoTests.slice(0, 4).join(', ')})` : '') + `\n` +
+        `   - Exact Error: ${item.error}\n` +
+        (item.diff ? `   - Diff / Assertion: ${item.diff}\n` : '') +
+        (item.stack ? `   - Source Location: ${item.stack}\n` : '') +
+        `   - Root Cause & Required Fix: ${item.diagnosis}`
+      )).join('\n\n');
+      const remainingItems = compactItems.slice(6).map(item => `#${item.num} "${item.title}" (${item.error.slice(0, 80)})`);
       feedbackBlocks.push(
         `🚨 COMPLETE ITEMIZED BREAKDOWN OF ALL ${failureItems.length} FAILING TESTS:\n` +
         `You MUST simultaneously fix EVERY SINGLE test failure listed below in one shot. Do NOT leave any test unresolved:\n\n` +
-        compactItems.slice(0, 6).map(item => (
-          `🔴 FAILURE #${item.num}: "${item.title}"` +
-          (item.alsoTests.length > 0 ? ` (also affects ${item.alsoTests.length} other test(s): ${item.alsoTests.slice(0, 3).join(', ')})` : '') + `\n` +
-          `   - Exact Error: ${item.error}\n` +
-          (item.diff ? `   - Diff / Assertion: ${item.diff}\n` : '') +
-          (item.stack ? `   - Source Location: ${item.stack}\n` : '') +
-          `   - Root Cause & Required Fix: ${item.diagnosis}`
-        )).join('\n\n')
+        detailedText +
+        (remainingItems.length > 0 ? `\n\n📌 ADDITIONAL FAILING TESTS TO RESOLVE SIMULTANEOUSLY:\n- ${remainingItems.join('\n- ')}` : '')
       );
     } else if (subRes?.tests && subRes.tests.length > 0) {
-      const failItems = subRes.tests.filter(t => t.fail);
+      const hasFailedRun = (subRes.totalCount || subRes.tests.length) > (subRes.passedCount ?? subRes.passed ?? 0);
+      const failItems = subRes.tests.filter(t => t.fail || (!t.pass && hasFailedRun));
       for (const item of failItems) {
         feedbackBlocks.push(`FAILED TEST: ${item.name}${item.error ? `\nERROR: ${item.error}` : ''}`);
       }
@@ -1766,8 +1883,8 @@
       `   - Include Express JSON SyntaxError middleware so malformed payloads return 400.\n` +
       `4. PREVENT TIMEOUTS: Ensure EVERY route handler wraps async work in try/catch and calls 'return res.status(...).json(...)' in EVERY code branch.\n` +
       `5. INSTALLED PACKAGES ONLY: Use ONLY dependencies listed in package.json (e.g. bcryptjs vs bcrypt) and match CommonJS vs ESM.\n` +
-      `6. MULTI-FILE OUTPUT: Output EVERY file needing fixes (and keep prisma/schema.prisma + src/seed.js complete if used) with exact filepath on Line 1.\n` +
-      `7. ZERO COMMENTS: Output 100% clean, executable code without any comments.`
+      `6. POST-WRITE COMMANDS: If running a setup/build/migration/seed/install command is needed after writing code, emit a \`\`\`bash // __commands__\`\`\` block.\n` +
+      `7. MULTI-FILE OUTPUT & ZERO COMMENTS: Output EVERY updated file cleanly with exact filepath on Line 1 and zero comments.`
     );
 
     return feedbackBlocks.join('\n\n');
@@ -1818,6 +1935,9 @@
       // Clear any stale cached editor or generated files from previous runs
       cachedEditor = null;
       cachedGeneratedFiles = [];
+      cachedCommands = [];
+      attemptHistory = [];
+      const remediatedCmds = new Set();
       filesWrittenViaTerminal = false;
 
       // Step 1: Read full question & initial code of all files
@@ -1877,16 +1997,32 @@
             break;
           }
 
-          // Automated Local Pre-Test Verification (runs npm test / Mocha in container Terminal before slow remote submit)
+          // Automated Local Pre-Test Verification (syntax check + npm test / Mocha + startup check BEFORE slow remote submit)
           ui.setStatus(`${stepTag} - Local Pre-Test Check...`, 'Running container test suite in Terminal first...', 'running', true);
           ui.addLog(`🧪 [Local Pre-Test] Running local container tests before remote submission...`, 'running');
-          const localRes = await sendMsg({ op: 'AP_RUN_LOCAL_TESTS' }, 42000);
+          let localRes = await sendMsg({ op: 'AP_RUN_LOCAL_TESTS', data: { files: filesToCheck.map(f => f.filePath) } }, 45000);
+
+          // Auto-Command Remediation: if a missing dependency, Prisma client, or build command caused failure, run it & re-check before wasting an AI call!
+          if (localRes && localRes.status === 'failed' && Array.isArray(localRes.autoFixCommands) && localRes.autoFixCommands.length > 0) {
+            const freshCmds = localRes.autoFixCommands.filter(c => !remediatedCmds.has(c));
+            if (freshCmds.length > 0) {
+              freshCmds.forEach(c => remediatedCmds.add(c));
+              ui.addLog(`🛠️ [Auto-Command Remediation] Executing missing setup command(s) in Terminal: ${freshCmds.join(' && ')}`, 'warn');
+              const cmdRes = await sendMsg({ op: 'AP_RUN_TERMINAL_COMMANDS', data: { commands: freshCmds } }, 48000);
+              if (cmdRes?.output) {
+                ui.addLog(`⚙️ Command finished (exit=${cmdRes.exitCode ?? 0}). Re-running local pre-tests...`, cmdRes.ok ? 'ok' : 'warn');
+              }
+              localRes = await sendMsg({ op: 'AP_RUN_LOCAL_TESTS', data: { files: filesToCheck.map(f => f.filePath) } }, 45000);
+            }
+          }
 
           if (localRes && localRes.status === 'passed') {
             ui.addLog(`✅ [Local Pre-Test] Passed (${localRes.passed || 'all'} tests passing)! Submitting with confidence...`, 'ok');
             break;
           } else if (localRes && localRes.status === 'failed') {
             ui.addLog(`❌ [Local Pre-Test] Failed locally (${localRes.passed || 0} passed, ${localRes.failed || 0} failed)!`, 'bad');
+            const firstErrLine = (localRes.output || '').split('\n').find(l => /Error:|AssertionError|expected|Cannot find/i.test(l)) || 'Local test assertion failed';
+            attemptHistory.push(`Local ${attempt}.${localTry} (${localRes.passed || 0}/${(localRes.passed || 0) + (localRes.failed || 0)}): ${firstErrLine.trim().slice(0, 120)}`);
             if (ui.options.autoRetry && localTry < maxLocalTries) {
               feedback = await buildDebugFeedback(
                 localRes.output || '',
@@ -1904,7 +2040,7 @@
             break;
           } else {
             const skipMsg = localRes?.status === 'no_local_tests'
-              ? 'No local test suite present (tests run remotely on Newton grader).'
+              ? 'No local test suite present (startup check clean; tests run remotely on Newton grader).'
               : 'Proceeding directly to remote Newton grader.';
             ui.addLog(`ℹ️ [Local Pre-Test] ${skipMsg}`, 'normal');
             break;
@@ -1925,8 +2061,9 @@
         ui.addLog(`📊 [${timeStr}] Submission Results (Attempt ${attempt}): ${subRes?.passed || 0}/${subRes?.total || 0} passed`, subRes?.ok ? 'ok' : 'warn');
 
         if (subRes?.tests && subRes.tests.length > 0) {
+          const runFailed = (subRes.totalCount || subRes.tests.length) > (subRes.passedCount ?? subRes.passed ?? 0);
           for (const t of subRes.tests) {
-            if (t.fail) {
+            if (t.fail || (!t.pass && runFailed)) {
               ui.addLog(`   ❌ ${t.name}`, 'bad');
               if (t.error) {
                 ui.addLog(`      ↳ Error: ${t.error}`, 'bad');
@@ -1948,6 +2085,20 @@
           ui.setStatus(`Attempt ${attempt}/${maxAttempts} - Step 5/6: Analyzing Terminal Errors...`, 'Checking error messages in side bar terminal...', 'running', true);
 
           const terminalOutput = await readTerminalOutput(5500);
+          const remoteAutoCmds = detectClientPostWriteCommands(
+            cachedQuestion?.details || '',
+            cachedEditor?.referenceFiles?.['package.json'] || '',
+            cachedGeneratedFiles,
+            terminalOutput
+          ).filter(c => !remediatedCmds.has(c));
+          if (remoteAutoCmds.length > 0) {
+            remoteAutoCmds.forEach(c => remediatedCmds.add(c));
+            ui.addLog(`🛠️ [Auto-Command Remediation] Executing terminal command detected from grader error: ${remoteAutoCmds.join(' && ')}`, 'warn');
+            await sendMsg({ op: 'AP_RUN_TERMINAL_COMMANDS', data: { commands: remoteAutoCmds } }, 48000);
+          }
+
+          const errHint = (terminalOutput || '').split('\n').find(l => /AssertionError|TypeError|SyntaxError|ReferenceError|Cannot find|expected/i.test(l)) || `${subRes?.passed || 0}/${subRes?.total || 0} passed`;
+          attemptHistory.push(`Remote Attempt ${attempt} (${subRes?.passed || 0}/${subRes?.total || 0}): ${errHint.trim().slice(0, 120)}`);
           feedback = await buildDebugFeedback(terminalOutput, subRes, String(attempt));
 
           // Step 6: Repeat step 4 & 5 again

@@ -354,8 +354,8 @@ window.APSolverUI = class APSolverUI {
       btn.onclick = async () => {
         let bashScript = '';
         bashScript += `git config --global --add safe.directory /app/code 2>/dev/null || true && `;
-        bashScript += `sudo chmod -R 777 /app/code/.git 2>/dev/null || true && `;
-        bashScript += `sudo chown -R newton:newton /app/code 2>/dev/null || true && `;
+        bashScript += `(sudo -n true 2>/dev/null && sudo chmod -R 777 /app/code/.git 2>/dev/null && sudo chown -R newton:newton /app/code 2>/dev/null || true) && `;
+        bashScript += `(rm -f .git/index.lock 2>/dev/null || true) && `;
         bashScript += `sed -i '/mkdir -p/d' src/index.js 2>/dev/null || true && `;
         bashScript += `sed -i '/base64 -d/d' src/index.js 2>/dev/null || true && `;
         bashScript += `sed -i '/=== AP-SOLVER/d' src/index.js 2>/dev/null || true && `;
@@ -412,7 +412,7 @@ window.APSolverUI = class APSolverUI {
         if (hasSeed) {
           bashScript += `if [ -f src/seed.js ]; then node src/seed.js || true; elif [ -f seed.js ]; then node seed.js || true; fi && `;
         }
-        bashScript += `(git add -A && git commit -m "solution" 2>/dev/null || true) && `;
+        bashScript += `(rm -f .git/index.lock 2>/dev/null; git config user.email "solver@ap.dev" 2>/dev/null; git config user.name "AP-Solver" 2>/dev/null; git add -A && git commit -m "solution" 2>/dev/null || true) && `;
         bashScript += `echo "=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ==="`;
         try {
           await navigator.clipboard.writeText(bashScript.trim());

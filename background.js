@@ -1,5 +1,5 @@
 // background.js - AP-Solver Service Worker (Multi-File & Multi-Folder Aware)
-import { generateSolution, getSettings, saveSettings, formatCodeIndentation, stripComments } from './utils/llm.js';
+import { generateSolution, getSettings, saveSettings, formatCodeIndentation, stripComments, sanitizePostWriteCommand, detectRequiredPostWriteCommands } from './utils/llm.js';
 
 console.log('[AP-Solver] Background service worker initialized.');
 
@@ -1497,15 +1497,15 @@ async function ensureTerminalOpen(tabId) {
   return true;
 }
 
-// Helper to build atomic base64 single-line bash command
-export function buildBase64TerminalScript(files) {
+// Helper to build atomic base64 single-line bash command (optional post-write commands run before git commit)
+export function buildBase64TerminalScript(files, postCommands = []) {
   if (!files || files.length === 0) return '';
   let cmd = '';
 
-  // 1. Initial Permission and Safety Setup (Ensures Git and File Operations Never Fail)
+  // 1. Non-interactive Permission and Safety Setup (sudo -n avoids blocking terminal on password prompt)
   cmd += `git config --global --add safe.directory /app/code 2>/dev/null || true && `;
-  cmd += `sudo chmod -R 777 /app/code/.git 2>/dev/null || true && `;
-  cmd += `sudo chown -R newton:newton /app/code 2>/dev/null || true && `;
+  cmd += `(sudo -n true 2>/dev/null && sudo chmod -R 777 /app/code/.git 2>/dev/null && sudo chown -R newton:newton /app/code 2>/dev/null || true) && `;
+  cmd += `(rm -f .git/index.lock 2>/dev/null || true) && `;
   cmd += `sed -i '/mkdir -p/d' src/index.js 2>/dev/null || true && `;
   cmd += `sed -i '/base64 -d/d' src/index.js 2>/dev/null || true && `;
   cmd += `sed -i '/=== AP-SOLVER/d' src/index.js 2>/dev/null || true && `;
@@ -1562,7 +1562,17 @@ export function buildBase64TerminalScript(files) {
   if (hasSeed) {
     cmd += `if [ -f src/seed.js ]; then node src/seed.js || true; elif [ -f seed.js ]; then node seed.js || true; fi && `;
   }
-  cmd += `(git add -A && git commit -m "solution" 2>/dev/null || true) && `;
+
+  // Execute any sanitized post-write setup/build/migration commands required for submission
+  const seenPost = new Set();
+  for (const rawCmd of (Array.isArray(postCommands) ? postCommands : [])) {
+    const safeCmd = sanitizePostWriteCommand(rawCmd);
+    if (!safeCmd || seenPost.has(safeCmd)) continue;
+    seenPost.add(safeCmd);
+    cmd += `(${safeCmd} || true) && `;
+  }
+
+  cmd += `(rm -f .git/index.lock 2>/dev/null; git config user.email "solver@ap.dev" 2>/dev/null; git config user.name "AP-Solver" 2>/dev/null; git add -A && git commit -m "solution" 2>/dev/null || true) && `;
   cmd += `echo "=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ==="`;
   return cmd;
 }
@@ -1728,11 +1738,12 @@ async function dispatchCommandToTerminal(tabId, cmdText, settleMs = 1500) {
   // Clear any stuck/partial terminal input cleanly BEFORE pasting via xterm API
   const prep = await focusAndPrepareTerminalLine(true);
 
-  // 1. In-frame xterm.paste (directly into xterm instance if attached) + real CDP Enter
+  // 1. In-frame xterm.paste (MAIN world so xterm instance on DOM elements is visible, + real CDP Enter)
   if (targetFrameId !== undefined) {
     try {
       const inFrameRes = await chrome.scripting.executeScript({
         target: { tabId, frameIds: [targetFrameId] },
+        world: 'MAIN',
         func: (cmd) => {
           document.querySelectorAll('.monaco-editor textarea, textarea.inputarea').forEach(t => { try { t.blur(); } catch(e) {} });
 
@@ -1740,14 +1751,20 @@ async function dispatchCommandToTerminal(tabId, cmdText, settleMs = 1500) {
           if (ta && !ta.closest('.monaco-editor')) {
             try { ta.focus(); } catch(e) {}
 
-            const termEl = document.querySelector('.terminal-wrapper, .terminal.xterm, .pane-body.integrated-terminal');
-            for (const k of ['xterm', '_xterm', '__xterm']) {
-              if (termEl && termEl[k] && typeof termEl[k].paste === 'function') {
-                try {
-                  termEl[k].paste(cmd);
-                  if (typeof termEl[k].input === 'function') termEl[k].input('\r', true);
-                  return true;
-                } catch(e) {}
+            const termEls = [...document.querySelectorAll('.terminal, .terminal-wrapper, .terminal.xterm, .pane-body.integrated-terminal, .xterm, .xterm-screen, canvas.xterm-text-layer')];
+            for (const termEl of termEls) {
+              for (const k of ['xterm', '_xterm', '__xterm']) {
+                if (termEl && termEl[k] && typeof termEl[k].paste === 'function') {
+                  try {
+                    if (typeof termEl[k].input === 'function') {
+                      termEl[k].input('\x03', true);
+                      termEl[k].input('\x15', true);
+                    }
+                    termEl[k].paste(cmd);
+                    if (typeof termEl[k].input === 'function') termEl[k].input('\r', true);
+                    return true;
+                  } catch(e) {}
+                }
               }
             }
             return false;
@@ -1812,25 +1829,26 @@ async function dispatchCommandToTerminal(tabId, cmdText, settleMs = 1500) {
   return { ok: false, error: 'Terminal not found across frames' };
 }
 
-// Read terminal screen/scrollback text from Integrated Terminal frame (supports xterm buffer API, DOM renderer, and Accessibility Tree)
+// Read terminal screen/scrollback text in MAIN world (unlocks WebGL xterm buffer API + DOM + A11y tree)
 async function readIntegratedTerminalText(tabId, targetFrameId = undefined) {
   try {
     const target = targetFrameId !== undefined ? { tabId, frameIds: [targetFrameId] } : { tabId, allFrames: true };
     const res = await chrome.scripting.executeScript({
       target,
+      world: 'MAIN',
       func: () => {
         const texts = [];
-        // 1. Check exposed xterm buffer instance (gives full scrollback)
-        const termWrappers = document.querySelectorAll('.terminal-wrapper, .terminal.xterm, .pane-body.integrated-terminal, .xterm');
+        // 1. Check exposed xterm buffer instance across all terminal wrappers (works even under WebGL canvas rendering!)
+        const termWrappers = document.querySelectorAll('.terminal, .terminal-wrapper, .terminal.xterm, .pane-body.integrated-terminal, .xterm, .xterm-screen, canvas.xterm-text-layer');
         for (const el of termWrappers) {
           for (const k of ['xterm', '_xterm', '__xterm']) {
-            const inst = el[k];
-            const buf = inst?.buffer?.active || inst?._core?.buffer?.lines;
+            const inst = el && el[k];
+            const buf = inst?.buffer?.active || inst?.buffer?.normal || inst?._core?.buffer?.lines;
             if (buf) {
               try {
                 const len = buf.length || 0;
                 const lines = [];
-                const startIdx = Math.max(0, len - 300);
+                const startIdx = Math.max(0, len - 320);
                 for (let i = startIdx; i < len; i++) {
                   const line = buf.getLine ? buf.getLine(i) : (buf.get ? buf.get(i) : null);
                   if (line && line.translateToString) {
@@ -1920,7 +1938,6 @@ async function decodeTerminalJsonPayload(rawInner) {
 // Execute bash command in Integrated Terminal and capture decoded output between sentinels
 async function runTerminalCommandWithCapture(tabId, { bashCmd, startMarker, endMarker, timeoutMs = 15000 }) {
   try {
-    // Attempt to enable CDP Accessibility silently so headless/Canvas terminals expose DOM tree if supported
     try {
       const att = await attachCDP(tabId);
       if (att) await sendCDP(tabId, 'Accessibility.enable');
@@ -1963,7 +1980,6 @@ async function runTerminalCommandWithCapture(tabId, { bashCmd, startMarker, endM
 
       const curEndCount = countOccurrences(curText, endMarker);
       if (curEndCount > baseEndCount) {
-        // Locate the new endMarker position
         const endIdx = curText.lastIndexOf(endMarker);
         const startIdx = curText.lastIndexOf(startMarker, endIdx);
         const sliceStart = startIdx !== -1 ? startIdx + startMarker.length : Math.max(0, endIdx - 6000);
@@ -1971,7 +1987,6 @@ async function runTerminalCommandWithCapture(tabId, { bashCmd, startMarker, endM
         return { ok: true, raw: rawBlock, fullText: curText };
       }
 
-      // Fast-exit if terminal renders via pure WebGL canvas without readable DOM/buffer text
       if (!sawOutputChange && (Date.now() - tStart > 3500)) {
         return { ok: false, unreadable: true, error: 'Terminal output unavailable in DOM/buffer' };
       }
@@ -2045,23 +2060,40 @@ console.log('\\n'+S+'\\nGZ:'+gz+'\\n'+E);
   return { ok: true, files: decoded.files || {}, allFiles: decoded.allFiles || [] };
 }
 
-// Run local container test suite (`npm test` / Mocha / Jest) BEFORE clicking Submit Solution
-async function runLocalTestsViaTerminal(tabId) {
+/** Run syntax check, local container test suite (`npm test`), and safe startup smoke check BEFORE slow Remote Submit. */
+async function runLocalTestsViaTerminal(tabId, targetFiles = []) {
+  const jsFilesJson = JSON.stringify((targetFiles || []).filter(f => /\.js$/i.test(f)));
   const runnerJs = `
 const fs=require('fs'),zlib=require('zlib'),{spawnSync}=require('child_process');
 const S='===AP'+'_LTEST_START===',E='===AP'+'_LTEST_END===';
-let pkg={};try{pkg=JSON.parse(fs.readFileSync('package.json','utf8'));}catch(e){}
+const emit=(obj)=>{let lim=8000,gz='';while(lim>=1000){const p={...obj,output:(obj.output||'').slice(-lim)};gz=zlib.gzipSync(Buffer.from(JSON.stringify(p))).toString('base64');if(gz.length<=1650)break;lim=Math.floor(lim*0.65);}console.log('\\n[Local Test] pass='+(obj.passed||0)+' fail='+(obj.failed||0)+' exit='+(obj.exitCode??0));console.log(S+'\\nGZ:'+gz+'\\n'+E);process.exit(0);};
+const targets=${jsFilesJson};
+const syntaxCandidates=[...new Set([...targets,...(fs.existsSync('src')?fs.readdirSync('src').filter(f=>/\\.js$/i.test(f)).map(f=>'src/'+f):[])])].filter(f=>fs.existsSync(f));
+for(const f of syntaxCandidates){
+  const chk=spawnSync('node',['--check',f],{encoding:'utf8',timeout:5000});
+  if(chk.status!==0){emit({skip:false,isSyntaxError:true,exitCode:1,passed:0,failed:1,output:'SyntaxError in '+f+':\\n'+((chk.stderr||chk.stdout||'').trim())});}
+}
+let pkgRaw='';let pkg={};try{pkgRaw=fs.readFileSync('package.json','utf8');pkg=JSON.parse(pkgRaw);}catch(e){}
 const script=(pkg.scripts&&pkg.scripts.test)||'';
 const hasScript=Boolean(script&&!/no test specified/i.test(script));
 const dirs=['test','tests','__tests__','src/__tests__','src/test'].filter(d=>fs.existsSync(d));
 const rootTests=fs.readdirSync('.').filter(f=>/\\.(test|spec)\\.(js|ts|mjs|cjs)$/i.test(f));
 if(!hasScript&&dirs.length===0&&rootTests.length===0){
+  const entry=syntaxCandidates.find(f=>/index\\.js$/i.test(f))||syntaxCandidates[0];
+  if(entry&&pkg.type!=='module'){
+    const probeCode='process.on("uncaughtException",e=>{if(e&&e.code==="EADDRINUSE")process.exit(0);console.error(e);process.exit(1);});setTimeout(()=>process.exit(0),250);require("./"+'+JSON.stringify(entry)+');';
+    const smk=spawnSync('node',['-e',probeCode],{encoding:'utf8',timeout:2500,env:{...process.env,NODE_ENV:'test',PORT:'0'}});
+    const smkOut=((smk.stderr||'')+'\\n'+(smk.stdout||'')).trim();
+    if(/Cannot find module|SyntaxError|ReferenceError|TypeError|PrismaClientInitializationError|did not initialize/i.test(smkOut)){
+      emit({skip:false,pkgRaw,exitCode:1,passed:0,failed:1,output:'Startup Load Failure ('+entry+'):\\n'+smkOut});
+    }
+  }
   const p=zlib.gzipSync(Buffer.from(JSON.stringify({skip:true}))).toString('base64');
   console.log('\\n'+S+'\\nGZ:'+p+'\\n'+E);
   process.exit(0);
 }
 const cmd=hasScript?'npm test':('npx -y mocha '+(dirs.length?dirs.map(d=>"'"+d+"/**/*.{js,ts}'").join(' '):"'*.test.js'"));
-const r=spawnSync('sh',['-c',cmd],{encoding:'utf8',timeout:30000,env:{...process.env,NODE_ENV:'test',CI:'true'}});
+const r=spawnSync('sh',['-c',cmd],{encoding:'utf8',timeout:28000,env:{...process.env,NODE_ENV:'test',CI:'true'}});
 const raw=((r.stdout||'')+'\\n'+(r.stderr||'')).replace(/\\x1b\\[[0-9;]*m/g,'');
 const clean=raw.split('\\n').filter(l=>!/^\\s*at .*(?:node_modules|node:internal)/.test(l)).join('\\n');
 const passM=raw.match(/(\\d+)\\s+passing/i);
@@ -2070,15 +2102,7 @@ const jestFailM=raw.match(/Tests:\\s*(\\d+)\\s+failed/i);
 const passed=passM?parseInt(passM[1],10):0;
 const failed=failM?parseInt(failM[1],10):(jestFailM?parseInt(jestFailM[1],10):(r.status===0?0:1));
 const timedOut=!!(r.error&&r.error.code==='ETIMEDOUT');
-let limit=8000,gz='';
-while(limit>=1200){
-  const payload={skip:false,exitCode:r.status===null?1:r.status,timedOut,passed,failed,output:clean.slice(-limit)};
-  gz=zlib.gzipSync(Buffer.from(JSON.stringify(payload))).toString('base64');
-  if(gz.length<=1650)break;
-  limit=Math.floor(limit*0.65);
-}
-console.log('\\n[Local Test] pass='+passed+' fail='+failed+' exit='+(r.status===null?1:r.status));
-console.log(S+'\\nGZ:'+gz+'\\n'+E);
+emit({skip:false,pkgRaw,exitCode:r.status===null?1:r.status,timedOut,passed,failed,output:clean});
 `.trim();
 
   const b64 = typeof Buffer !== 'undefined' ? Buffer.from(runnerJs).toString('base64') : btoa(unescape(encodeURIComponent(runnerJs)));
@@ -2108,6 +2132,14 @@ console.log(S+'\\nGZ:'+gz+'\\n'+E);
   }
 
   const allPassed = decoded.exitCode === 0 && decoded.failed === 0 && !decoded.timedOut;
+  const autoFixCommands = allPassed
+    ? []
+    : detectRequiredPostWriteCommands({
+        packageJsonStr: decoded.pkgRaw || '',
+        filesToWrite: (targetFiles || []).map(f => ({ filePath: f })),
+        lastErrorOutput: decoded.output || ''
+      });
+
   return {
     ok: true,
     status: allPassed ? 'passed' : 'failed',
@@ -2115,29 +2147,85 @@ console.log(S+'\\nGZ:'+gz+'\\n'+E);
     passed: decoded.passed || 0,
     failed: decoded.failed || 0,
     timedOut: decoded.timedOut,
+    isSyntaxError: !!decoded.isSyntaxError,
+    autoFixCommands,
     output: decoded.output || ''
   };
 }
 
+/** Execute safe setup/build/migration/remediation commands in container terminal and capture structured results. */
+async function runTerminalCommandsViaTerminal(tabId, commands = []) {
+  const cleanCmds = (Array.isArray(commands) ? commands : [])
+    .map(c => sanitizePostWriteCommand(c))
+    .filter(Boolean);
+  if (cleanCmds.length === 0) {
+    return { ok: true, ran: [], exitCode: 0, output: '' };
+  }
+
+  const runnerJs = `
+const zlib=require('zlib'),{spawnSync}=require('child_process');
+const S='===AP'+'_CMD_START===',E='===AP'+'_CMD_END===';
+const cmds=${JSON.stringify(cleanCmds)};
+const logs=[];let lastCode=0;
+for(const c of cmds){
+  const r=spawnSync('sh',['-c',c],{encoding:'utf8',timeout:35000,env:{...process.env,CI:'true'}});
+  const out=((r.stdout||'')+'\\n'+(r.stderr||'')).trim();
+  logs.push('$ '+c+' (exit='+(r.status??1)+')\\n'+out.slice(-800));
+  if((r.status??1)!==0){lastCode=r.status??1;}
+}
+const full=logs.join('\\n');
+let lim=4000,gz='';
+while(lim>=600){gz=zlib.gzipSync(Buffer.from(JSON.stringify({exitCode:lastCode,ran:cmds,output:full.slice(-lim)}))).toString('base64');if(gz.length<=1650)break;lim=Math.floor(lim*0.65);}
+console.log('\\n'+S+'\\nGZ:'+gz+'\\n'+E);
+`.trim();
+
+  const b64 = typeof Buffer !== 'undefined' ? Buffer.from(runnerJs).toString('base64') : btoa(unescape(encodeURIComponent(runnerJs)));
+  const bashCmd = `echo "${b64}" | base64 -d | node`;
+
+  const cap = await runTerminalCommandWithCapture(tabId, {
+    bashCmd,
+    startMarker: '===AP_CMD_START===',
+    endMarker: '===AP_CMD_END===',
+    timeoutMs: 42000
+  });
+
+  if (cap.ok) {
+    const decoded = await decodeTerminalJsonPayload(cap.raw);
+    if (decoded) {
+      return { ok: decoded.exitCode === 0, ran: decoded.ran || cleanCmds, exitCode: decoded.exitCode || 0, output: decoded.output || '' };
+    }
+  }
+
+  // Fallback if terminal stdout is genuinely unreadable: dispatch direct chained shell commands safely
+  if (cap.unreadable) {
+    const chained = cleanCmds.map(c => `(${c} || true)`).join(' && ') + ' && (rm -f .git/index.lock 2>/dev/null; git add -A && git commit -m "solution" 2>/dev/null || true)';
+    const disp = await dispatchCommandToTerminal(tabId, chained, 2500);
+    return { ok: !!disp?.ok, ran: cleanCmds, exitCode: disp?.ok ? 0 : 1, output: '', fallbackDispatched: true };
+  }
+
+  return { ok: false, ran: cleanCmds, exitCode: 1, output: cap.error || 'Command runner failed' };
+}
+
 // Direct Terminal File Injection Engine (Zero-Click Linux Disk Writer)
-async function writeFilesViaTerminal(tabId, files, customScript = null) {
+async function writeFilesViaTerminal(tabId, files, customScript = null, postCommands = []) {
   if (!files || files.length === 0) return { ok: false, error: 'No files provided' };
 
-  const bashScript = customScript || buildBase64TerminalScript(files);
+  const bashScript = customScript || buildBase64TerminalScript(files, postCommands);
 
   try {
+    // Capture baseline BEFORE dispatching command so fast completion is never missed
+    const baseline = await readIntegratedTerminalText(tabId);
+    const baseDoneCount = (baseline.match(/AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY/g) || []).length;
+
     const res = await dispatchCommandToTerminal(tabId, bashScript, 0);
     if (!res || !res.ok) {
       return res;
     }
 
-    // Wait dynamically for heavy setup commands (prisma install/db push/seed) to complete cleanly before returning
-    const hasHeavyCmd = /prisma|npm install/i.test(bashScript);
-    const maxWait = hasHeavyCmd ? 16000 : 5000;
-    const baseline = await readIntegratedTerminalText(tabId, res.targetFrameId);
-    const baseDoneCount = (baseline.match(/AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY/g) || []).length;
+    const hasHeavyCmd = /prisma|npm install|npm run build|npx tsc|migrate/i.test(bashScript);
+    const maxWait = hasHeavyCmd ? 22000 : 6000;
     const t0 = Date.now();
-    await sleep(900);
+    await sleep(700);
 
     while (Date.now() - t0 < maxWait) {
       const curText = await readIntegratedTerminalText(tabId, res.targetFrameId);
@@ -2148,10 +2236,10 @@ async function writeFilesViaTerminal(tabId, files, customScript = null) {
       if (!curText && (Date.now() - t0 > (hasHeavyCmd ? 8000 : 2500))) {
         break;
       }
-      await sleep(450);
+      await sleep(400);
     }
 
-    return { ok: true, method: res.method };
+    return { ok: true, verified: false, method: res.method };
   } catch (e) {
     console.warn('[AP-Solver Terminal] writeFilesViaTerminal error:', e);
     return { ok: false, error: e.message || String(e) };
@@ -2165,7 +2253,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Handle async operations with async IIFE
   (async () => {
     try {
-      if (op === 'AP_GET_SETTINGS') {
+      if (op === 'AP_KEEPALIVE') {
+        sendResponse({ ok: true, ts: Date.now() });
+      } else if (op === 'AP_GET_SETTINGS') {
         const settings = await getSettings();
         sendResponse({ ok: true, settings });
       } else if (op === 'AP_SAVE_SETTINGS') {
@@ -2196,7 +2286,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: false, error: 'No tab ID found in sender.' });
           return;
         }
-        const resp = await runLocalTestsViaTerminal(tabId);
+        const resp = await runLocalTestsViaTerminal(tabId, data?.files || []);
+        sendResponse(resp);
+      } else if (op === 'AP_RUN_TERMINAL_COMMANDS') {
+        const tabId = sender.tab?.id;
+        if (!tabId) {
+          sendResponse({ ok: false, error: 'No tab ID found in sender.' });
+          return;
+        }
+        const resp = await runTerminalCommandsViaTerminal(tabId, data?.commands || []);
         sendResponse(resp);
       } else if (op === 'AP_WRITE_EDITOR') {
         const tabId = sender.tab?.id;
@@ -2212,7 +2310,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: false, error: 'No tab ID found in sender.' });
           return;
         }
-        const resp = await writeFilesViaTerminal(tabId, data.files, data.script);
+        const resp = await writeFilesViaTerminal(tabId, data.files, data.script, data.postCommands || []);
         sendResponse(resp);
       } else if (op === 'AP_CLEAN_EDITOR_ARTIFACTS') {
         const tabId = sender.tab?.id;

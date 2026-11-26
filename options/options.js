@@ -34,11 +34,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (radio) radio.checked = true;
 
   geminiKeyInput.value = settings.geminiKey || '';
-  const loadedGeminiModel = (settings.geminiModel && settings.geminiModel !== 'gemini-1.5-flash') ? settings.geminiModel : 'gemini-3.8-flash';
-  geminiModelSelect.value = [...geminiModelSelect.options].some(o => o.value === loadedGeminiModel) ? loadedGeminiModel : 'gemini-3.8-flash';
+  const rawGeminiModel = (settings.geminiModel || '').trim();
+  const isStaleGemini = !rawGeminiModel || /1\.5|3\.5|3\.8/.test(rawGeminiModel);
+  const loadedGeminiModel = isStaleGemini ? 'gemini-2.5-flash' : rawGeminiModel;
+  geminiModelSelect.value = [...geminiModelSelect.options].some(o => o.value === loadedGeminiModel) ? loadedGeminiModel : 'gemini-2.5-flash';
 
   groqKeyInput.value = settings.groqKey || '';
-  groqModelSelect.value = (!settings.groqModel || settings.groqModel.includes('llama') || settings.groqModel.includes('mixtral')) ? 'openai/gpt-oss-120b' : settings.groqModel;
+  const rawGroqModel = (settings.groqModel || '').trim();
+  const loadedGroqModel = (!rawGroqModel || /llama|mixtral|3\.8-27b/i.test(rawGroqModel)) ? 'openai/gpt-oss-120b' : rawGroqModel;
+  groqModelSelect.value = [...groqModelSelect.options].some(o => o.value === loadedGroqModel) ? loadedGroqModel : 'openai/gpt-oss-120b';
 
   openaiKeyInput.value = settings.openaiKey || '';
   openaiBaseUrlInput.value = settings.openaiBaseUrl || 'https://api.openai.com/v1';

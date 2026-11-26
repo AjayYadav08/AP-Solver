@@ -3,7 +3,7 @@
 export const DEFAULT_SETTINGS = {
   provider: 'race', // 'race' (Turbo Parallel) | 'groq' | 'gemini' | 'openai'
   geminiKey: '',
-  geminiModel: 'gemini-3.8-flash',
+  geminiModel: 'gemini-2.5-flash',
   groqKey: '',
   groqModel: 'openai/gpt-oss-120b',
   openaiKey: '',
@@ -208,6 +208,7 @@ STRICT GUIDELINES:
      ...complete code for index.js...
      \`\`\`
    - Never merge multiple different modules or files into index.js. Keep each file independent with its own requires and exports.
+   - POST-WRITE TERMINAL COMMANDS (IF REQUIRED): If the task or error requires running terminal commands after writing files (e.g. npx prisma migrate deploy, npx prisma db push, npx prisma generate, node src/seed.js, npm run build, npm install <pkg>), output an optional bash block with '// __commands__' on Line 1 and one command per line. Never put shell commands inside .js/.ts/.prisma files.
 7. OUTPUT FORMAT:
    - Output ONLY the clean replacement code enclosed in markdown code block(s):
    \`\`\`javascript
@@ -327,6 +328,137 @@ export function formatCodeIndentation(code) {
   return result.join('\n');
 }
 
+/** Sanitize and validate a container setup/build/migration command so only safe, non-blocking commands execute. */
+export function sanitizePostWriteCommand(rawCmd) {
+  if (!rawCmd || typeof rawCmd !== 'string') return '';
+  let cmd = rawCmd.trim()
+    .replace(/^(?:\$|>\s*|#\s*)/, '')
+    .trim();
+  if (!cmd || cmd.startsWith('//') || cmd.startsWith('#') || cmd.length > 300) return '';
+  if (/&&\s*$|^\s*&&|\n|\r/.test(cmd)) return '';
+  if (/(?:rm\s+-[a-z]*rf?\s+\/(?:\s|$)|mkfs\b|dd\s+if=|shutdown\b|reboot\b|:\(\)\{|curl\s+[^|]*\|\s*(?:ba)?sh|wget\s+[^|]*\|\s*(?:ba)?sh|>\s*\/dev\/)/i.test(cmd)) {
+    return '';
+  }
+  // Reject commands that block forever or re-invoke full test runners during setup phase
+  if (/^(?:npm\s+(?:test|t|start)|npm\s+run\s+(?:test|start|dev|watch)\b|nodemon\b|node\s+(?:src\/)?index\.js\b)/i.test(cmd)) {
+    return '';
+  }
+  if (!/^(?:npm\s+(?:install|i|ci|run\s+[\w:.-]+|exec)|npx\s+|yarn\s+|pnpm\s+|node\s+|prisma\s+|tsc\b|mkdir\s+-p\b|cp\s+|chmod\s+|psql\b|sqlite3\b|python3?\s+|pip3?\s+install)/i.test(cmd)) {
+    return '';
+  }
+  return cmd;
+}
+
+/** Extract optional post-write terminal commands (// __commands__ or ```ap-commands) from LLM response. */
+export function extractCommandsFromResponse(rawText) {
+  if (!rawText) return [];
+  const commands = [];
+  const blockRegex = /```([a-zA-Z0-9_\-]+)?(?::([^\n]+))?([^\n]*)\n([\s\S]*?)```/g;
+  for (const match of rawText.matchAll(blockRegex)) {
+    const lang = (match[1] || '').toLowerCase();
+    const extra = ((match[2] || '') + ' ' + (match[3] || '')).toLowerCase();
+    const body = (match[4] || '').trim();
+    if (!body) continue;
+    const firstLine = body.split('\n')[0].trim();
+    const isCommandBlock =
+      lang === 'ap-commands' ||
+      /^(?:\/\/|#)\s*(?:__commands__|run_commands)\b/i.test(firstLine) ||
+      /__commands__/i.test(extra);
+    if (!isCommandBlock) continue;
+
+    const lines = body.split('\n');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || /^(?:\/\/|#)/.test(trimmed)) continue;
+      for (const sub of trimmed.split(/\s*&&\s*/)) {
+        const clean = sanitizePostWriteCommand(sub);
+        if (clean && !commands.includes(clean)) {
+          commands.push(clean);
+        }
+      }
+    }
+  }
+  return commands;
+}
+
+/** Auto-detect required setup, build, migration, or error-remediation terminal commands. */
+export function detectRequiredPostWriteCommands({
+  questionDetails = '',
+  packageJsonStr = '',
+  filesToWrite = [],
+  lastErrorOutput = ''
+} = {}) {
+  const cmds = [];
+  const addCmd = (raw) => {
+    const clean = sanitizePostWriteCommand(raw);
+    if (clean && !cmds.includes(clean)) cmds.push(clean);
+  };
+
+  let pkg = {};
+  try {
+    if (packageJsonStr) pkg = JSON.parse(packageJsonStr);
+  } catch (e) {}
+  const scripts = pkg.scripts || {};
+  const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+
+  const nodeBuiltins = new Set([
+    'assert', 'async_hooks', 'buffer', 'child_process', 'cluster', 'console', 'constants',
+    'crypto', 'dgram', 'diagnostics_channel', 'dns', 'domain', 'events', 'fs', 'http',
+    'http2', 'https', 'inspector', 'module', 'net', 'os', 'path', 'perf_hooks', 'process',
+    'punycode', 'querystring', 'readline', 'repl', 'stream', 'string_decoder', 'sys',
+    'timers', 'tls', 'trace_events', 'tty', 'url', 'util', 'v8', 'vm', 'worker_threads', 'zlib'
+  ]);
+
+  // 1. Auto-remediation directly from previous terminal/runtime error traces
+  if (lastErrorOutput) {
+    const modMatches = [...String(lastErrorOutput).matchAll(/Cannot find module\s+['"]([^'"]+)['"]/gi)];
+    for (const m of modMatches) {
+      const mod = (m[1] || '').trim();
+      if (!mod || mod.startsWith('.') || mod.startsWith('/') || mod.startsWith('node:')) continue;
+      const pkgName = mod.startsWith('@') ? mod.split('/').slice(0, 2).join('/') : mod.split('/')[0];
+      if (nodeBuiltins.has(pkgName)) continue;
+      if (/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/i.test(pkgName)) {
+        if (deps[pkgName]) {
+          addCmd('npm install --no-audit --no-fund');
+        } else {
+          addCmd(`npm install --no-audit --no-fund ${pkgName}`);
+        }
+      }
+    }
+    if (/sh:\s*\d+:\s*(?:mocha|jest|tsc|prisma):\s*not found/i.test(lastErrorOutput)) {
+      addCmd('npm install --no-audit --no-fund');
+    }
+    if (/@prisma\/client did not initialize|PrismaClientInitializationError|table\s+.*\s+does not exist|does not exist in the current database/i.test(lastErrorOutput)) {
+      addCmd('npx -y prisma generate');
+      addCmd('npx -y prisma db push --skip-generate');
+    }
+    if (/Cannot find module\s+['"]\.\/(?:dist|build)\//i.test(lastErrorOutput) && scripts.build) {
+      addCmd('npm run build');
+    }
+  }
+
+  // 2. Build / migration commands inferred from package.json & written files
+  const writesTs = (filesToWrite || []).some(f => f.filePath && /\.ts$/i.test(f.filePath));
+  if (writesTs && scripts.build) {
+    addCmd('npm run build');
+  }
+  const hasPrismaFile = (filesToWrite || []).some(f => (f.filePath && f.filePath.endsWith('.prisma')) || /datasource\s+db|generator\s+client/i.test(f.code || ''));
+  if (!hasPrismaFile) {
+    // Only extract explicit setup commands from question prose if not already covered by Prisma auto-script
+    if (scripts.migrate) addCmd('npm run migrate');
+  }
+
+  // 3. Backtick-quoted setup commands explicitly mentioned in Question Description
+  if (questionDetails) {
+    const btMatches = [...String(questionDetails).matchAll(/`((?:npm\s+run\s+(?:build|seed|migrate|setup|db:[a-z0-9_-]+)|npx\s+(?:prisma\s+(?:migrate|db\s+push|generate)|tsc)[^`]*|node\s+src\/(?:seed|init|setup|migrate)[^`]*))`/gi)];
+    for (const bm of btMatches) {
+      addCmd(bm[1]);
+    }
+  }
+
+  return cmds;
+}
+
 export function stripFileCommentHeaders(code) {
   if (!code) return '';
   return code
@@ -337,6 +469,13 @@ export function stripFileCommentHeaders(code) {
 
 export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.js', workspaceFiles = []) {
   if (!rawText) return [];
+
+  // Strip optional post-write __commands__ / ap-commands bash blocks before parsing code files
+  const sanitizedRawText = String(rawText).replace(
+    /```(?:[a-zA-Z0-9_\-]+)?(?::[^\n]+)?[^\n]*\n\s*(?:(?:\/\/|#)\s*(?:__commands__|RUN_COMMANDS)\b[\s\S]*?)```/gi,
+    ''
+  ).replace(/```ap-commands[^\n]*\n[\s\S]*?```/gi, '').trim();
+  const parseSource = sanitizedRawText || rawText;
 
   const normPath = (fn) => {
     if (!fn) return '';
@@ -352,6 +491,7 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
   const isValidFilename = (fn) => {
     if (!fn) return false;
     fn = fn.trim();
+    if (/__commands__|run_commands/i.test(fn)) return false;
     if (/^(1|2|3|4|5|one|two|file1|file2|file_1|file_2)(\.(js|ts|prisma|sql))?$/i.test(fn)) return false;
     return /\.(js|ts|json|txt|prisma|sql|env|graphql|html|css)$/i.test(fn);
   };
@@ -396,7 +536,7 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
 
   // Strategy 1: Multiple or Single markdown code blocks
   const blockRegex = /```(?:[a-zA-Z0-9_\-]+)?(?::([^\n]+))?([^\n]*)\n([\s\S]*?)```/g;
-  const blocks = [...rawText.matchAll(blockRegex)];
+  const blocks = [...parseSource.matchAll(blockRegex)];
 
   if (blocks.length > 0) {
     const parsedBlocks = [];
@@ -406,7 +546,7 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
       let code = stripFileCommentHeaders(b[3]);
 
       const prevEnd = (i > 0) ? (blocks[i - 1].index + blocks[i - 1][0].length) : 0;
-      const precedingText = rawText.substring(prevEnd, b.index).trim();
+      const precedingText = parseSource.substring(prevEnd, b.index).trim();
 
       let detectedFilename = '';
 
@@ -443,15 +583,15 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
 
   // Strategy 2: Single block or raw text split by line-based file comment headers
   const headerRegex = /(?:^|\n)\s*(?:\/\/|\/\*|#+)\s*(?:file:?\s*|---\s*)?(?:(?:\d+|step\s*\d+|file\s*\d+)[\.:\-\)]\s*)?(?:src\/)?([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt|prisma|sql|env|graphql))(?:\s*---|\s*\*\/)?\s*(?:\n|$)/gi;
-  const headers = [...rawText.matchAll(headerRegex)].filter(h => isValidFilename(h[1]));
+  const headers = [...parseSource.matchAll(headerRegex)].filter(h => isValidFilename(h[1]));
 
   if (headers.length > 0) {
     const inlineFiles = [];
     for (let i = 0; i < headers.length; i++) {
       const fn = headers[i][1];
       const start = headers[i].index + headers[i][0].length;
-      const end = (i + 1 < headers.length) ? headers[i + 1].index : rawText.length;
-      let rawCode = rawText.substring(start, end).trim();
+      const end = (i + 1 < headers.length) ? headers[i + 1].index : parseSource.length;
+      let rawCode = parseSource.substring(start, end).trim();
       rawCode = rawCode.replace(/^```[a-z]*\s*\n?/i, '').replace(/```+$/g, '').trim();
       rawCode = stripFileCommentHeaders(rawCode);
       if (rawCode.length > 5) {
@@ -464,7 +604,7 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
   }
 
   // Strategy 3: Check if raw text starts with a file header line
-  let cleaned = rawText.replace(/^```[a-z]*\s*\n?/i, '').replace(/```+$/g, '').trim();
+  let cleaned = parseSource.replace(/^```[a-z]*\s*\n?/i, '').replace(/```+$/g, '').trim();
   const topMatch = cleaned.match(fileHeaderPattern);
   if (topMatch && isValidFilename(topMatch[1])) {
     const fn = topMatch[1];
@@ -472,7 +612,7 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
     return [{ filePath: normPath(fn), code: formatCodeIndentation(stripComments(cleaned)) }];
   }
 
-  const singleCode = stripFileCommentHeaders(extractCodeBlock(rawText));
+  const singleCode = stripFileCommentHeaders(extractCodeBlock(parseSource));
   const finalSinglePath = resolveTargetFile('', singleCode, 0);
   return [{
     filePath: finalSinglePath,
@@ -482,17 +622,21 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
 
 export function extractCodeBlock(rawText) {
   if (!rawText) return '';
+  const parseSource = String(rawText)
+    .replace(/```(?:[a-zA-Z0-9_\-]+)?(?::[^\n]+)?[^\n]*\n\s*(?:(?:\/\/|#)\s*(?:__commands__|RUN_COMMANDS)\b[\s\S]*?)```/gi, '')
+    .replace(/```ap-commands[^\n]*\n[\s\S]*?```/gi, '')
+    .trim() || rawText;
   let extracted = '';
-  const match = rawText.match(/```(?:javascript|js|typescript|ts|node)?\s*\n([\s\S]*?)```/i);
+  const match = parseSource.match(/```(?:javascript|js|typescript|ts|node)?\s*\n([\s\S]*?)```/i);
   if (match && match[1]) {
     extracted = match[1].trim();
   } else {
     // If wrapped in generic code block
-    const genericMatch = rawText.match(/```\s*\n([\s\S]*?)```/);
+    const genericMatch = parseSource.match(/```\s*\n([\s\S]*?)```/);
     if (genericMatch && genericMatch[1]) {
       extracted = genericMatch[1].trim();
     } else {
-      extracted = rawText.trim();
+      extracted = parseSource.trim();
     }
   }
 
@@ -522,6 +666,14 @@ export function buildPrompt({
     parts.push(`## Project Workspace Files:\n${workspaceFiles.map(f => `- ${f}`).join('\n')}`);
   }
 
+  // Track files already attached in feedback so debug prompts never duplicate identical file bodies 2-3x
+  const feedbackEmbeddedFiles = new Set();
+  if (feedback) {
+    for (const m of String(feedback).matchAll(/### File:\s*`([^`]+)`/g)) {
+      if (m[1]) feedbackEmbeddedFiles.add(m[1].trim());
+    }
+  }
+
   if (referenceFiles && Object.keys(referenceFiles).length > 0) {
     // 1. Parse package.json explicitly so LLM never imports missing packages (e.g. bcrypt vs bcryptjs) or wrong module syntax
     const pkgKey = Object.keys(referenceFiles).find(k => k === 'package.json' || k.endsWith('/package.json'));
@@ -548,6 +700,7 @@ export function buildPrompt({
     const starterEntries = [];
     for (const [fname, content] of Object.entries(referenceFiles)) {
       if (!content) continue;
+      if (feedbackEmbeddedFiles.has(fname)) continue; // Already included inside CURRENT CODE section in feedback
       const ext = fname.split('.').pop().toLowerCase();
       const lang = ext === 'json' ? 'json' : (ext === 'prisma' ? 'prisma' : (ext === 'ts' ? 'typescript' : 'javascript'));
       if (/(?:^|\/)(?:test|tests|__tests__)\/|(?:\.test|\.spec)\.(?:js|ts|mjs|cjs)$/i.test(fname)) {
@@ -567,14 +720,23 @@ export function buildPrompt({
   }
 
   if (questionDetails) {
-    parts.push(`## Problem Description & Requirements:\n${questionDetails}`);
+    let compactDetails = String(questionDetails).replace(/\n{3,}/g, '\n\n').trim();
+    // On retries keep problem specification concise so error logs & code receive full token budget
+    if (feedback && compactDetails.length > 5500) {
+      compactDetails = compactDetails.slice(0, 3800) + '\n...\n' + compactDetails.slice(-1200);
+    }
+    parts.push(`## Problem Description & Requirements:\n${compactDetails}`);
   }
 
   if (testCases && testCases.length > 0) {
     parts.push(`## Test Cases to Pass (All Must Pass):\n${testCases.map((tc, i) => `${i + 1}. ${tc}`).join('\n')}`);
   }
 
-  if (currentCode) {
+  const activeAlreadyInFeedback = feedback && (
+    feedbackEmbeddedFiles.has(activeFile) ||
+    [...feedbackEmbeddedFiles].some(f => f.endsWith('/' + activeFile) || activeFile.endsWith('/' + f))
+  );
+  if (currentCode && !activeAlreadyInFeedback) {
     const codeHeader = feedback
       ? `## Previous Attempt Solution Code in \`${activeFile}\` (${language}):`
       : `## Current Starter Code in \`${activeFile}\` (${language}):`;
@@ -593,7 +755,8 @@ ${feedback}
 2. Cross-reference the exact line numbers and stack traces with the current file contents provided above.
 3. Match exact status codes (200, 201, 400, 404, 409) and exact JSON key shapes as demanded by tests.
 4. Guarantee no hanging async requests (every branch must call res.status(...).json(...) or res.send(...)).
-5. Return complete, production-ready code for all updated files with \`// <filepath>\` on Line 1 and zero comments.`);
+5. If setup/build/migration/seed commands must run in terminal after writing files, add an optional \`\`\`bash // __commands__\`\`\` block.
+6. Return complete, production-ready code for all updated files with \`// <filepath>\` on Line 1 and zero comments.`);
   }
 
   const isPrismaTask = /prisma|schema\.prisma|seed\.js|one-to-one/i.test((questionTitle || '') + ' ' + (questionDetails || ''));
@@ -695,75 +858,99 @@ DO NOT OMIT prisma/schema.prisma! It is required for the database tables to be c
   return parts.join('\n\n');
 }
 
+function getContextGatedSystemPrompt(userPrompt, isDebug = false) {
+  const p = String(userPrompt || '');
+  // Inspect ONLY the original challenge specification & package/workspace context (never stale feedback errors)
+  const specSection = p.split('## CRITICAL: PREVIOUS SUBMISSION FAILED')[0].split('=== PREVIOUS ATTEMPT')[0];
+  const needsPrisma = /prisma|schema\.prisma|seed\.js|postgresql/i.test(specSection);
+  const needsJwt = /jwt|jsonwebtoken|refresh\s*token|\/login|\/refresh|bearer/i.test(specSection);
+  const needsNativeHttp = /node:http|createServer|http\.createServer/i.test(specSection);
+  const needsExpressAuth = /bcrypt|\/register/i.test(specSection);
+
+  const lines = [
+    'You are a Senior Full-Stack Software Engineer. Write complete, bug-free, test-compliant solutions.',
+    'RULES: Follow every requirement verbatim. Match starter code style (CommonJS vs ESM, Express vs node:http). Preserve all exports (e.g. module.exports = app/server).',
+    'NEVER invent extra files (e.g. NEVER create prisma/schema.prisma or seed.js unless explicitly required by the problem!).',
+    'NEVER invent uninstalled packages; strictly use packages in package.json or Node built-ins. Fix JSON SyntaxError with express error handler returning 400. Return res.status(...).json(...) on every branch so requests never hang or timeout.',
+    'Output ONLY clean executable code (NO comments, NO explanations, NO "... rest of code") in markdown fenced code block(s) with exact file path on line 1 (e.g. // src/index.js).',
+    'If setup/migration/build/seed commands must run in terminal after writing files, add a separate ```bash block starting with // __commands__ and list one shell command per line.',
+    '2-space indentation only; no tabs.'
+  ];
+  if (needsPrisma) lines.push('PRISMA: Output prisma/schema.prisma, src/seed.js (deleteMany child-then-parent, await prisma.$disconnect() in finally), and src/index.js cleanly.');
+  if (needsNativeHttp) lines.push('NODE HTTP: Set Content-Type application/json; parse JSON safely (400 on invalid JSON); export server cleanly (module.exports = server; module.exports.server = server;). Return 404 on unknown routes.');
+  if (needsJwt) lines.push('JWT: Preserve hardcoded SECRET and user object; reject missing/invalid/malformed/wrong-secret tokens accurately per spec.');
+  if (needsExpressAuth) lines.push('EXPRESS AUTH: Validate inputs strictly (400), check duplicate records via findFirst/findUnique before create, hash password with installed bcrypt/bcryptjs, omit password from JSON response.');
+  if (isDebug || /PREVIOUS ATTEMPT|FAILED/i.test(p)) lines.push('DEBUG: Fix EVERY failing test simultaneously in one complete replacement file without breaking passing routes.');
+  return lines.join('\n');
+}
+
 export async function callGemini(prompt, settings) {
   const apiKey = settings.geminiKey?.trim();
   if (!apiKey) {
     throw new Error('Gemini API key is missing. Please set it in AP-Solver settings.');
   }
 
-  let requestedModel = settings.geminiModel || 'gemini-3.8-flash';
-  if (requestedModel === 'gemini-1.5-flash') {
-    requestedModel = 'gemini-3.8-flash';
+  let requestedModel = (settings.geminiModel || 'gemini-2.5-flash').trim();
+  if (!requestedModel || /1\.5|3\.5|3\.8/.test(requestedModel)) {
+    requestedModel = 'gemini-2.5-flash';
   }
 
   const isDebug = !!settings.isDebugMode;
   const modelsToTry = isDebug
     ? (
         /pro/i.test(requestedModel)
-          ? [requestedModel, 'gemini-2.5-pro', 'gemini-pro-latest', 'gemini-2.5-flash', 'gemini-3.8-flash', 'gemini-flash-latest']
-          : ['gemini-2.5-pro', 'gemini-pro-latest', requestedModel, 'gemini-2.5-flash', 'gemini-3.8-flash', 'gemini-flash-latest']
+          ? [requestedModel, 'gemini-2.5-pro', 'gemini-pro-latest', 'gemini-2.5-flash', 'gemini-flash-latest']
+          : ['gemini-2.5-pro', requestedModel, 'gemini-2.5-flash', 'gemini-flash-latest', 'gemini-pro-latest']
       ).filter(Boolean)
     : [
-        requestedModel === 'gemini-2.5-flash' ? 'gemini-3.8-flash' : requestedModel,
-        'gemini-3.8-flash',
+        requestedModel === 'gemini-2.5-pro' ? 'gemini-2.5-flash' : requestedModel,
+        'gemini-2.5-flash',
         'gemini-flash-latest',
-        'gemini-3.5-flash',
+        'gemini-2.0-flash',
         'gemini-2.5-flash-lite'
       ].filter(Boolean);
   const uniqueModels = [...new Set(modelsToTry)];
 
+  const gatedSysPrompt = getContextGatedSystemPrompt(prompt, isDebug);
   let lastError = null;
+  let seenPro429 = false;
 
   for (const model of uniqueModels) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-    const maxOut = /1\.5|2\.0/.test(model) ? 8192 : (isDebug ? 16384 : 8192);
+    if (seenPro429 && /pro/i.test(model)) {
+      continue; // Skip redundant Pro alias after quota exhaustion; fall straight to Flash
+    }
+    if (settings.deadlineAt && Date.now() >= settings.deadlineAt - 3000) {
+      break;
+    }
 
-    // Config options:
-    // Debug Escalation: Try high thinkingLevel / deep thinkingBudget first, then high-token standard fallback
-    // Initial Fast Solve: Try low thinkingLevel first, then standard config fallback
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    const maxOut = /1\.5|2\.0/.test(model) ? 8192 : (isDebug ? 12288 : 8192);
+    const isGemini3 = /^gemini-3/i.test(model);
+    const isProModel = /pro/i.test(model);
+
+    // Gemini 2.5 models use thinkingBudget (thinkingLevel causes HTTP 400 on 2.5); Gemini 3 uses thinkingLevel
     const configsToTry = isDebug
-      ? [
-          {
-            temperature: 0.1,
-            topP: 0.95,
-            maxOutputTokens: maxOut,
-            thinkingConfig: {
-              thinkingLevel: 'high'
-            }
-          },
-          {
-            temperature: 0.1,
-            topP: 0.95,
-            maxOutputTokens: maxOut,
-            thinkingConfig: {
-              thinkingBudget: 8192
-            }
-          },
-          {
-            temperature: 0.1,
-            topP: 0.95,
-            maxOutputTokens: maxOut
-          }
-        ]
+      ? (isGemini3
+          ? [
+              { temperature: 0.1, topP: 0.95, maxOutputTokens: maxOut, thinkingConfig: { thinkingLevel: 'high' } },
+              { temperature: 0.1, topP: 0.95, maxOutputTokens: maxOut, thinkingConfig: { thinkingBudget: 8192 } },
+              { temperature: 0.1, topP: 0.95, maxOutputTokens: maxOut }
+            ]
+          : isProModel
+            ? [
+                { temperature: 0.1, topP: 0.95, maxOutputTokens: maxOut, thinkingConfig: { thinkingBudget: 4096 } },
+                { temperature: 0.1, topP: 0.95, maxOutputTokens: maxOut }
+              ]
+            : [
+                { temperature: 0.1, topP: 0.95, maxOutputTokens: maxOut, thinkingConfig: { thinkingBudget: 2048 } },
+                { temperature: 0.1, topP: 0.95, maxOutputTokens: maxOut }
+              ])
       : [
-          {
-            temperature: 0.1,
-            topP: 0.95,
-            maxOutputTokens: maxOut,
-            thinkingConfig: {
-              thinkingLevel: 'low'
-            }
-          },
+          ...(isGemini3
+            ? [{ temperature: 0.1, topP: 0.95, maxOutputTokens: maxOut, thinkingConfig: { thinkingLevel: 'low' } }]
+            : /2\.5/.test(model)
+              ? [{ temperature: 0.1, topP: 0.95, maxOutputTokens: maxOut, thinkingConfig: { thinkingBudget: 0 } }]
+              : []),
           {
             temperature: 0.1,
             topP: 0.95,
@@ -772,12 +959,18 @@ export async function callGemini(prompt, settings) {
         ];
 
     for (const genConfig of configsToTry) {
+      if (settings.deadlineAt && Date.now() >= settings.deadlineAt - 2000) {
+        break;
+      }
+      const remainingMs = settings.deadlineAt ? Math.max(8000, settings.deadlineAt - Date.now()) : (isDebug ? 50000 : 35000);
+      const reqTimeoutMs = Math.min(isDebug ? (isProModel ? 45000 : 35000) : 30000, remainingMs);
+
       const payload = {
         contents: [
           {
             role: 'user',
             parts: [
-              { text: SYSTEM_PROMPT + '\n\n' + prompt }
+              { text: gatedSysPrompt + '\n\n' + prompt }
             ]
           }
         ],
@@ -785,7 +978,7 @@ export async function callGemini(prompt, settings) {
       };
 
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), isDebug ? 90000 : 60000);
+      const timer = setTimeout(() => controller.abort(), reqTimeoutMs);
 
       try {
         const resp = await fetch(url, {
@@ -806,19 +999,18 @@ export async function callGemini(prompt, settings) {
             msg += `: ${errText}`;
           }
 
-          // If 400 Bad Request mentions parameter/thinkingConfig, try next config (or break to next model if all configs fail)
           if (resp.status === 400) {
             console.warn(`[AP-Solver] Gemini 400 on ${model} (${msg}), trying fallback config/model...`);
             lastError = new Error(msg);
             continue;
           }
 
-          // If 403/404/429/5xx, try next model candidate cleanly
           if (resp.status === 403 || resp.status === 404 || resp.status === 429 || resp.status >= 500 || /not found|no longer available|high demand|unavailable|quota|permission|API key/i.test(msg)) {
             console.warn(`[AP-Solver] Gemini model ${model} unavailable (${resp.status}), trying next candidate...`);
             lastError = new Error(msg);
-            if (resp.status === 429) await new Promise(r => setTimeout(r, 1500));
-            break; // Try next model in uniqueModels
+            if (resp.status === 429 && isProModel) seenPro429 = true;
+            if (resp.status === 429 && !isProModel) await new Promise(r => setTimeout(r, 800));
+            break;
           }
 
           throw new Error(msg);
@@ -839,18 +1031,19 @@ export async function callGemini(prompt, settings) {
           const finishReason = candidate?.finishReason || 'unknown';
           console.warn(`[AP-Solver] Gemini model ${model} returned empty content (finishReason=${finishReason}), trying next config/model...`);
           lastError = new Error(`Gemini returned an empty response (${finishReason}).`);
-          // If this is the last config for this model, break to next model
           if (genConfig === configsToTry[configsToTry.length - 1]) {
             break;
           }
           continue;
         }
 
+        const commands = extractCommandsFromResponse(text);
         const files = parseMultiFileSolution(text, settings.activeFile, settings.workspaceFiles);
         return {
           raw: text,
           code: files.length > 0 ? files[0].code : extractCodeBlock(text),
           files,
+          commands,
           model,
           debugEscalated: isDebug
         };
@@ -858,11 +1051,11 @@ export async function callGemini(prompt, settings) {
         clearTimeout(timer);
         if (err.name === 'AbortError') {
           lastError = new Error(`Gemini model ${model} request timed out.`);
-          break; // Try next model
+          break;
         }
         if (err.message && (err.message.includes('404') || err.message.includes('429') || /\b5\d{2}\b/.test(err.message) || /unavailable|no longer available|quota|empty response|Failed to fetch|network/i.test(err.message))) {
           lastError = err;
-          break; // Try next model
+          break;
         }
         throw err;
       }
@@ -872,48 +1065,68 @@ export async function callGemini(prompt, settings) {
   throw lastError || new Error('All Gemini model candidates failed.');
 }
 
-// Compact system prompt & debug prompt dynamically for strict Groq TPM quotas & non-Prisma isolation
+// Smart priority-preserving compactor for strict Groq TPM quotas (never slices off debug errors at the bottom)
 function buildCompactGroqMessages(systemPrompt, userPrompt, desiredMaxTokens = 4096, tpmLimit = 7600) {
-  let sys = String(systemPrompt || '');
   const p = String(userPrompt || '');
-  // Check ONLY the original challenge specification & package/workspace context (before feedback/previous generated files)
-  const specSection = p.split('## CRITICAL: PREVIOUS SUBMISSION FAILED')[0].split('=== PREVIOUS ATTEMPT')[0];
-  const needsPrisma = /prisma|schema\.prisma|seed\.js|postgresql/i.test(specSection);
-  const needsJwt = /jwt|jsonwebtoken|refresh\s*token|\/login|\/refresh|bearer/i.test(specSection);
-  const needsNativeHttp = /node:http|createServer|http\.createServer/i.test(specSection);
-  const needsExpressAuth = /bcrypt|\/register/i.test(specSection);
-
-  const lines = [
-    'You are a Senior Full-Stack Software Engineer. Write complete, bug-free, test-compliant solutions.',
-    'RULES: Follow every requirement verbatim. Match starter code style (CommonJS vs ESM, Express vs node:http). Preserve all exports (e.g. module.exports = app/server).',
-    'NEVER invent extra files (e.g. NEVER create prisma/schema.prisma or seed.js unless explicitly required by the problem!).',
-    'NEVER invent uninstalled packages; strictly use packages in package.json or Node built-ins. Fix JSON SyntaxError with express error handler returning 400. Return res.status(...).json(...) on every branch so requests never hang or timeout.',
-    'Output ONLY clean executable code (NO comments, NO explanations, NO "... rest of code") in markdown fenced code block(s) with exact file path on line 1 (e.g. // src/index.js).',
-    '2-space indentation only; no tabs.'
-  ];
-  if (needsPrisma) lines.push('PRISMA: Output prisma/schema.prisma, src/seed.js (deleteMany child-then-parent, await prisma.$disconnect() in finally), and src/index.js cleanly.');
-  if (needsNativeHttp) lines.push('NODE HTTP: Set Content-Type application/json; parse JSON safely (400 on invalid JSON); export server cleanly (module.exports = server; module.exports.server = server;). Return 404 on unknown routes.');
-  if (needsJwt) lines.push('JWT: Preserve hardcoded SECRET and user object; reject missing/invalid/malformed/wrong-secret tokens accurately per spec.');
-  if (needsExpressAuth) lines.push('EXPRESS AUTH: Validate inputs strictly (400), check duplicate records via findFirst/findUnique before create, hash password with installed bcrypt/bcryptjs, omit password from JSON response.');
-  if (/PREVIOUS ATTEMPT|FAILED/i.test(p)) lines.push('DEBUG: Fix EVERY failing test simultaneously in one complete replacement file without breaking passing routes.');
-  sys = lines.join('\n');
+  const sys = getContextGatedSystemPrompt(p, /PREVIOUS ATTEMPT|FAILED/i.test(p));
 
   let compactPrompt = p;
-  // Guarantee generous output headroom (~4,200+ tokens) within tight TPM limits so reasoning models don't truncate
-  const reservedOutputTokens = Math.min(4400, Math.max(desiredMaxTokens, Math.floor(tpmLimit * 0.56)));
-  const maxPromptChars = Math.min(7200, Math.max(3000, Math.floor((tpmLimit - reservedOutputTokens - 350) * 3.0) - sys.length));
+  const reservedOutputTokens = Math.min(4400, Math.max(desiredMaxTokens, Math.floor(tpmLimit * 0.54)));
+  const maxPromptChars = Math.min(7600, Math.max(2800, Math.floor((tpmLimit - reservedOutputTokens - 350) * 3.0) - sys.length));
+
   if (compactPrompt.length > maxPromptChars) {
+    // 1. First shrink verbose Tab 3 terminal output while preserving AssertionError, Error, passing/failing & user stack lines
     compactPrompt = compactPrompt.replace(
       /(SIDE BAR TERMINAL & MOCHA ERROR TRACES \(FROM TAB 3\):\n```\n)([\s\S]*?)(\n```)/,
-      (_, hdr, body, ftr) => hdr + body.slice(0, 1200) + ftr
+      (_, hdr, body, ftr) => {
+        const important = body.split('\n').filter(l =>
+          /\d+\s+(?:passing|failing)|\d+\)|AssertionError|TypeError|ReferenceError|SyntaxError|Error:|expected|actual|diff|^[+-]\s|at\s+/i.test(l)
+        ).join('\n');
+        const chosen = important.length >= 120 ? important : body;
+        return hdr + chosen.slice(0, 1200) + ftr;
+      }
     );
   }
+
   if (compactPrompt.length > maxPromptChars) {
-    compactPrompt = compactPrompt.slice(0, maxPromptChars);
+    // 2. Priority split: preserve Debug feedback + Current Code at the bottom, trimming spec filler from the middle
+    const splitMarker = compactPrompt.includes('## CRITICAL: PREVIOUS SUBMISSION FAILED')
+      ? '## CRITICAL: PREVIOUS SUBMISSION FAILED'
+      : (compactPrompt.includes('=== PREVIOUS ATTEMPT') ? '=== PREVIOUS ATTEMPT' : '');
+
+    if (splitMarker) {
+      const idx = compactPrompt.indexOf(splitMarker);
+      const specPart = compactPrompt.slice(0, idx);
+      let debugPart = compactPrompt.slice(idx);
+
+      const debugBudget = Math.floor(maxPromptChars * 0.65);
+      const specBudget = maxPromptChars - Math.min(debugPart.length, debugBudget) - 20;
+
+      if (debugPart.length > debugBudget) {
+        // Keep itemized failures header (top) + current workspace code (bottom)
+        const codeMarkerIdx = debugPart.indexOf('=== CURRENT CODE OF ALL WORKSPACE FILES');
+        if (codeMarkerIdx > 0) {
+          const topFailures = debugPart.slice(0, Math.min(codeMarkerIdx, Math.floor(debugBudget * 0.48)));
+          const codeBottom = debugPart.slice(codeMarkerIdx);
+          const remForCode = debugBudget - topFailures.length - 12;
+          debugPart = topFailures + '\n...\n' + codeBottom.slice(0, Math.max(800, remForCode));
+        } else {
+          debugPart = debugPart.slice(0, debugBudget);
+        }
+      }
+
+      const trimmedSpec = specPart.length > specBudget
+        ? specPart.slice(0, Math.max(900, specBudget - 8)) + '\n...'
+        : specPart;
+
+      compactPrompt = trimmedSpec + '\n\n' + debugPart;
+    } else {
+      compactPrompt = compactPrompt.slice(0, maxPromptChars);
+    }
   }
 
   const estInputTokens = Math.ceil((sys.length + compactPrompt.length) / 3.0);
-  const safeMaxTokens = Math.max(3200, Math.min(4600, Math.max(desiredMaxTokens, reservedOutputTokens), tpmLimit - estInputTokens - 300));
+  const safeMaxTokens = Math.max(2800, Math.min(4600, Math.max(desiredMaxTokens, reservedOutputTokens), tpmLimit - estInputTokens - 300));
   return { sys, compactPrompt, safeMaxTokens };
 }
 
@@ -924,12 +1137,10 @@ export async function callGroq(prompt, settings) {
   }
 
   let requestedModel = (settings.groqModel || '').trim();
-  // Auto-normalize deprecated/inaccessible model names to ultra-fast GPT OSS 120B
   if (!requestedModel || requestedModel.includes('llama') || requestedModel.includes('mixtral') || requestedModel.includes('qwen-2.5')) {
     requestedModel = 'openai/gpt-oss-120b';
   }
 
-  // Prioritize gpt-oss-20b immediately after gpt-oss-120b (each has its own separate 200K TPD quota)
   const modelsToTry = [
     requestedModel,
     'openai/gpt-oss-120b',
@@ -944,20 +1155,22 @@ export async function callGroq(prompt, settings) {
   let primaryNon404Error = null;
 
   for (const model of uniqueModels) {
+    if (settings.deadlineAt && Date.now() >= settings.deadlineAt - 3000) {
+      break;
+    }
     const url = 'https://api.groq.com/openai/v1/chat/completions';
 
     const compact4K = buildCompactGroqMessages(SYSTEM_PROMPT, prompt, 4200, 7600);
-    const compactLow = buildCompactGroqMessages(SYSTEM_PROMPT, prompt, 4200, 7600);
-    const estFullInputTokens = Math.ceil((compactLow.sys.length + prompt.length) / 3.2);
+    const estFullInputTokens = Math.ceil((compact4K.sys.length + prompt.length) / 3.0);
     const isSmallerReasoningModel = /(?:^|[-/])(?:20b|qwen)/i.test(model);
     const payloadsToTry = isDebug
       ? [
-          ...(!isSmallerReasoningModel && estFullInputTokens < 5200
+          ...(!isSmallerReasoningModel && estFullInputTokens < 2200
             ? [
                 {
                   model,
                   messages: [
-                    { role: 'system', content: compactLow.sys },
+                    { role: 'system', content: compact4K.sys },
                     { role: 'user', content: prompt }
                   ],
                   temperature: 0.1,
@@ -967,7 +1180,7 @@ export async function callGroq(prompt, settings) {
                 {
                   model,
                   messages: [
-                    { role: 'system', content: compactLow.sys },
+                    { role: 'system', content: compact4K.sys },
                     { role: 'user', content: prompt }
                   ],
                   temperature: 0.1,
@@ -977,7 +1190,7 @@ export async function callGroq(prompt, settings) {
                 {
                   model,
                   messages: [
-                    { role: 'system', content: compactLow.sys },
+                    { role: 'system', content: compact4K.sys },
                     { role: 'user', content: prompt }
                   ],
                   temperature: 0.1,
@@ -985,20 +1198,7 @@ export async function callGroq(prompt, settings) {
                   reasoning_effort: 'low'
                 }
               ]
-            : !isSmallerReasoningModel
-              ? [
-                  {
-                    model,
-                    messages: [
-                      { role: 'system', content: compact4K.sys },
-                      { role: 'user', content: compact4K.compactPrompt }
-                    ],
-                    temperature: 0.1,
-                    max_tokens: compact4K.safeMaxTokens,
-                    reasoning_effort: 'high'
-                  }
-                ]
-              : []),
+            : []),
           {
             model,
             messages: [
@@ -1023,11 +1223,11 @@ export async function callGroq(prompt, settings) {
           {
             model,
             messages: [
-              { role: 'system', content: compactLow.sys },
-              { role: 'user', content: estFullInputTokens < 4500 ? prompt : compactLow.compactPrompt }
+              { role: 'system', content: compact4K.sys },
+              { role: 'user', content: estFullInputTokens < 2200 ? prompt : compact4K.compactPrompt }
             ],
             temperature: 0.1,
-            max_tokens: Math.min(8192, Math.max(4096, compactLow.safeMaxTokens)),
+            max_tokens: Math.min(8192, Math.max(3600, compact4K.safeMaxTokens)),
             reasoning_effort: 'low'
           },
           {
@@ -1043,9 +1243,12 @@ export async function callGroq(prompt, settings) {
 
     let waited429 = false;
     for (let pi = 0; pi < payloadsToTry.length; pi++) {
+      if (settings.deadlineAt && Date.now() >= settings.deadlineAt - 2000) {
+        break;
+      }
       const payload = payloadsToTry[pi];
       const controller = new AbortController();
-      const timeoutMs = payload.reasoning_effort ? 45000 : 35000;
+      const timeoutMs = payload.reasoning_effort ? 35000 : 28000;
       const timer = setTimeout(() => controller.abort(), timeoutMs);
 
       try {
@@ -1070,11 +1273,10 @@ export async function callGroq(prompt, settings) {
             msg += `: ${errText}`;
           }
 
-          // Parse dynamic TPM Limit from Groq 413 message and push an extra compacted retry if needed
           if (resp.status === 413 || /too large|TPM/i.test(msg)) {
             const limM = msg.match(/Limit\s+(\d+)/i);
             const parsedLim = limM ? parseInt(limM[1], 10) : 7600;
-            const tight = buildCompactGroqMessages(SYSTEM_PROMPT, prompt, 3400, Math.max(4500, parsedLim - 300));
+            const tight = buildCompactGroqMessages(SYSTEM_PROMPT, prompt, 3000, Math.max(4200, parsedLim - 300));
             if (pi === payloadsToTry.length - 1 && !payload._tightRetried) {
               payloadsToTry.push({
                 model,
@@ -1084,7 +1286,6 @@ export async function callGroq(prompt, settings) {
                 ],
                 temperature: 0.1,
                 max_tokens: tight.safeMaxTokens,
-                reasoning_effort: 'low',
                 _tightRetried: true
               });
             }
@@ -1094,7 +1295,6 @@ export async function callGroq(prompt, settings) {
             continue;
           }
 
-          // If 400 rejects reasoning_effort/max_tokens, step down payload cleanly
           if (resp.status === 400 && (payload.reasoning_effort || payload.max_tokens > 2048)) {
             console.warn(`[AP-Solver] Groq ${model} (400, max_tokens=${payload.max_tokens}) stepped down to fallback payload...`);
             lastError = new Error(msg);
@@ -1102,18 +1302,16 @@ export async function callGroq(prompt, settings) {
             continue;
           }
 
-          // Skip immediately to next model on Daily TPD exhaustion; brief retry once only on short RPM 429s
           const isDailyTPD = /TPD|tokens per day|Please try again in \d+[mh]/i.test(msg);
           if (resp.status === 429 && !isDailyTPD && !waited429) {
             waited429 = true;
             console.warn(`[AP-Solver] Groq ${model} RPM rate-limited (429), retrying briefly...`);
             lastError = new Error(msg);
             primaryNon404Error = primaryNon404Error || lastError;
-            await new Promise(r => setTimeout(r, 2000));
+            await new Promise(r => setTimeout(r, 1500));
             continue;
           }
 
-          // If 403/404/413/429/5xx or model inaccessible, move to next model candidate (preserving primary error!)
           if (resp.status === 403 || resp.status === 404 || resp.status === 413 || resp.status === 429 || resp.status >= 500 || /does not exist|access|decommissioned|rate limit|too large|TPM|TPD|RPM|unavailable|overloaded/i.test(msg)) {
             console.warn(`[AP-Solver] Groq model ${model} unavailable (${resp.status}), trying next model...`);
             lastError = new Error(msg);
@@ -1130,7 +1328,6 @@ export async function callGroq(prompt, settings) {
         const text = typeof rawContent === 'string' ? rawContent.trim() : '';
         if (!text) {
           const finishReason = choice?.finish_reason || 'unknown';
-          // If this payload had reasoning_effort, step down to simpler payload; if already simplest, skip to next model
           if (payload.reasoning_effort) {
             console.warn(`[AP-Solver] Groq ${model} returned empty content (finish_reason=${finishReason}, reasoning=${payload.reasoning_effort}), stepping down...`);
             lastError = new Error(`Groq returned an empty response (${finishReason}).`);
@@ -1143,11 +1340,13 @@ export async function callGroq(prompt, settings) {
           break;
         }
 
+        const commands = extractCommandsFromResponse(text);
         const files = parseMultiFileSolution(text, settings.activeFile, settings.workspaceFiles);
         return {
           raw: text,
           code: files.length > 0 ? files[0].code : extractCodeBlock(text),
           files,
+          commands,
           model,
           debugEscalated: isDebug
         };
@@ -1181,25 +1380,34 @@ export async function callOpenAI(prompt, settings) {
   const model = settings.openaiModel || 'gpt-4o';
   const baseUrl = (settings.openaiBaseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
   const url = `${baseUrl}/chat/completions`;
+  const sysContent = getContextGatedSystemPrompt(prompt, !!settings.isDebugMode);
 
   const payload = {
     model,
     messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: sysContent },
       { role: 'user', content: prompt }
     ],
     temperature: 0.1,
     max_tokens: 8192
   };
 
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`
-    },
-    body: JSON.stringify(payload)
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 45000);
+  let resp;
+  try {
+    resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!resp.ok) {
     const errText = await resp.text();
@@ -1219,11 +1427,13 @@ export async function callOpenAI(prompt, settings) {
     throw new Error('OpenAI returned an empty response.');
   }
 
+  const commands = extractCommandsFromResponse(text);
   const files = parseMultiFileSolution(text, settings.activeFile, settings.workspaceFiles);
   return {
     raw: text,
     code: files.length > 0 ? files[0].code : extractCodeBlock(text),
     files,
+    commands,
     model
   };
 }
@@ -1231,8 +1441,7 @@ export async function callOpenAI(prompt, settings) {
 export async function generateSolution(promptData, settingsOverride = null) {
   // Always load stored settings containing saved API keys
   const stored = await getSettings();
-  
-  // Merge any runtime options without losing API keys
+
   const settings = { ...stored };
   if (settingsOverride && typeof settingsOverride === 'object') {
     for (const [k, v] of Object.entries(settingsOverride)) {
@@ -1245,10 +1454,10 @@ export async function generateSolution(promptData, settingsOverride = null) {
   settings.isDebugMode = isDebugMode;
   settings.activeFile = promptData.activeFile || 'src/index.js';
   settings.workspaceFiles = promptData.workspaceFiles || [];
+  settings.deadlineAt = Date.now() + (isDebugMode ? 120000 : 85000);
 
   const prompt = buildPrompt(promptData);
 
-  // Check which providers have valid keys
   const hasGemini = !!(settings.geminiKey && settings.geminiKey.trim());
   const hasGroq = !!(settings.groqKey && settings.groqKey.trim());
   const hasOpenAI = !!(settings.openaiKey && settings.openaiKey.trim());
@@ -1257,14 +1466,16 @@ export async function generateSolution(promptData, settingsOverride = null) {
     throw new Error('No API key configured. Please enter your Gemini or Groq API key in AP-Solver settings.');
   }
 
+  const hasValidSolution = (res) => !!(res && (
+    (res.code && res.code.trim().length > 5) ||
+    (Array.isArray(res.files) && res.files.some(f => f.code && f.code.trim().length > 5))
+  ));
+
   let provider = settings.provider || 'race';
 
-  // MODEL ESCALATION FOR DEBUGGING (Attempt 2+ / Local Test Fix):
-  // On failure debug iterations, prioritize Deep Reasoning (Gemini Pro / High Thinking) instead of letting
-  // a 300ms fast Flash/Groq guess cancel deeper analysis in Promise.any.
+  // MODEL ESCALATION FOR DEBUGGING (Attempt 2+ / Local Test Fix)
   if (isDebugMode) {
     console.log('[AP-Solver] 🧠 Debug Escalation Mode active: prioritizing High-Reasoning analysis...');
-    // ALWAYS try Gemini first for debug (best reasoning), then fall through to others
     const debugOrder = [];
     if (hasGemini) debugOrder.push('gemini');
     if (provider === 'openai' && hasOpenAI) debugOrder.push('openai');
@@ -1274,19 +1485,21 @@ export async function generateSolution(promptData, settingsOverride = null) {
 
     let lastDebugErr = null;
     for (const p of uniqueOrder) {
+      if (Date.now() >= settings.deadlineAt - 2000) break;
       try {
         const t0 = Date.now();
         let res;
         if (p === 'gemini') res = await callGemini(prompt, settings);
         else if (p === 'groq') res = await callGroq(prompt, settings);
         else res = await callOpenAI(prompt, settings);
-        if (!res || (!res.code && (!res.files || res.files.length === 0 || !res.files[0].code))) {
+        if (!hasValidSolution(res)) {
           console.warn(`[AP-Solver] Debug Escalation provider (${p}) returned empty result, trying next...`);
           lastDebugErr = new Error(`${p} returned an empty/invalid response during debug.`);
           continue;
         }
         res.latencyMs = Date.now() - t0;
         res.debugEscalated = true;
+        res.commands = res.commands || [];
         res.raceWinner = `🧠 Debug Escalated (${p === 'gemini' ? 'Gemini High-Reasoning' : p}: ${res.model})`;
         return res;
       } catch (err) {
@@ -1297,9 +1510,7 @@ export async function generateSolution(promptData, settingsOverride = null) {
     throw lastDebugErr || new Error('All debug escalation AI solvers failed.');
   }
 
-  // SPECULATIVE TURBO PARALLEL RACE (Attempt 1 Fast Solve):
-  // If provider is 'race' OR if both Groq and Gemini keys are available, race them concurrently!
-  // Whichever provider returns valid code first WINS and solves the problem in sub-second time!
+  // SPECULATIVE TURBO PARALLEL RACE (Attempt 1 Fast Solve)
   const shouldRace = (provider === 'race' || provider === 'auto') ? (hasGroq && hasGemini) : (hasGroq && hasGemini && (provider === 'groq' || provider === 'gemini'));
 
   if (shouldRace || (provider === 'race' && hasGroq && hasGemini)) {
@@ -1308,7 +1519,9 @@ export async function generateSolution(promptData, settingsOverride = null) {
     const runGroq = async () => {
       const t0 = Date.now();
       const res = await callGroq(prompt, settings);
+      if (!hasValidSolution(res)) throw new Error('Groq returned empty code.');
       res.latencyMs = Date.now() - t0;
+      res.commands = res.commands || [];
       res.raceWinner = `Groq LPU (${res.model})`;
       return res;
     };
@@ -1316,7 +1529,9 @@ export async function generateSolution(promptData, settingsOverride = null) {
     const runGemini = async () => {
       const t0 = Date.now();
       const res = await callGemini(prompt, settings);
+      if (!hasValidSolution(res)) throw new Error('Gemini returned empty code.');
       res.latencyMs = Date.now() - t0;
+      res.commands = res.commands || [];
       res.raceWinner = `Google Gemini (${res.model})`;
       return res;
     };
@@ -1334,7 +1549,6 @@ export async function generateSolution(promptData, settingsOverride = null) {
     }
   }
 
-  // Single provider mode or fallback
   if (provider === 'race') {
     provider = hasGroq ? 'groq' : (hasGemini ? 'gemini' : 'openai');
   }
@@ -1356,7 +1570,6 @@ export async function generateSolution(promptData, settingsOverride = null) {
   } catch (err) {
     console.warn(`[AP-Solver] Primary provider (${provider}) failed:`, err);
 
-    // Fallbacks if available
     if (provider !== 'groq' && hasGroq) {
       console.log('[AP-Solver] Falling back to Groq...');
       return await callGroq(prompt, settings);
