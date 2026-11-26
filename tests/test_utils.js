@@ -12,7 +12,9 @@ import {
   extractCommandsFromResponse,
   detectRequiredPostWriteCommands,
   sanitizePostWriteCommand,
-  buildBase64TerminalScript
+  buildBase64TerminalScript,
+  analyzeFileModificationPlan,
+  enforceFilePlan
 } from '../utils/llm.js';
 
 export async function runUtilsTests() {
@@ -22,6 +24,7 @@ export async function runUtilsTests() {
     'utils/llm.js',
     'utils/code-format.js',
     'utils/commands.js',
+    'utils/file-planner.js',
     'utils/prompts.js',
     'utils/providers.js'
   ]);
@@ -174,7 +177,65 @@ export async function runUtilsTests() {
     lockPrompt.includes('[PRIMARY FILE TO EDIT IN-PLACE]'),
     'Prompt missing strict file location lock annotations'
   );
-  console.log('   ✓ Multi-file parser, nested directory resolution, location lock, HTML assets & Prisma routing verified');
+
+  // Strict Pre-Implementation File Analysis & Enforcement Gate (MVC refactor scenario)
+  const mvcPlan = analyzeFileModificationPlan({
+    questionTitle: 'MVC Refactor, Ride-Share Surge Pricing Engine',
+    questionDetails: 'Refactor requestRide into src/models/driver.model.js, src/services/ride.service.js, src/controllers/ride.controller.js and src/index.js.',
+    activeFile: 'src/index.js',
+    workspaceFiles: [
+      'package.json', 'nodemon.json', '.env', 'README.md',
+      'ride.controller.js', 'driver.model.js', 'ride.service.js',
+      'src/controllers/ride.controller.js', 'src/models/driver.model.js',
+      'src/services/ride.service.js', 'src/index.js'
+    ],
+    referenceFiles: {
+      'src/index.js': 'const rideController = require("./controllers/ride.controller");'
+    }
+  });
+  assert(
+    mvcPlan.locked === true &&
+    mvcPlan.allowedPaths.length === 4 &&
+    mvcPlan.allowedPaths.includes('src/models/driver.model.js') &&
+    mvcPlan.allowedPaths.includes('src/services/ride.service.js') &&
+    mvcPlan.allowedPaths.includes('src/controllers/ride.controller.js') &&
+    mvcPlan.allowedPaths.includes('src/index.js') &&
+    !mvcPlan.allowedPaths.includes('ride.controller.js') &&
+    !mvcPlan.allowedPaths.includes('package.json'),
+    'MVC analyzeFileModificationPlan failed to lock exact existing paths: ' + JSON.stringify(mvcPlan.allowedPaths)
+  );
+
+  const enforcedMvc = enforceFilePlan([
+    { filePath: 'src/service.js', code: '// hallu' },
+    { filePath: 'src/services/ride.service.js', code: 'module.exports = { requestRide };' },
+    { filePath: 'ride.controller.js', code: '// dup' },
+    { filePath: 'src/controllers/ride.controller.js', code: 'exports.requestRide = () => {};' },
+    { filePath: 'src/models/driver.model.js', code: 'module.exports = {};' },
+    { filePath: 'src/index.js', code: 'const express = require("express");' },
+    { filePath: 'package.json', code: '{}' },
+    { filePath: 'src/extra-invented.js', code: 'module.exports = 1;' }
+  ], mvcPlan);
+  assert(
+    enforcedMvc.files.length === 4 &&
+    enforcedMvc.blockedFiles.some(b => b.filePath === 'package.json') &&
+    enforcedMvc.blockedFiles.some(b => b.filePath === 'src/service.js') &&
+    enforcedMvc.blockedFiles.some(b => b.filePath === 'ride.controller.js') &&
+    enforcedMvc.blockedFiles.some(b => b.filePath === 'src/extra-invented.js'),
+    'enforceFilePlan failed to block duplicates/protected/invented files: ' + JSON.stringify({ files: enforcedMvc.files.map(f => f.filePath), blocked: enforcedMvc.blockedFiles })
+  );
+
+  const remapTest = enforceFilePlan([
+    { filePath: 'controllers/ride.controller.js', code: 'exports.requestRide = () => {};' },
+    { filePath: 'src/service.js', code: 'exports.requestRide = () => {};' }
+  ], mvcPlan);
+  assert(
+    remapTest.files.length === 2 &&
+    remapTest.files[0].filePath === 'src/controllers/ride.controller.js' &&
+    remapTest.files[1].filePath === 'src/services/ride.service.js',
+    'enforceFilePlan failed deterministic remap to canonical paths: ' + JSON.stringify(remapTest.files.map(f => f.filePath))
+  );
+
+  console.log('   ✓ Multi-file parser, locked file analyzer, enforcement gate & Prisma routing verified');
 
   // 5. Post-write commands, auto-remediation & script builder
   const multiWithCmds = `\`\`\`javascript\n// src/index.js\nconst app = require('express')();\nmodule.exports = app;\n\`\`\`\n\`\`\`bash\n// __commands__\nnpx prisma generate\nnpm run build\nrm -rf /\nnpm start\n\`\`\``;

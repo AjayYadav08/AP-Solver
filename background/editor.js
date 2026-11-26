@@ -64,6 +64,15 @@ export async function queryEditorInTab(tabId) {
             return null;
           }
 
+          function pruneFlatTabDuplicates(list) {
+            const uniq = [...new Set((list || []).filter(Boolean))];
+            return uniq.filter(f => {
+              if (f.includes('/') || /^(?:index\.(?:js|ts)|package\.json|\.env|nodemon\.json|README\.md)$/i.test(f)) return true;
+              const baseLow = f.toLowerCase();
+              return !uniq.some(other => other !== f && other.includes('/') && other.toLowerCase().endsWith('/' + baseLow));
+            });
+          }
+
           function scanWorkspaceFiles() {
             const files = new Set();
             const treeRows = [...document.querySelectorAll('.monaco-list-row, [role="treeitem"]')];
@@ -89,7 +98,7 @@ export async function queryEditorInTab(tabId) {
                 files.add(ariaMatch ? ariaMatch[1] : text);
               }
             }
-            return [...files];
+            return pruneFlatTabDuplicates([...files]);
           }
 
           let m = window.monaco;
@@ -164,7 +173,7 @@ export async function queryEditorInTab(tabId) {
                 language: activeModel.getLanguageId ? activeModel.getLanguageId() : 'javascript',
                 uri: p,
                 activeFile: resolvedActive,
-                allFiles: [...new Set(workspaceFiles)],
+                allFiles: pruneFlatTabDuplicates(workspaceFiles),
                 referenceFiles
               };
             }
@@ -182,7 +191,7 @@ export async function queryEditorInTab(tabId) {
                   code,
                   language: 'javascript',
                   activeFile: detectedActive || 'src/index.js',
-                  allFiles: [...new Set(workspaceFiles)],
+                  allFiles: pruneFlatTabDuplicates(workspaceFiles),
                   fromDom: true
                 };
               }

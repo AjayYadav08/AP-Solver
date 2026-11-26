@@ -34,6 +34,7 @@ export async function runBackgroundTests() {
     'utils/llm.js',
     'utils/code-format.js',
     'utils/commands.js',
+    'utils/file-planner.js',
     'utils/prompts.js',
     'utils/providers.js',
     'content/shared.js',
@@ -120,7 +121,7 @@ export async function runBackgroundTests() {
     !edSrc.includes("allEditors[0] || document.querySelector('.monaco-editor')"),
     'background/editor.js missing workbench isolation, nested path extractor, or target guards'
   );
-  assert(edSrc.includes('extractWorkspaceRelPath'), 'background/editor.js missing extractWorkspaceRelPath');
+  assert(edSrc.includes('extractWorkspaceRelPath') && edSrc.includes('pruneFlatTabDuplicates'), 'background/editor.js missing extractWorkspaceRelPath or pruneFlatTabDuplicates');
 
   // 6. Terminal MAIN world reader, WebGL safety & zero-Monaco-corruption guarantee
   const readTermSec = termSrc.substring(termSrc.indexOf('export async function readIntegratedTerminalText'), termSrc.indexOf('export async function decodeTerminalJsonPayload'));
@@ -154,7 +155,7 @@ export async function runBackgroundTests() {
   );
 
   // 8. Message router operations
-  for (const op of ['AP_KEEPALIVE', 'AP_GENERATE', 'AP_QUERY_EDITOR', 'AP_PROBE_WORKSPACE', 'AP_RUN_LOCAL_TESTS', 'AP_RUN_TERMINAL_COMMANDS', 'AP_WRITE_TERMINAL', 'AP_CLEAN_EDITOR_ARTIFACTS']) {
+  for (const op of ['AP_KEEPALIVE', 'AP_GENERATE', 'AP_BUILD_FILE_PLAN', 'AP_ENFORCE_FILE_PLAN', 'AP_QUERY_EDITOR', 'AP_PROBE_WORKSPACE', 'AP_RUN_LOCAL_TESTS', 'AP_RUN_TERMINAL_COMMANDS', 'AP_WRITE_TERMINAL', 'AP_CLEAN_EDITOR_ARTIFACTS']) {
     assert(routerSrc.includes(op), `background.js router missing op: ${op}`);
   }
   assert(allBgSrc.includes('monaco.model.setValue') && allBgSrc.includes('dom.insertTextAndPaste'), 'Missing fallback editor strategies');

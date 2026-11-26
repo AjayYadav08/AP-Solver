@@ -25,7 +25,7 @@ try{if(fs.existsSync('.env'))out.files['.env']=fs.readFileSync('.env','utf8').sl
 try{if(fs.existsSync('nodemon.json'))out.files['nodemon.json']=fs.readFileSync('nodemon.json','utf8').slice(0,600);}catch(e){}
 const testCands=[],keyCands=[];
 function walk(d,depth){
-  if(depth>3)return;
+  if(depth>4)return;
   let ents=[];try{ents=fs.readdirSync(d,{withFileTypes:true});}catch(e){return;}
   for(const ent of ents){
     if(ent.name==='node_modules'||ent.name==='.git'||ent.name==='dist'||ent.name==='build')continue;
@@ -34,13 +34,13 @@ function walk(d,depth){
     else{
       out.allFiles.push(p);
       if(/(?:^|\\/)(?:test|tests|__tests__)\\/|\\.(?:test|spec)\\.(?:js|ts|mjs|cjs)$/i.test(p))testCands.push(p);
-      else if(/\\.prisma$|^db\\/.*\\.js$|^src\\/.*\\.js$|^(?:index|app|server)\\.(?:js|ts|mjs|cjs)$|\\.html?$/i.test(p))keyCands.push(p);
+      else if(/\\.prisma$|^(?:db|src|controllers|models|services|routes|middleware)\\/.*\\.(?:js|ts)$|^(?:index|app|server)\\.(?:js|ts|mjs|cjs)$|\\.html?$/i.test(p))keyCands.push(p);
     }
   }
 }
 walk('.',0);
 for(const p of testCands.slice(0,4)){try{out.files[p]=fs.readFileSync(p,'utf8').slice(0,4500);}catch(e){}}
-for(const p of keyCands.slice(0,6)){try{if(fs.statSync(p).size<12000)out.files[p]=fs.readFileSync(p,'utf8').slice(0,2200);}catch(e){}}
+for(const p of keyCands.slice(0,8)){try{if(fs.statSync(p).size<12000)out.files[p]=fs.readFileSync(p,'utf8').slice(0,2200);}catch(e){}}
 let gz=zlib.gzipSync(Buffer.from(JSON.stringify(out))).toString('base64');
 if(gz.length>1600){
   for(const p of keyCands){if(out.files[p]&&p!=='prisma/schema.prisma'&&!p.endsWith('schema.prisma'))out.files[p]=out.files[p].slice(0,1100);}
@@ -48,7 +48,12 @@ if(gz.length>1600){
   gz=zlib.gzipSync(Buffer.from(JSON.stringify(out))).toString('base64');
 }
 if(gz.length>1600){
-  for(const p of keyCands){if(out.files[p]&&p!=='prisma/schema.prisma'&&!p.endsWith('schema.prisma')&&!/index\.(js|ts)$/i.test(p))delete out.files[p];}
+  for(const p of keyCands){if(out.files[p]&&p!=='prisma/schema.prisma'&&!p.endsWith('schema.prisma'))out.files[p]=out.files[p].slice(0,650);}
+  for(const p of testCands){if(out.files[p])out.files[p]=out.files[p].slice(0,2200);}
+  gz=zlib.gzipSync(Buffer.from(JSON.stringify(out))).toString('base64');
+}
+if(gz.length>1600){
+  for(const p of keyCands){if(out.files[p]&&p!=='prisma/schema.prisma'&&!p.endsWith('schema.prisma')&&!/index\\.(js|ts)$/i.test(p))delete out.files[p];}
   gz=zlib.gzipSync(Buffer.from(JSON.stringify(out))).toString('base64');
 }
 if(gz.length>1600){

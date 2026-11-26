@@ -21,6 +21,16 @@
   let initialWorkspaceFiles = new Set();
   let initialReferenceFiles = {};
   let staleTempFilesToRemove = new Set();
+  let lockedFilePlan = null;
+
+  function pruneBareTabDuplicates(files = []) {
+    const uniq = [...new Set((files || []).filter(Boolean))];
+    return uniq.filter(f => {
+      if (f.includes('/') || /^(?:index\.(?:js|ts)|package\.json|\.env|nodemon\.json|README\.md)$/i.test(f)) return true;
+      const baseLow = f.toLowerCase();
+      return !uniq.some(other => other !== f && other.includes('/') && other.toLowerCase().endsWith('/' + baseLow));
+    });
+  }
 
   /** Safe extension runtime message dispatcher with timeout & error recovery. */
   function sendMsg(msg, timeoutMs = 25000) {
@@ -261,39 +271,47 @@
           }
         }
         cachedEditor.referenceFiles = combinedRefs;
-        cachedEditor.allFiles = [...new Set([...(cachedEditor.allFiles || []), ...(probeResp.allFiles || []), ...Object.keys(probeResp.files)])];
+        // Prefer authoritative container filesystem inventory over DOM-tab bare filenames
+        const diskList = (probeResp.allFiles && probeResp.allFiles.length > 0)
+          ? [...probeResp.allFiles, ...Object.keys(probeResp.files)]
+          : [...(cachedEditor.allFiles || []), ...Object.keys(probeResp.files)];
+        cachedEditor.allFiles = pruneBareTabDuplicates(diskList);
         const testCount = Object.keys(probeResp.files).filter(f => /(?:^|\/)(?:test|tests|__tests__)\/|(?:\.test|\.spec)\.(?:js|ts|mjs|cjs)$/i.test(f)).length;
         ui.addLog(`✓ [Workspace Probe] Loaded ${probeResp.files['package.json'] ? 'package.json, ' : ''}${testCount} test file(s), ${cachedEditor.allFiles.length} total workspace file(s)!`, 'ok');
+      } else {
+        cachedEditor.allFiles = pruneBareTabDuplicates(cachedEditor.allFiles || []);
       }
     } catch (e) {}
 
     if (cachedEditor && cachedEditor.code !== undefined) {
       cachedEditor.activeFile = sanitizeActiveFile(cachedEditor.activeFile);
       ui.addLog(`Editor detected: "${cachedEditor.activeFile}" (${cachedEditor.code.split('\n').length} lines, ${cachedEditor.allFiles?.length || 1} file(s) in workspace)`, 'ok');
-
-      if (cachedQuestion?.details) {
-        const fileMatches = cachedQuestion.details.match(/((?:[a-zA-Z0-9_.\-]+\/)*[a-zA-Z0-9_\-]+\.(?:js|ts))/gi) || [];
-        const knownFiles = cachedEditor.allFiles || [];
-        for (const rawFm of fileMatches) {
-          const fm = rawFm.replace(/^\.\//, '');
-          if (/package|prisma\.config|schema\.prisma|\.env|nodemon|readme|test/i.test(fm)) continue;
-          const matchingKnown = knownFiles.find(kf => kf.toLowerCase() === fm.toLowerCase() || kf.toLowerCase() === ('src/' + fm).toLowerCase())
-            || knownFiles.find(kf => kf.endsWith('/' + fm) || (!fm.includes('/') && kf.endsWith('/' + fm)));
-          if (matchingKnown && cachedEditor.activeFile !== matchingKnown) {
-            ui.addLog(`ℹ️ Question specifically targets "${matchingKnown}". Updating active target.`, 'ok');
-            cachedEditor.activeFile = sanitizeActiveFile(matchingKnown);
-            break;
-          } else if (!matchingKnown && /seed\.js|router|controller|middleware|service|validate/i.test(fm)) {
-            const targetPath = fm.startsWith('src/') ? fm : 'src/' + fm;
-            ui.addLog(`ℹ️ Challenge requires new file "${targetPath}". Setting as primary target.`, 'ok');
-            cachedEditor.activeFile = sanitizeActiveFile(targetPath);
-            break;
-          }
-        }
-      }
     } else {
       ui.addLog('Editor not detected yet. Make sure target file is open.', 'warn');
     }
+
+    // Step 1/2 Fixed Pre-Implementation File Analysis & Locked Plan
+    try {
+      const planResp = await sendMsg({
+        op: 'AP_BUILD_FILE_PLAN',
+        data: {
+          questionTitle: cachedQuestion?.title || '',
+          questionDetails: cachedQuestion?.details || '',
+          activeFile: sanitizeActiveFile(cachedEditor?.activeFile),
+          workspaceFiles: cachedEditor?.allFiles || [],
+          referenceFiles: cachedEditor?.referenceFiles || {}
+        }
+      }, 4000);
+      if (planResp && planResp.ok && planResp.plan) {
+        lockedFilePlan = planResp.plan;
+        cachedEditor.activeFile = sanitizeActiveFile(lockedFilePlan.primaryFile || cachedEditor.activeFile);
+        ui.addLog(`🧭 [File Analysis] ${lockedFilePlan.architectureSummary}`, 'ok');
+        for (const t of lockedFilePlan.targets) {
+          ui.addLog(`📌 [${t.mode === 'edit' ? 'EDIT EXISTING' : 'NEW FILE'}] ${t.filePath} — ${t.reason}`, t.mode === 'edit' ? 'ok' : 'normal');
+        }
+        ui.addLog(`🔒 [Locked Plan] Fixed ${lockedFilePlan.allowedPaths.length} target(s); protected ${lockedFilePlan.protectedFiles.length} config/test file(s).`, 'ok');
+      }
+    } catch (e) {}
 
     ui.updateProblemInfo({
       title: cachedQuestion.title,
@@ -331,6 +349,22 @@
       ? (cachedGeneratedFiles.find(f => f.filePath === sanitizeActiveFile(cachedEditor?.activeFile))?.code || cachedGeneratedFiles[0]?.code)
       : cachedGeneratedCode;
 
+    if (!lockedFilePlan) {
+      try {
+        const planResp = await sendMsg({
+          op: 'AP_BUILD_FILE_PLAN',
+          data: {
+            questionTitle: cachedQuestion?.title || '',
+            questionDetails: cachedQuestion?.details || '',
+            activeFile: sanitizeActiveFile(cachedEditor?.activeFile),
+            workspaceFiles: cachedEditor?.allFiles || [],
+            referenceFiles: mergedReferenceFiles
+          }
+        }, 4000);
+        if (planResp?.ok && planResp.plan) lockedFilePlan = planResp.plan;
+      } catch (e) {}
+    }
+
     const promptData = {
       questionTitle: cachedQuestion.title,
       questionDetails: cachedQuestion.details,
@@ -340,7 +374,8 @@
       workspaceFiles: cachedEditor?.allFiles || [],
       referenceFiles: mergedReferenceFiles,
       language: cachedEditor?.language || 'javascript',
-      feedback
+      feedback,
+      filePlan: lockedFilePlan
     };
 
     const keepAliveTimer = setInterval(() => { sendMsg({ op: 'AP_KEEPALIVE' }, 3000).catch(() => {}); }, 20000);
@@ -357,6 +392,14 @@
       ui.addLog(`Error: ${err}`, 'bad');
       throw new Error(err);
     }
+
+    for (const r of (resp.result.remappedFiles || [])) {
+      ui.addLog(`↪️ [Plan Verification] Remapped "${r.from}" → canonical "${r.to}"`, 'warn');
+    }
+    for (const b of (resp.result.blockedFiles || [])) {
+      ui.addLog(`🚫 [Plan Guard] Blocked unapproved/duplicate file "${b.filePath}": ${b.reason}`, 'warn');
+    }
+    if (!lockedFilePlan && resp.result.filePlan) lockedFilePlan = resp.result.filePlan;
 
     cachedGeneratedCode = resp.result.code;
     cachedCommands = Array.isArray(resp.result.commands) ? resp.result.commands : [];
@@ -417,9 +460,23 @@
       return { ok: false, updatedFiles: [], failedFiles: [] };
     }
 
-    const filesToWrite = (cachedGeneratedFiles && cachedGeneratedFiles.length > 0)
+    let filesToWrite = (cachedGeneratedFiles && cachedGeneratedFiles.length > 0)
       ? cachedGeneratedFiles
       : [{ filePath: sanitizeActiveFile(cachedEditor?.activeFile), code: cachedGeneratedCode }];
+
+    // Pre-Implementation / Pre-Write Plan Gate: never write blocked or off-plan paths to container disk
+    if (lockedFilePlan) {
+      try {
+        const enf = await sendMsg({ op: 'AP_ENFORCE_FILE_PLAN', data: { files: filesToWrite, filePlan: lockedFilePlan } }, 3000);
+        if (enf && enf.ok && Array.isArray(enf.files) && enf.files.length > 0) {
+          for (const b of (enf.blockedFiles || [])) {
+            ui.addLog(`🚫 [Pre-Write Verification] Prevented write to "${b.filePath}": ${b.reason}`, 'warn');
+          }
+          filesToWrite = enf.files;
+          cachedGeneratedFiles = filesToWrite;
+        }
+      } catch (e) {}
+    }
 
     for (const f of filesToWrite) {
       if (/datasource\s+db|generator\s+client|model\s+[A-Z]/i.test(f.code) || (f.filePath && f.filePath.endsWith('.prisma'))) f.filePath = 'prisma/schema.prisma';
@@ -654,6 +711,7 @@
       initialWorkspaceFiles = new Set();
       initialReferenceFiles = {};
       staleTempFilesToRemove = new Set();
+      lockedFilePlan = null;
       const remediatedCmds = new Set();
       filesWrittenViaTerminal = false;
 

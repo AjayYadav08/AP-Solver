@@ -1,4 +1,5 @@
 // utils/code-format.js - Code cleanup, 2-space indentation, comment stripping, and multi-file solution parser
+import { enforceFilePlan } from './file-planner.js';
 
 const NON_COMMENT_STRIP_EXT_RE = /\.(?:html?|txt|md|json|env|svg|xml|yml|yaml)$/i;
 const JS_LIKE_INDENT_EXT_RE = /\.(?:js|ts|jsx|tsx|mjs|cjs|json|css|prisma)$/i;
@@ -251,9 +252,13 @@ function dedupeCanonicalFiles(files, workspaceFiles = []) {
   });
 }
 
-/** Parse one or more code files from LLM output using explicit headers, content routing, and workspace hints. */
-export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.js', workspaceFiles = []) {
+/** Parse one or more code files from LLM output using explicit headers, content routing, workspace hints, and optional locked file plan. */
+export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.js', workspaceFiles = [], filePlan = null) {
   if (!rawText) return [];
+  const finalizeFiles = (list) => {
+    const clean = dedupeCanonicalFiles(alignStaticFilePaths(list), workspaceFiles);
+    return filePlan ? enforceFilePlan(clean, filePlan).files : clean;
+  };
 
   // Strip optional post-write __commands__ / ap-commands bash blocks before parsing code files
   const sanitizedRawText = String(rawText).replace(
@@ -355,7 +360,7 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
     }
 
     if (parsedBlocks.length > 0 && (blocks.length > 1 || parsedBlocks[0].filePath !== defaultResolved)) {
-      return dedupeCanonicalFiles(alignStaticFilePaths(parsedBlocks), workspaceFiles);
+      return finalizeFiles(parsedBlocks);
     }
   }
 
@@ -380,7 +385,7 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
       }
     }
     if (inlineFiles.length > 0) {
-      return dedupeCanonicalFiles(alignStaticFilePaths(inlineFiles), workspaceFiles);
+      return finalizeFiles(inlineFiles);
     }
   }
 
@@ -391,13 +396,13 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
     const fn = topMatch[1];
     cleaned = stripFileCommentHeaders(cleaned);
     const fp = resolveWorkspaceFilePath(fn, workspaceFiles, defaultActiveFile, cleaned);
-    return dedupeCanonicalFiles(alignStaticFilePaths([{ filePath: fp, code: formatByFileType(cleaned, fp) }]), workspaceFiles);
+    return finalizeFiles([{ filePath: fp, code: formatByFileType(cleaned, fp) }]);
   }
 
   const singleCode = stripFileCommentHeaders(extractCodeBlock(parseSource));
   const finalSinglePath = resolveTargetFile('', singleCode, 0);
-  return [{
+  return finalizeFiles([{
     filePath: finalSinglePath,
     code: formatByFileType(singleCode, finalSinglePath)
-  }];
+  }]);
 }

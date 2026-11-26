@@ -1,10 +1,10 @@
 // background.js - AP-Solver MV3 Service Worker Entry & Message Router
-import { generateSolution, getSettings, saveSettings, buildBase64TerminalScript } from './utils/llm.js';
+import { generateSolution, getSettings, saveSettings, buildBase64TerminalScript, analyzeFileModificationPlan, enforceFilePlan } from './utils/llm.js';
 import { queryEditorInTab, writeEditorInTab } from './background/editor.js';
 import { writeFilesViaTerminal } from './background/terminal.js';
 import { probeWorkspaceViaTerminal, runLocalTestsViaTerminal, runTerminalCommandsViaTerminal } from './background/workspace.js';
 
-export { buildBase64TerminalScript };
+export { buildBase64TerminalScript, analyzeFileModificationPlan, enforceFilePlan };
 
 console.log('[AP-Solver] Background service worker initialized.');
 
@@ -32,6 +32,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } else if (op === 'AP_GENERATE') {
         const result = await generateSolution(data.promptData, data.settingsOverride);
         sendResponse({ ok: true, result });
+      } else if (op === 'AP_BUILD_FILE_PLAN') {
+        const plan = analyzeFileModificationPlan(data || {});
+        sendResponse({ ok: true, plan });
+      } else if (op === 'AP_ENFORCE_FILE_PLAN') {
+        const verified = enforceFilePlan(data?.files || [], data?.filePlan || null);
+        sendResponse({ ok: true, ...verified });
       } else if (op === 'AP_QUERY_EDITOR') {
         const tabId = sender.tab?.id;
         if (!tabId) return sendResponse({ ok: false, error: 'No tab ID found in sender.' });

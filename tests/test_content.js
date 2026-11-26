@@ -139,8 +139,11 @@ export async function runContentTests() {
     contentSrc.includes('[Step 1/6]') &&
     contentSrc.includes('minVerifyLen = isStaticAsset ? 5 : 12') &&
     contentSrc.includes('initialWorkspaceFiles') &&
-    contentSrc.includes('staleTempFilesToRemove'),
-    'content/content.js static asset verification or canonical supersession check missing'
+    contentSrc.includes('staleTempFilesToRemove') &&
+    contentSrc.includes('lockedFilePlan') &&
+    contentSrc.includes('AP_BUILD_FILE_PLAN') &&
+    contentSrc.includes('AP_ENFORCE_FILE_PLAN'),
+    'content/content.js static asset verification, locked file planner, or canonical supersession check missing'
   );
   const econnTrace = [
     '  1) Company Website Routes',

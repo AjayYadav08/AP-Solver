@@ -181,13 +181,28 @@ export function buildPrompt({
   workspaceFiles = [],
   referenceFiles = {},
   language = 'javascript',
-  feedback = null
+  feedback = null,
+  filePlan = null
 }) {
   const parts = [];
   parts.push(`# PROBLEM: ${questionTitle || 'Coding Challenge'}`);
 
   if (activeFile) {
     parts.push(`## Target Active File in Editor: \`${activeFile}\``);
+  }
+
+  if (filePlan && Array.isArray(filePlan.targets) && filePlan.targets.length > 0) {
+    const planLines = filePlan.targets.map(t =>
+      `- [${t.mode === 'edit' ? 'MODIFY EXISTING' : 'CREATE NEW'}] \`${t.filePath}\` — ${t.reason}`
+    );
+    const protLine = (filePlan.protectedFiles && filePlan.protectedFiles.length > 0)
+      ? `\n- PROTECTED (DO NOT OVERWRITE): ${filePlan.protectedFiles.join(', ')}`
+      : '';
+    parts.push(
+      `## 🔒 LOCKED FILE MODIFICATION PLAN (${filePlan.architectureSummary || 'Verified Pre-Analysis'}):\n` +
+      `You MUST edit/create ONLY the exact approved paths below in-place. NEVER invent duplicate/alternative files outside this list:\n` +
+      planLines.join('\n') + protLine
+    );
   }
 
   if (workspaceFiles && workspaceFiles.length > 0) {
@@ -447,11 +462,12 @@ function compactNonDebugPrompt(prompt, maxPromptChars) {
 
   // Progressively budget secondary sections to preserve Task 1..N specs & test cases
   const passLimits = [
-    { match: /^## Operational Process Guidelines:/, limit: 420 },
+    { match: /^## Operational Process Guidelines:/, limit: 380 },
+    { match: /^## Project Workspace Files/, limit: 800 },
     { match: /^## Current Starter Code/, limit: 900 },
     { match: /^## Initial Workspace Files & Starter Code:/, limit: 1200 },
-    { match: /^## EXACT GRADING TEST SUITE FILES/, limit: Math.max(1200, Math.floor(maxPromptChars * 0.30)) },
-    { match: /^## Problem Description & Requirements:/, limit: Math.max(1600, Math.floor(maxPromptChars * 0.42)) }
+    { match: /^## EXACT GRADING TEST SUITE FILES/, limit: Math.max(1100, Math.floor(maxPromptChars * 0.28)) },
+    { match: /^## Problem Description & Requirements:/, limit: Math.max(1500, Math.floor(maxPromptChars * 0.40)) }
   ];
   for (const { match, limit } of passLimits) {
     if (totalLen() <= maxPromptChars) break;

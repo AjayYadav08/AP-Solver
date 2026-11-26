@@ -2,6 +2,7 @@
 import { extractCodeBlock, parseMultiFileSolution } from './code-format.js';
 import { extractCommandsFromResponse } from './commands.js';
 import { SYSTEM_PROMPT, buildPrompt, buildCompactGroqMessages, getContextGatedSystemPrompt } from './prompts.js';
+import { analyzeFileModificationPlan, enforceFilePlan } from './file-planner.js';
 
 export const DEFAULT_SETTINGS = {
   provider: 'race', // 'race' (Turbo Parallel) | 'groq' | 'gemini' | 'openai'
@@ -25,6 +26,25 @@ export async function getSettings() {
 export async function saveSettings(updates) {
   await chrome.storage.local.set(updates);
   return getSettings();
+}
+
+function finalizeProviderResult(text, model, settings) {
+  const commands = extractCommandsFromResponse(text);
+  const parsed = parseMultiFileSolution(text, settings.activeFile, settings.workspaceFiles);
+  const { files, blockedFiles, remappedFiles } = settings.filePlan
+    ? enforceFilePlan(parsed, settings.filePlan)
+    : { files: parsed, blockedFiles: [], remappedFiles: [] };
+  return {
+    raw: text,
+    code: files.length > 0 ? files[0].code : extractCodeBlock(text),
+    files,
+    commands,
+    blockedFiles,
+    remappedFiles,
+    filePlan: settings.filePlan || null,
+    model,
+    debugEscalated: !!settings.isDebugMode
+  };
 }
 
 export async function callGemini(prompt, settings) {
@@ -158,16 +178,7 @@ export async function callGemini(prompt, settings) {
           continue;
         }
 
-        const commands = extractCommandsFromResponse(text);
-        const files = parseMultiFileSolution(text, settings.activeFile, settings.workspaceFiles);
-        return {
-          raw: text,
-          code: files.length > 0 ? files[0].code : extractCodeBlock(text),
-          files,
-          commands,
-          model,
-          debugEscalated: isDebug
-        };
+        return finalizeProviderResult(text, model, settings);
       } catch (err) {
         clearTimeout(timer);
         if (err.name === 'AbortError') {
@@ -365,16 +376,7 @@ export async function callGroq(prompt, settings) {
           break;
         }
 
-        const commands = extractCommandsFromResponse(text);
-        const files = parseMultiFileSolution(text, settings.activeFile, settings.workspaceFiles);
-        return {
-          raw: text,
-          code: files.length > 0 ? files[0].code : extractCodeBlock(text),
-          files,
-          commands,
-          model,
-          debugEscalated: isDebug
-        };
+        return finalizeProviderResult(text, model, settings);
       } catch (err) {
         clearTimeout(timer);
         if (err.name === 'AbortError') {
@@ -446,15 +448,7 @@ export async function callOpenAI(prompt, settings) {
     throw new Error('OpenAI returned an empty response.');
   }
 
-  const commands = extractCommandsFromResponse(text);
-  const files = parseMultiFileSolution(text, settings.activeFile, settings.workspaceFiles);
-  return {
-    raw: text,
-    code: files.length > 0 ? files[0].code : extractCodeBlock(text),
-    files,
-    commands,
-    model
-  };
+  return finalizeProviderResult(text, model, settings);
 }
 
 export async function generateSolution(promptData, settingsOverride = null) {
@@ -468,12 +462,14 @@ export async function generateSolution(promptData, settingsOverride = null) {
     }
   }
   const isDebugMode = !!(promptData.feedback && String(promptData.feedback).trim().length > 0);
+  const filePlan = promptData.filePlan || analyzeFileModificationPlan(promptData);
   settings.isDebugMode = isDebugMode;
-  settings.activeFile = promptData.activeFile || 'src/index.js';
-  settings.workspaceFiles = promptData.workspaceFiles || [];
+  settings.filePlan = filePlan;
+  settings.activeFile = filePlan.primaryFile || promptData.activeFile || 'src/index.js';
+  settings.workspaceFiles = filePlan.allExistingFiles?.length ? filePlan.allExistingFiles : (promptData.workspaceFiles || []);
   settings.deadlineAt = Date.now() + (isDebugMode ? 120000 : 85000);
 
-  const prompt = buildPrompt(promptData);
+  const prompt = buildPrompt({ ...promptData, filePlan });
 
   const hasGemini = !!(settings.geminiKey && settings.geminiKey.trim());
   const hasGroq = !!(settings.groqKey && settings.groqKey.trim());

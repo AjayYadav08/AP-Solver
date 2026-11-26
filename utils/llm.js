@@ -22,6 +22,13 @@ export {
 } from './prompts.js';
 
 export {
+  normalizePlannerPath,
+  dedupeFlatVsNested,
+  analyzeFileModificationPlan,
+  enforceFilePlan
+} from './file-planner.js';
+
+export {
   DEFAULT_SETTINGS,
   getSettings,
   saveSettings,
