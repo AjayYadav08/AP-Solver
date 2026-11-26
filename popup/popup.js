@@ -5,6 +5,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   const onboardGeminiKey = document.getElementById('onboardGeminiKey');
   const onboardGroqKey = document.getElementById('onboardGroqKey');
+  const onboardCerebrasKey = document.getElementById('onboardCerebrasKey');
   const onboardSaveBtn = document.getElementById('onboardSaveBtn');
   const onboardError = document.getElementById('onboardError');
 
@@ -25,7 +26,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   const settings = resp?.settings || {};
 
   // Check if any key is already configured
-  const hasConfiguredKey = !!(settings.geminiKey?.trim() || settings.groqKey?.trim() || settings.openaiKey?.trim());
+  const hasConfiguredKey = !!(
+    settings.geminiKey?.trim() ||
+    settings.groqKey?.trim() ||
+    settings.cerebrasKey?.trim() ||
+    settings.openaiKey?.trim()
+  );
 
   if (!hasConfiguredKey) {
     // Show onboarding screen on first open
@@ -36,30 +42,51 @@ document.addEventListener('DOMContentLoaded', async () => {
     mainView.style.display = 'block';
   }
 
+  function checkBasicKeyFormat(label, val) {
+    if (!val) return '';
+    if (/\s/.test(val) || val.length < 14) {
+      return `${label} API key looks invalid (too short or contains spaces).`;
+    }
+    return '';
+  }
+
   // Handle Onboarding Save
   onboardSaveBtn.addEventListener('click', async () => {
     const geminiVal = onboardGeminiKey.value.trim();
     const groqVal = onboardGroqKey.value.trim();
+    const cerebrasVal = onboardCerebrasKey ? onboardCerebrasKey.value.trim() : '';
 
-    if (!geminiVal && !groqVal) {
+    if (!geminiVal && !groqVal && !cerebrasVal) {
       onboardError.style.display = 'block';
-      onboardError.textContent = 'Please enter at least one API key (Gemini or Groq) to continue.';
+      onboardError.textContent = 'Please enter at least one API key (Gemini, Groq, or Cerebras) to continue.';
       return;
     }
 
+    const fmtErr = checkBasicKeyFormat('Gemini', geminiVal) ||
+      checkBasicKeyFormat('Groq', groqVal) ||
+      checkBasicKeyFormat('Cerebras', cerebrasVal);
+    if (fmtErr) {
+      onboardError.style.display = 'block';
+      onboardError.textContent = fmtErr;
+      return;
+    }
+
+    onboardError.style.display = 'none';
     onboardSaveBtn.disabled = true;
     onboardSaveBtn.textContent = 'Saving...';
 
     const updates = {
-      provider: geminiVal ? 'gemini' : 'groq'
+      provider: 'auto'
     };
     if (geminiVal) updates.geminiKey = geminiVal;
     if (groqVal) updates.groqKey = groqVal;
+    if (cerebrasVal) updates.cerebrasKey = cerebrasVal;
 
     await chrome.runtime.sendMessage({ op: 'AP_SAVE_SETTINGS', data: updates });
 
     // Update local settings object
     Object.assign(settings, updates);
+    providerSelect.value = 'auto';
 
     // Switch to main view
     onboardingView.style.display = 'none';
@@ -68,7 +95,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   // Setup Main View
-  providerSelect.value = settings.provider || 'race';
+  const rawMode = settings.provider || 'auto';
+  providerSelect.value = rawMode === 'race' ? 'auto' : rawMode;
   autoSubmitCheck.checked = !!settings.autoSubmit;
   autoRetryCheck.checked = settings.autoRetry !== false;
 
@@ -77,18 +105,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     let hasKey = false;
     let label = '';
 
-    if (p === 'race') {
-      const hasGroq = !!settings.groqKey?.trim();
-      const hasGemini = !!settings.geminiKey?.trim();
-      if (hasGroq && hasGemini) {
+    const activeNames = [];
+    if (settings.geminiKey?.trim()) activeNames.push('Gemini');
+    if (settings.groqKey?.trim()) activeNames.push('Groq');
+    if (settings.cerebrasKey?.trim()) activeNames.push('Cerebras');
+    if (settings.openaiKey?.trim()) activeNames.push('Custom');
+
+    if (p === 'auto' || p === 'race') {
+      if (activeNames.length >= 2) {
         hasKey = true;
-        label = '⚡ Turbo Race active (Groq + Gemini)';
-      } else if (hasGroq || hasGemini) {
+        label = `🧠 Dynamic Orchestrator active (${activeNames.join(' + ')})`;
+      } else if (activeNames.length === 1) {
         hasKey = true;
-        label = `✓ Active via ${hasGroq ? 'Groq' : 'Gemini'}`;
+        label = `✓ Active via ${activeNames[0]} (+ add more keys for fallback)`;
       } else {
         hasKey = false;
-        label = '⚠ Add Groq or Gemini key';
+        label = '⚠ Add Gemini, Groq, or Cerebras key';
       }
     } else if (p === 'gemini') {
       hasKey = !!settings.geminiKey?.trim();
@@ -96,9 +128,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else if (p === 'groq') {
       hasKey = !!settings.groqKey?.trim();
       label = hasKey ? '✓ Groq Key configured' : '⚠ Groq Key missing';
+    } else if (p === 'cerebras') {
+      hasKey = !!settings.cerebrasKey?.trim();
+      label = hasKey ? '✓ Cerebras Key configured' : '⚠ Cerebras Key missing';
     } else if (p === 'openai') {
       hasKey = !!settings.openaiKey?.trim();
-      label = hasKey ? '✓ OpenAI Key configured' : '⚠ OpenAI Key missing';
+      label = hasKey ? '✓ OpenAI / NIM / OpenRouter Key configured' : '⚠ Custom API Key missing';
     }
 
     keyStatus.textContent = label;
@@ -144,31 +179,25 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     try {
       const p = providerSelect.value;
-      const testPrompt = {
-        questionTitle: 'Test API Connection',
-        questionDetails: 'Write a simple hello world function in JavaScript.',
-        testCases: ['Function returns "hello world"'],
-        currentCode: '// starter code',
-        language: 'javascript'
-      };
-
       const testResp = await new Promise((resolve) => {
         chrome.runtime.sendMessage({
-          op: 'AP_GENERATE',
-          data: {
-            promptData: testPrompt,
-            settingsOverride: { provider: p }
-          }
+          op: 'AP_TEST_CONNECTIONS',
+          data: { settingsOverride: { provider: p } }
         }, (r) => resolve(r));
       });
 
-      if (testResp && testResp.ok) {
-        testResult.className = 'test-result-box ok';
-        testResult.textContent = `✓ Success! Connected to ${testResp.result.model}. Response generated.`;
+      if (testResp && Array.isArray(testResp.results) && testResp.results.length > 0) {
+        const lines = testResp.results.map(r =>
+          r.ok
+            ? `✓ ${r.provider} (${r.model}, ${r.latencyMs}ms)`
+            : `✗ ${r.provider}: ${r.error}`
+        );
+        testResult.className = `test-result-box ${testResp.ok ? 'ok' : 'bad'}`;
+        testResult.textContent = lines.join(' | ');
         testResult.style.display = 'block';
       } else {
         testResult.className = 'test-result-box bad';
-        testResult.textContent = `✗ Failed: ${testResp?.error || 'Unknown error'}`;
+        testResult.textContent = `✗ Failed: ${testResp?.error || 'No configured provider responded'}`;
         testResult.style.display = 'block';
       }
     } catch (err) {

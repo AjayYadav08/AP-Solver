@@ -22,23 +22,29 @@
     <!-- 1. First-Time Onboarding Screen (Shown if no key configured) -->
     <div id="onboardingView" class="onboarding-box" style="display: none;">
       <div class="onboard-badge">👋 Welcome! One-Time Setup</div>
-      <h3 class="onboard-title">Enter your Free API Key</h3>
-      <p class="onboard-desc">Bas ek baar apni free key daal do. Iske baad yeh hamesha bina ruke sabhi questions solve karega!</p>
+      <h3 class="onboard-title">Enter your Free API Keys</h3>
+      <p class="onboard-desc">Koi bhi 1, 2 ya teeno free keys daal do — Smart Orchestrator har task ke hisaab se best model khud choose karega!</p>
 
       <div class="onboard-field">
-        <label>Google Gemini API Key (Recommended):</label>
+        <label>Google Gemini API Key:</label>
         <input type="password" id="onboardGeminiKey" placeholder="Paste AIzaSy... key" class="input-text">
-        <small><a href="https://aistudio.google.com/apikey" target="_blank">Get Free Gemini Key (1 click) ↗</a></small>
+        <small><a href="https://aistudio.google.com/apikey" target="_blank">Get Free Gemini Key (Large Context · Pro/Flash) ↗</a></small>
       </div>
 
       <div class="onboard-field">
-        <label>Groq API Key (Optional Fallback):</label>
+        <label>Groq API Key:</label>
         <input type="password" id="onboardGroqKey" placeholder="Paste gsk_... key" class="input-text">
-        <small><a href="https://console.groq.com/keys" target="_blank">Get Free Groq Key (Fast LLaMA 70B) ↗</a></small>
+        <small><a href="https://console.groq.com/keys" target="_blank">Get Free Groq Key (Ultra-Fast LPU) ↗</a></small>
+      </div>
+
+      <div class="onboard-field">
+        <label>Cerebras API Key:</label>
+        <input type="password" id="onboardCerebrasKey" placeholder="Paste csk-... key" class="input-text">
+        <small><a href="https://cloud.cerebras.ai" target="_blank">Get Free Cerebras Key (1M TPD · Qwen3 &amp; GPT-OSS-120B) ↗</a></small>
       </div>
 
       <button id="onboardSaveBtn" class="btn btn-primary" style="margin-top: 12px;">
-        🚀 Save & Start Auto-Solving
+        🚀 Save &amp; Start Smart Solving
       </button>
       <div id="onboardError" class="onboard-err" style="display: none;"></div>
     </div>
@@ -48,14 +54,15 @@
       <div class="popup-body">
         <!-- Status Box -->
         <div class="status-card">
-          <div class="status-title">Active AI Provider</div>
+          <div class="status-title">AI Orchestration Mode</div>
           <select id="providerSelect" class="provider-dropdown">
-            <option value="race">⚡ Turbo Race (Groq + Gemini Parallel)</option>
-            <option value="groq">Groq LPU (GPT OSS 120B - 70ms)</option>
-            <option value="gemini">Google Gemini (2.5 Flash)</option>
-            <option value="openai">OpenAI / OpenRouter / Custom</option>
+            <option value="auto">🧠 Smart Orchestrator (All Keys Dynamic)</option>
+            <option value="cerebras">Cerebras Inference (1M TPD · Ultra Fast)</option>
+            <option value="gemini">Google Gemini (Large Context · Flash/Pro)</option>
+            <option value="groq">Groq LPU (Fast LPU Inference)</option>
+            <option value="openai">NVIDIA NIM / OpenRouter / OpenAI / Custom</option>
           </select>
-          <div id="keyStatus" class="key-status-badge">Checking API key...</div>
+          <div id="keyStatus" class="key-status-badge">Checking API keys...</div>
         </div>
 
         <!-- Quick Toggles -->

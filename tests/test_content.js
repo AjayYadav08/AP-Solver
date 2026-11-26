@@ -152,6 +152,8 @@ export async function runContentTests() {
     contentSrc.includes('lastLocalTestResult') &&
     contentSrc.includes('runLocalTestPayload') &&
     contentSrc.includes('localTestResult: localRes') &&
+    contentSrc.includes('orchestration') &&
+    contentSrc.includes('cerebrasKey') &&
     parserSrc.includes('classifyErrorCategory') &&
     parserSrc.includes('COMPLETE CHRONOLOGICAL ATTEMPT HISTORY'),
     'content/content.js or error-parser.js missing 5-attempt history, terminal pre-analysis, or error classification'

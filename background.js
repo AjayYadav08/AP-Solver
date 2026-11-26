@@ -13,13 +13,14 @@ import {
   formatFullCollaborationHistory,
   loadQuestionAttemptHistory,
   saveQuestionAttemptHistory,
-  buildLocalTestSpec
+  buildLocalTestSpec,
+  testProviderConnections
 } from './utils/llm.js';
 import { queryEditorInTab, writeEditorInTab } from './background/editor.js';
 import { writeFilesViaTerminal, readIntegratedTerminalText } from './background/terminal.js';
 import { probeWorkspaceViaTerminal, runLocalTestsViaTerminal, runTerminalCommandsViaTerminal } from './background/workspace.js';
 
-export { buildBase64TerminalScript, analyzeFileModificationPlan, enforceFilePlan, analyzePreCodingTerminal, buildLocalTestSpec };
+export { buildBase64TerminalScript, analyzeFileModificationPlan, enforceFilePlan, analyzePreCodingTerminal, buildLocalTestSpec, testProviderConnections };
 
 console.log('[AP-Solver] Background service worker initialized.');
 
@@ -137,6 +138,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         } catch(e) {
           sendResponse({ ok: false, error: e.message });
         }
+      } else if (op === 'AP_TEST_CONNECTIONS') {
+        sendResponse(await testProviderConnections(data?.settingsOverride || null));
       } else if (op === 'AP_RELOAD_EXT') {
         sendResponse({ ok: true });
         setTimeout(() => chrome.runtime.reload(), 100);

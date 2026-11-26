@@ -1,16 +1,25 @@
-// utils/providers.js - Multi-provider AI clients (Gemini, Groq, OpenAI), Turbo Race & Debug Escalation
+// utils/providers.js - Multi-provider AI clients (Gemini, Groq, Cerebras, OpenAI/NIM/OpenRouter) & Dynamic Orchestrator
 import { extractCodeBlock, parseMultiFileSolution } from './code-format.js';
 import { extractCommandsFromResponse } from './commands.js';
 import { SYSTEM_PROMPT, buildPrompt, buildCompactGroqMessages, getContextGatedSystemPrompt } from './prompts.js';
 import { analyzeFileModificationPlan, enforceFilePlan } from './file-planner.js';
 import { formatFullCollaborationHistory } from './attempt-history.js';
+import {
+  getConfiguredProviders,
+  planModelOrchestration,
+  recordProviderOutcome,
+  isUsableProviderResult,
+  validateApiKeyFormat
+} from './orchestrator.js';
 
 export const DEFAULT_SETTINGS = {
-  provider: 'race', // 'race' (Turbo Parallel) | 'groq' | 'gemini' | 'openai'
+  provider: 'auto', // 'auto' (Dynamic Smart Orchestrator) | 'race' | 'gemini' | 'groq' | 'cerebras' | 'openai'
   geminiKey: '',
   geminiModel: 'gemini-2.5-flash',
   groqKey: '',
   groqModel: 'openai/gpt-oss-120b',
+  cerebrasKey: '',
+  cerebrasModel: 'gpt-oss-120b',
   openaiKey: '',
   openaiModel: 'gpt-4o',
   openaiBaseUrl: 'https://api.openai.com/v1',
@@ -402,7 +411,7 @@ export async function callGroq(prompt, settings) {
 export async function callOpenAI(prompt, settings) {
   const apiKey = settings.openaiKey?.trim();
   if (!apiKey) {
-    throw new Error('OpenAI / OpenRouter API key is missing. Please set it in AP-Solver options.');
+    throw new Error('OpenAI / NIM / OpenRouter API key is missing. Please set it in AP-Solver options.');
   }
 
   const model = settings.openaiModel || 'gpt-4o';
@@ -452,6 +461,229 @@ export async function callOpenAI(prompt, settings) {
   return finalizeProviderResult(text, model, settings);
 }
 
+const _cerebrasModelsCache = { fetchedAt: 0, models: [] };
+
+async function fetchCerebrasAccountModels(apiKey) {
+  if (_cerebrasModelsCache.models.length > 0 && (Date.now() - _cerebrasModelsCache.fetchedAt) < 600000) {
+    return _cerebrasModelsCache.models;
+  }
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6000);
+    const resp = await fetch('https://api.cerebras.ai/v1/models', {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${apiKey}` },
+      signal: controller.signal
+    });
+    clearTimeout(timer);
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    const ids = (Array.isArray(data?.data) ? data.data : [])
+      .map(m => m?.id)
+      .filter(Boolean)
+      .sort((a, b) => {
+        const rank = (s) => /gpt-oss-120b|qwen-3|qwen3/i.test(s) ? 0 : /llama-3\.3-70b|llama-4/i.test(s) ? 1 : 2;
+        return rank(a) - rank(b);
+      });
+    if (ids.length > 0) {
+      _cerebrasModelsCache.fetchedAt = Date.now();
+      _cerebrasModelsCache.models = ids;
+    }
+    return ids;
+  } catch (e) {
+    return [];
+  }
+}
+
+/** Call Cerebras Inference OpenAI-compatible API with model fallback, dynamic discovery, and compaction. */
+export async function callCerebras(prompt, settings) {
+  const apiKey = settings.cerebrasKey?.trim();
+  if (!apiKey) {
+    throw new Error('Cerebras API key is missing. Please set it in AP-Solver settings.');
+  }
+
+  const requestedModel = (settings.cerebrasModel || 'gpt-oss-120b').trim();
+  const baseCandidates = [
+    requestedModel,
+    'gpt-oss-120b',
+    'qwen-3-32b',
+    'qwen-3.8-27b',
+    'llama-3.3-70b',
+    'llama3.1-8b'
+  ].filter(Boolean);
+  const queue = [...new Set(baseCandidates)];
+  const triedModels = new Set();
+  let discoveredOnce = false;
+  let lastError = null;
+  const isDebug = !!settings.isDebugMode;
+
+  while (queue.length > 0) {
+    if (settings.deadlineAt && Date.now() >= settings.deadlineAt - 3000) break;
+    const model = queue.shift();
+    if (triedModels.has(model)) continue;
+    triedModels.add(model);
+
+    const url = 'https://api.cerebras.ai/v1/chat/completions';
+    const compactMedium = buildCompactGroqMessages(SYSTEM_PROMPT, prompt, 6000, 14000);
+    const estFullTokens = Math.ceil((compactMedium.sys.length + prompt.length) / 3.0);
+    const useFull = estFullTokens < 7200;
+
+    const payloads = [
+      {
+        model,
+        messages: [{ role: 'system', content: compactMedium.sys }, { role: 'user', content: useFull ? prompt : compactMedium.compactPrompt }],
+        temperature: 0.1,
+        max_completion_tokens: isDebug ? 8192 : 6144
+      }
+    ];
+    if (!useFull || isDebug) {
+      const compactTight = buildCompactGroqMessages(SYSTEM_PROMPT, prompt, 3800, 7200);
+      payloads.push({
+        model,
+        messages: [{ role: 'system', content: compactTight.sys }, { role: 'user', content: compactTight.compactPrompt }],
+        temperature: 0.1,
+        max_completion_tokens: Math.min(4096, compactTight.safeMaxTokens)
+      });
+    }
+
+    for (let pi = 0; pi < payloads.length; pi++) {
+      if (settings.deadlineAt && Date.now() >= settings.deadlineAt - 2000) break;
+      const payload = payloads[pi];
+      const controller = new AbortController();
+      const timeoutMs = isDebug ? 36000 : 28000;
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+      try {
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+          body: JSON.stringify(payload),
+          signal: controller.signal
+        });
+        clearTimeout(timer);
+
+        if (!resp.ok) {
+          const errText = await resp.text();
+          let msg = `Cerebras API error (${resp.status})`;
+          try {
+            const errJson = JSON.parse(errText);
+            msg += `: ${errJson.error?.message || errText}`;
+          } catch {
+            msg += `: ${errText}`;
+          }
+
+          if (resp.status === 413 || resp.status === 400 && /context|length|token|max_completion_tokens/i.test(msg)) {
+            lastError = new Error(msg);
+            if (pi === payloads.length - 1 && !payload._tightRetried) {
+              const tight = buildCompactGroqMessages(SYSTEM_PROMPT, prompt, 3200, 6200);
+              payloads.push({
+                model,
+                messages: [{ role: 'system', content: tight.sys }, { role: 'user', content: tight.compactPrompt }],
+                temperature: 0.1,
+                max_completion_tokens: 3200,
+                _tightRetried: true
+              });
+            }
+            continue;
+          }
+
+          if ((resp.status === 404 || /model.*not.*found|does not exist/i.test(msg)) && !discoveredOnce) {
+            discoveredOnce = true;
+            const liveModels = await fetchCerebrasAccountModels(apiKey);
+            for (const lm of liveModels) {
+              if (!triedModels.has(lm) && !queue.includes(lm)) queue.unshift(lm);
+            }
+          }
+
+          if (resp.status === 403 || resp.status === 404 || resp.status === 429 || resp.status >= 500 || /rate limit|unavailable|overloaded|does not exist/i.test(msg)) {
+            console.warn(`[AP-Solver] Cerebras model ${model} unavailable (${resp.status}), trying next candidate...`);
+            lastError = new Error(msg);
+            break;
+          }
+
+          throw new Error(msg);
+        }
+
+        const data = await resp.json();
+        const choice = data.choices?.[0];
+        let text = typeof choice?.message?.content === 'string' ? choice.message.content.trim() : '';
+        text = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+        if (!text) {
+          lastError = new Error(`Cerebras returned an empty response (${choice?.finish_reason || 'unknown'}).`);
+          break;
+        }
+
+        return finalizeProviderResult(text, model, settings);
+      } catch (err) {
+        clearTimeout(timer);
+        if (err.name === 'AbortError') {
+          lastError = new Error(`Cerebras model ${model} timed out.`);
+          continue;
+        }
+        if (/404|413|429|\b5\d{2}\b|rate limit|timeout|empty response|Failed to fetch|network/i.test(err.message || '')) {
+          lastError = err;
+          break;
+        }
+        throw err;
+      }
+    }
+  }
+
+  throw lastError || new Error('All Cerebras model candidates failed.');
+}
+
+async function invokeSingleProvider(providerId, prompt, settings) {
+  if (providerId === 'gemini') return await callGemini(prompt, settings);
+  if (providerId === 'groq') return await callGroq(prompt, settings);
+  if (providerId === 'cerebras') return await callCerebras(prompt, settings);
+  if (providerId === 'openai') return await callOpenAI(prompt, settings);
+  throw new Error(`Unsupported AI provider: ${providerId}`);
+}
+
+/** Validate format and test live connectivity across configured providers cleanly. */
+export async function testProviderConnections(settingsOverride = null) {
+  const stored = await getSettings();
+  const settings = { ...stored, ...(settingsOverride || {}) };
+  const configured = getConfiguredProviders(settings);
+  if (configured.length === 0) {
+    return { ok: false, results: [], error: 'No API key configured.' };
+  }
+
+  const targetList = (settings.provider && settings.provider !== 'auto' && settings.provider !== 'race' && configured.includes(settings.provider))
+    ? [settings.provider]
+    : configured;
+
+  const tinyPrompt = 'Reply with a JavaScript code block containing: const ping = "ok";';
+  const checks = await Promise.all(targetList.map(async (p) => {
+    const keyVal = p === 'gemini' ? settings.geminiKey
+      : p === 'groq' ? settings.groqKey
+        : p === 'cerebras' ? settings.cerebrasKey
+          : settings.openaiKey;
+    const fmt = validateApiKeyFormat(p, keyVal);
+    if (!fmt.valid) {
+      return { provider: p, ok: false, error: fmt.message, latencyMs: 0 };
+    }
+    const t0 = Date.now();
+    try {
+      const res = await invokeSingleProvider(p, tinyPrompt, { ...settings, deadlineAt: Date.now() + 18000, isDebugMode: false });
+      const latencyMs = Date.now() - t0;
+      recordProviderOutcome(p, { ok: true, latencyMs });
+      return { provider: p, ok: true, model: res.model, latencyMs, formatNote: fmt.message };
+    } catch (err) {
+      const latencyMs = Date.now() - t0;
+      recordProviderOutcome(p, { ok: false, latencyMs, errorMsg: err.message });
+      return { provider: p, ok: false, error: err.message || String(err), latencyMs };
+    }
+  }));
+
+  const anyOk = checks.some(c => c.ok);
+  return {
+    ok: anyOk,
+    results: checks,
+    error: anyOk ? '' : checks.map(c => `${c.provider}: ${c.error}`).join(' | ')
+  };
+}
+
 export async function generateSolution(promptData, settingsOverride = null) {
   const stored = await getSettings();
   const settings = { ...stored };
@@ -483,120 +715,90 @@ export async function generateSolution(promptData, settingsOverride = null) {
     collaborationHistory
   });
 
-  const hasGemini = !!(settings.geminiKey && settings.geminiKey.trim());
-  const hasGroq = !!(settings.groqKey && settings.groqKey.trim());
-  const hasOpenAI = !!(settings.openaiKey && settings.openaiKey.trim());
-
-  if (!hasGemini && !hasGroq && !hasOpenAI) {
-    throw new Error('No API key configured. Please enter your Gemini or Groq API key in AP-Solver settings.');
+  const configured = getConfiguredProviders(settings);
+  if (configured.length === 0) {
+    throw new Error('No API key configured. Please enter a Gemini, Groq, Cerebras, or OpenAI-compatible API key in AP-Solver settings.');
   }
 
-  const hasValidSolution = (res) => !!(res && (
-    (res.code && res.code.trim().length > 5) ||
-    (Array.isArray(res.files) && res.files.some(f => f.code && f.code.trim().length > 5))
-  ));
+  const plan = planModelOrchestration(promptData, prompt, settings);
+  const triedProviders = [];
+  const roleTag = isDebugMode
+    ? (attemptNumber >= 3 ? `Stage ${attemptNumber}/5 Multi-AI Collaborator` : `Stage ${attemptNumber}/5 Debug Escalation`)
+    : 'Dynamic Orchestrator';
 
-  let provider = settings.provider || 'race';
-
-  // MODEL ESCALATION FOR DEBUGGING (Attempt 2+ / Stage 3+ Multi-AI Collaborator)
-  if (isDebugMode) {
-    const roleTag = attemptNumber >= 3
-      ? `Stage ${attemptNumber}/5 Multi-AI Collaborator`
-      : `Stage ${attemptNumber}/5 Debug Escalation`;
-    console.log(`[AP-Solver] 🧠 ${roleTag} active (analyzing prior attempts)...`);
-    const debugOrder = [];
-    if (hasGemini) debugOrder.push('gemini');
-    if (provider === 'openai' && hasOpenAI) debugOrder.push('openai');
-    if (hasGroq) debugOrder.push('groq');
-    if (hasOpenAI && !debugOrder.includes('openai')) debugOrder.push('openai');
-    const uniqueOrder = [...new Set(debugOrder)];
-
-    let lastDebugErr = null;
-    for (const p of uniqueOrder) {
-      if (Date.now() >= settings.deadlineAt - 2000) break;
-      try {
-        const t0 = Date.now();
-        let res;
-        if (p === 'gemini') res = await callGemini(prompt, settings);
-        else if (p === 'groq') res = await callGroq(prompt, settings);
-        else res = await callOpenAI(prompt, settings);
-        if (!hasValidSolution(res)) {
-          console.warn(`[AP-Solver] Debug Escalation provider (${p}) returned empty result, trying next...`);
-          lastDebugErr = new Error(`${p} returned an empty/invalid response during debug.`);
-          continue;
-        }
-        res.latencyMs = Date.now() - t0;
-        res.debugEscalated = true;
-        res.attemptNumber = attemptNumber;
-        res.commands = res.commands || [];
-        res.raceWinner = `🧠 ${roleTag} (${p === 'gemini' ? 'Gemini High-Reasoning' : p}: ${res.model})`;
-        return res;
-      } catch (err) {
-        console.warn(`[AP-Solver] Debug Escalation provider (${p}) failed:`, err);
-        lastDebugErr = err;
-      }
-    }
-    throw lastDebugErr || new Error('All debug escalation AI solvers failed.');
-  }
-
-  // SPECULATIVE TURBO PARALLEL RACE (Attempt 1 Fast Solve)
-  const shouldRace = (provider === 'race' || provider === 'auto') ? (hasGroq && hasGemini) : (hasGroq && hasGemini && (provider === 'groq' || provider === 'gemini'));
-
-  if (shouldRace || (provider === 'race' && hasGroq && hasGemini)) {
-    console.log('[AP-Solver] ⚡ Turbo Parallel Race: Executing Groq & Gemini concurrently...');
-
-    const runGroq = async () => {
-      const t0 = Date.now();
-      const res = await callGroq(prompt, settings);
-      if (!hasValidSolution(res)) throw new Error('Groq returned empty code.');
-      res.latencyMs = Date.now() - t0;
-      res.commands = res.commands || [];
-      res.raceWinner = `Groq LPU (${res.model})`;
-      return res;
-    };
-
-    const runGemini = async () => {
-      const t0 = Date.now();
-      const res = await callGemini(prompt, settings);
-      if (!hasValidSolution(res)) throw new Error('Gemini returned empty code.');
-      res.latencyMs = Date.now() - t0;
-      res.commands = res.commands || [];
-      res.raceWinner = `Google Gemini (${res.model})`;
-      return res;
-    };
-
+  const executeAndTrack = async (candidate) => {
+    const p = candidate.provider;
+    triedProviders.push(p);
+    const t0 = Date.now();
     try {
-      const winner = await Promise.any([runGroq(), runGemini()]);
-      console.log(`[AP-Solver] 🚀 Turbo Winner: ${winner.raceWinner} in ${winner.latencyMs}ms!`);
+      const res = await invokeSingleProvider(p, prompt, settings);
+      const latencyMs = Date.now() - t0;
+      if (!isUsableProviderResult(res)) {
+        const emptyErr = new Error(`${p} returned unusable or empty code output.`);
+        recordProviderOutcome(p, { ok: false, latencyMs, errorMsg: emptyErr.message });
+        throw emptyErr;
+      }
+      recordProviderOutcome(p, { ok: true, latencyMs });
+      res.latencyMs = latencyMs;
+      res.debugEscalated = isDebugMode;
+      res.attemptNumber = attemptNumber;
+      res.commands = res.commands || [];
+      res.raceWinner = `${roleTag} (${candidate.label}: ${res.model})`;
+      res.orchestration = {
+        mode: plan.executionMode,
+        taskStage: plan.taskProfile.stage,
+        complexityScore: plan.taskProfile.complexityScore,
+        selectedProvider: p,
+        selectedLabel: candidate.label,
+        selectedModel: res.model,
+        reason: candidate.reason,
+        triedProviders: [...new Set(triedProviders)],
+        fallbackUsed: triedProviders.length > 1
+      };
+      return res;
+    } catch (err) {
+      const latencyMs = Date.now() - t0;
+      const errMsg = err?.message || String(err);
+      const statusM = errMsg.match(/\((\d{3})\)/);
+      recordProviderOutcome(p, {
+        ok: false,
+        latencyMs,
+        status: statusM ? parseInt(statusM[1], 10) : 0,
+        errorMsg: errMsg
+      });
+      throw err;
+    }
+  };
+
+  let lastError = null;
+
+  // Phase 1: Adaptive Parallel Race between top 2 dynamically matched candidates (no fixed priority)
+  if (plan.executionMode === 'adaptive_race' && plan.parallelCandidates.length >= 2) {
+    const names = plan.parallelCandidates.map(c => c.label).join(' vs ');
+    console.log(`[AP-Solver] ⚡ Adaptive Parallel Orchestration (${plan.taskProfile.stage}): ${names}`);
+    try {
+      const winner = await Promise.any(plan.parallelCandidates.map(c => executeAndTrack(c)));
+      console.log(`[AP-Solver] 🚀 Orchestrator Winner: ${winner.orchestration.selectedLabel} (${winner.model}) in ${winner.latencyMs}ms [${winner.orchestration.reason}]`);
       return winner;
     } catch (aggErr) {
-      console.warn('[AP-Solver] Turbo race aggregate error, trying fallback:', aggErr);
-      if (hasOpenAI) return await callOpenAI(prompt, settings);
-      throw aggErr.errors?.[0] || new Error('All parallel AI solvers failed.');
+      lastError = aggErr.errors?.[0] || aggErr;
+      console.warn('[AP-Solver] Adaptive race failed across top candidates, rolling into dynamic fallback chain...', lastError?.message);
     }
   }
 
-  if (provider === 'race') provider = hasGroq ? 'groq' : (hasGemini ? 'gemini' : 'openai');
-  if (provider === 'gemini' && !hasGemini) provider = hasGroq ? 'groq' : 'openai';
-  else if (provider === 'groq' && !hasGroq) provider = hasGemini ? 'gemini' : 'openai';
-
-  try {
-    if (provider === 'gemini') return await callGemini(prompt, settings);
-    if (provider === 'groq') return await callGroq(prompt, settings);
-    if (provider === 'openai') return await callOpenAI(prompt, settings);
-  } catch (err) {
-    console.warn(`[AP-Solver] Primary provider (${provider}) failed:`, err);
-    if (provider !== 'groq' && hasGroq) {
-      console.log('[AP-Solver] Falling back to Groq...');
-      return await callGroq(prompt, settings);
-    } else if (provider !== 'gemini' && hasGemini) {
-      console.log('[AP-Solver] Falling back to Gemini...');
-      return await callGemini(prompt, settings);
-    } else if (provider !== 'openai' && hasOpenAI) {
-      return await callOpenAI(prompt, settings);
+  // Phase 2: Dynamic Capability-Ordered Execution & Automatic Fallback across ALL configured providers
+  const seqCandidates = plan.executionMode === 'adaptive_race' ? plan.fallbackCandidates : plan.ranked;
+  for (const cand of seqCandidates) {
+    if (Date.now() >= settings.deadlineAt - 2000) break;
+    try {
+      console.log(`[AP-Solver] 🧠 [${roleTag}] Trying ${cand.label} (score=${cand.score}, stage=${plan.taskProfile.stage}, why=${cand.reason})...`);
+      const res = await executeAndTrack(cand);
+      return res;
+    } catch (err) {
+      console.warn(`[AP-Solver] Provider ${cand.provider} failed/unusable (${err.message}), seamlessly falling back to next candidate...`);
+      lastError = err;
     }
-    throw err;
   }
 
-  throw new Error(`Unsupported AI provider: ${provider}`);
+  throw lastError || new Error('All configured AI providers failed or hit rate limits.');
 }

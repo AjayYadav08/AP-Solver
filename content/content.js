@@ -395,10 +395,10 @@
     if (!cachedEditor) cachedEditor = await queryActiveEditor();
 
     const isDebug = !!feedback;
-    const provider = ui.options.provider || 'race';
+    const provider = ui.options.provider || 'auto';
     const providerName = isDebug
-      ? '🧠 Debug Escalation (Gemini Pro / Groq Fallback)'
-      : (provider === 'gemini' ? 'Google Gemini (2.5 Flash)' : provider === 'groq' ? 'Groq AI (GPT OSS 120B)' : provider === 'race' ? '⚡ Turbo Race (Groq vs Gemini Parallel)' : 'OpenAI');
+      ? '🧠 Debug Escalation (Smart Orchestrator)'
+      : (provider === 'auto' || provider === 'race' ? '🧠 Smart Orchestrator (Auto)' : provider === 'gemini' ? 'Google Gemini' : provider === 'groq' ? 'Groq AI' : provider === 'cerebras' ? 'Cerebras' : 'Custom AI');
 
     ui.setStatus(`Generating solution with ${providerName}...`, feedback ? 'Deep-analyzing failure traces & escalating model...' : 'Crafting 100% test-compliant code...', 'running', true);
     ui.addLog(`Calling AI solver (${providerName})...`);
@@ -467,6 +467,11 @@
       ui.addLog(`🚫 [Plan Guard] Blocked unapproved/duplicate file "${b.filePath}": ${b.reason}`, 'warn');
     }
     if (!lockedFilePlan && resp.result.filePlan) lockedFilePlan = resp.result.filePlan;
+
+    if (resp.result.orchestration) {
+      const orch = resp.result.orchestration;
+      ui.addLog(`🧠 [Orchestrator] ${orch.selectedLabel || orch.selectedProvider} (${orch.selectedModel}) | stage=${orch.taskStage} | ${orch.reason || ''}${orch.fallbackUsed ? ' | ⚡ auto-fallback used' : ''}`, 'ok');
+    }
 
     cachedGeneratedCode = resp.result.code;
     cachedCommands = Array.isArray(resp.result.commands) ? resp.result.commands : [];
@@ -1159,11 +1164,15 @@
       }
     });
 
-    let activeProvider = settings.provider || 'groq';
-    if (settings.geminiKey?.trim() && !settings.groqKey?.trim()) activeProvider = 'gemini';
-    else if (settings.groqKey?.trim() && !settings.geminiKey?.trim()) activeProvider = 'groq';
+    let activeProvider = settings.provider || 'auto';
+    if (activeProvider === 'race') activeProvider = 'auto';
 
-    ui.setApiKeys({ geminiKey: settings.geminiKey || '', groqKey: settings.groqKey || '' });
+    ui.setApiKeys({
+      geminiKey: settings.geminiKey || '',
+      groqKey: settings.groqKey || '',
+      cerebrasKey: settings.cerebrasKey || '',
+      openaiKey: settings.openaiKey || ''
+    });
     ui.updateOptions({ autoSubmit: settings.autoSubmit ?? true, autoRetry: settings.autoRetry !== false, provider: activeProvider });
 
     let scanCount = 0;
