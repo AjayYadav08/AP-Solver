@@ -47,6 +47,9 @@
         "https://*.newtonschool.co/*"
       ],
       "js": [
+        "content/shared.js",
+        "content/dom-scrapers.js",
+        "content/error-parser.js",
         "content/solver-ui.js",
         "content/content.js"
       ],

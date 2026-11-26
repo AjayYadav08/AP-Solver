@@ -320,100 +320,17 @@ window.APSolverUI = class APSolverUI {
       };
     }
 
-    // Helper to strip comments
-    const stripUiComments = (code) => {
-      if (!code) return '';
-      let clean = code.replace(/\/\*[\s\S]*?\*\//g, '');
-      const lines = clean.split('\n');
-      const res = [];
-      for (const line of lines) {
-        let inQuote = false;
-        let quoteChar = '';
-        let commentIdx = -1;
-        for (let i = 0; i < line.length; i++) {
-          const ch = line[i];
-          const next = line[i + 1];
-          if (!inQuote && (ch === '"' || ch === "'" || ch === '`')) {
-            inQuote = true;
-            quoteChar = ch;
-          } else if (inQuote && ch === quoteChar && line[i - 1] !== '\\') {
-            inQuote = false;
-          } else if (!inQuote && ch === '/' && next === '/') {
-            commentIdx = i;
-            break;
-          }
-        }
-        res.push(commentIdx !== -1 ? line.substring(0, commentIdx).trimEnd() : line);
-      }
-      return res.filter(l => l.trim().length > 0).join('\n');
-    };
-
-    // Multi-File Copy All-in-One Terminal Script button in header (Base64 atomic single-line)
+    // Multi-File Copy All-in-One Terminal Script button in header (delegates to shared builder)
     const termBtns = this.host.querySelectorAll('.ap-btn-copy-terminal-script');
     termBtns.forEach((btn) => {
       btn.onclick = async () => {
-        let bashScript = '';
-        bashScript += `git config --global --add safe.directory /app/code 2>/dev/null || true && `;
-        bashScript += `(sudo -n true 2>/dev/null && sudo chmod -R 777 /app/code/.git 2>/dev/null && sudo chown -R newton:newton /app/code 2>/dev/null || true) && `;
-        bashScript += `(rm -f .git/index.lock 2>/dev/null || true) && `;
-        bashScript += `sed -i '/mkdir -p/d' src/index.js 2>/dev/null || true && `;
-        bashScript += `sed -i '/base64 -d/d' src/index.js 2>/dev/null || true && `;
-        bashScript += `sed -i '/=== AP-SOLVER/d' src/index.js 2>/dev/null || true && `;
-        bashScript += `git checkout -- src/index.js 2>/dev/null || true && `;
-
-        const hasPrisma = this.generatedFiles.some(f => (f.filePath && f.filePath.endsWith('.prisma')) || /datasource\s+db|generator\s+client|model\s+/i.test(f.code));
-        const hasSeed = this.generatedFiles.some(f => (f.filePath && f.filePath.endsWith('seed.js')) || /prisma\.\w+\.(create|deleteMany)/i.test(f.code));
-
-        for (const f of this.generatedFiles) {
-          let targetPath = f.filePath;
-          if (targetPath.endsWith('.prisma') || /datasource\s+db|generator\s+client/i.test(f.code)) {
-            targetPath = 'prisma/schema.prisma';
-          } else if (/PrismaClient|prisma\.\w+\.(create|deleteMany)/i.test(f.code) && !/express|createServer/i.test(f.code)) {
-            targetPath = 'src/seed.js';
-          }
-          const dir = targetPath.includes('/') ? targetPath.substring(0, targetPath.lastIndexOf('/')) : '';
-          if (dir) {
-            bashScript += `mkdir -p "${dir}" && `;
-          }
-          const cleanCode = stripUiComments(f.code || '').trim();
-          let b64 = '';
-          try {
-            b64 = btoa(unescape(encodeURIComponent(cleanCode)));
-          } catch(e) {
-            b64 = btoa(cleanCode);
-          }
-          bashScript += `echo "${b64}" | base64 -d > "${targetPath}" && `;
-          if (targetPath.endsWith('schema.prisma') || targetPath === 'prisma/schema.prisma') {
-            bashScript += `cp "${targetPath}" ./schema.prisma 2>/dev/null || true && `;
-            bashScript += `mkdir -p prisma && cp "${targetPath}" prisma/schema.prisma 2>/dev/null || true && `;
-          } else if (targetPath.endsWith('seed.js')) {
-            bashScript += `cp "${targetPath}" ./seed.js 2>/dev/null || true && `;
-            bashScript += `mkdir -p src && cp "${targetPath}" src/seed.js 2>/dev/null || true && `;
-          }
+        const bashScript = window.__AP?.buildTerminalBashScript
+          ? window.__AP.buildTerminalBashScript(this.generatedFiles)
+          : '';
+        if (!bashScript) {
+          this.addLog('No generated files to build terminal script.', 'warn');
+          return;
         }
-
-        const hasIndex = this.generatedFiles.some(f => f.filePath && f.filePath.endsWith('index.js'));
-        if (!hasIndex && (hasSeed || hasPrisma)) {
-          const starterIndex = `const express = require('express');\nconst app = express();\nconst PORT = process.env.PORT || 8000;\napp.use(express.json());\napp.get('/', (req, res) => { res.send('Server is running'); });\nif (process.env.NODE_ENV !== 'test') {\n  app.listen(PORT, () => { console.log('Server running on port ' + PORT); });\n}\nmodule.exports = app;`;
-          let b64Index = '';
-          try {
-            b64Index = btoa(unescape(encodeURIComponent(starterIndex)));
-          } catch(e) {
-            b64Index = btoa(starterIndex);
-          }
-          bashScript += `mkdir -p "src" && echo "${b64Index}" | base64 -d > "src/index.js" && `;
-        }
-
-        if (hasPrisma || hasSeed) {
-          bashScript += `node -e 'try { const p="./package.json", pkg=require(p); pkg.prisma = pkg.prisma || {}; pkg.prisma.seed = "node src/seed.js"; require("fs").writeFileSync(p, JSON.stringify(pkg, null, 2)); } catch(e){}' 2>/dev/null || true && `;
-          bashScript += `npm install --save-dev prisma 2>/dev/null || true && npm install @prisma/client 2>/dev/null || true && `;
-          bashScript += `(npx -y prisma db push --skip-generate 2>/dev/null || true) && (npx -y prisma generate 2>/dev/null || true) && `;
-        }
-        if (hasSeed) {
-          bashScript += `if [ -f src/seed.js ]; then node src/seed.js || true; elif [ -f seed.js ]; then node seed.js || true; fi && `;
-        }
-        bashScript += `(rm -f .git/index.lock 2>/dev/null; git config user.email "solver@ap.dev" 2>/dev/null; git config user.name "AP-Solver" 2>/dev/null; git add -A && git commit -m "solution" 2>/dev/null || true) && `;
-        bashScript += `echo "=== AP-SOLVER-FILES-WRITTEN-SUCCESSFULLY ==="`;
         try {
           await navigator.clipboard.writeText(bashScript.trim());
           const orig = btn.textContent;
