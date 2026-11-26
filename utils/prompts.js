@@ -191,7 +191,21 @@ export function buildPrompt({
   }
 
   if (workspaceFiles && workspaceFiles.length > 0) {
-    parts.push(`## Project Workspace Files:\n${workspaceFiles.map(f => `- ${f}`).join('\n')}`);
+    const rootIdx = referenceFiles?.['index.js'] || '';
+    const isRootLoaderOnly = workspaceFiles.includes('index.js') && workspaceFiles.includes('src/index.js') &&
+      (!rootIdx || (rootIdx.trim().length < 140 && /src\/index/i.test(rootIdx)));
+    const fileLines = workspaceFiles.map(f => {
+      if (f === 'index.js' && isRootLoaderOnly) {
+        return `- ${f} [EXISTING ROOT LOADER for src/index.js — DO NOT overwrite, duplicate, or re-emit!]`;
+      }
+      if (f === activeFile) return `- ${f} [PRIMARY FILE TO EDIT IN-PLACE]`;
+      return `- ${f} [EXISTING]`;
+    });
+    parts.push(
+      `## Project Workspace Files (STRICT LOCATION LOCK — ZERO DUPLICATES):\n` +
+      fileLines.join('\n') + `\n` +
+      `- RULE: Always edit EXISTING files at their exact path above. NEVER create a duplicate sibling (e.g. if \`src/index.js\` exists, do NOT create another \`index.js\`; if \`src/middleware/validate.js\` exists, do NOT create \`src/validate.js\`). Only create missing files in the exact required folder.`
+    );
   }
 
   const feedbackEmbeddedFiles = new Set();
@@ -395,9 +409,9 @@ export function getContextGatedSystemPrompt(userPrompt, isDebug = false) {
   const lines = [
     'You are a Senior Full-Stack Software Engineer. Write complete, bug-free, test-compliant solutions.',
     'RULES: Follow every requirement in Problem Description & Grading Test Files verbatim (every Task 1/2/3, exact status codes, exact JSON keys & messages).',
-    'Match starter code style (CommonJS vs ESM, Express vs node:http), preserve pre-implemented working routes, and preserve exact exports & nested file paths (e.g. // src/middleware/validate.js — NEVER flatten nested folders into src/validate.js).',
-    'OUTPUT ALL REQUIRED FILES: If the problem asks to create HTML/static/module files (e.g. services.html, team.html, careers.html, error.html), output EVERY required file as its own separate code block with its exact filepath on line 1 (NEVER skip them or inline everything into index.js). Otherwise NEVER invent unrequested extra files like prisma/schema.prisma.',
-    'PORT & ENTRYPOINT: Inspect .env and root index.js vs src/index.js! Always load dotenv if installed or read process.env.PORT (so .env PORT=3000 works seamlessly even if prompt prose gives an example like 8080). Preserve starter root index.js -> src/index.js wiring cleanly.',
+    'STRICT FILE LOCATION LOCK (ZERO DUPLICATES): Edit EXISTING files ONLY at their exact path listed in Project Workspace Files (e.g. // src/index.js or // src/middleware/validate.js). NEVER duplicate a file outside its folder (never invent root index.js when src/index.js is the app, never invent src/validate.js when src/middleware/validate.js exists), and DO NOT re-emit untouched bootstrapper/config files unless fixing a bug in them.',
+    'OUTPUT ONLY REQUIRED NEW/EDITED FILES: If the problem explicitly asks to create new files/folders (e.g. HTML pages or modules), output them in their exact required path matching your code imports/reads. NEVER invent unrequested extra files.',
+    'PORT & ENTRYPOINT: Inspect .env and root index.js vs src/index.js! Always load dotenv if installed or read process.env.PORT (so .env PORT=3000 works cleanly even if prompt prose uses an example port like 8080). Preserve starter wiring cleanly.',
     'NEVER invent uninstalled packages; strictly use packages in package.json or Node built-ins. Fix JSON SyntaxError with express error handler returning 400. Return res.status(...).json(...) on every branch so requests never hang or timeout.',
     'Output ONLY clean executable code (NO comments, NO explanations, NO "... rest of code") in markdown fenced code block(s) with exact workspace file path on line 1 (for HTML use <!-- path/file.html --> or // path/file.html).',
     'If setup/migration/build/seed commands must run in terminal after writing files, add a separate ```bash block starting with // __commands__ and list one shell command per line.',
@@ -405,8 +419,8 @@ export function getContextGatedSystemPrompt(userPrompt, isDebug = false) {
   ];
   if (needsPrisma) lines.push('PRISMA: Output prisma/schema.prisma, src/seed.js (deleteMany child-then-parent, await prisma.$disconnect() in finally), and src/index.js cleanly.');
   if (needsNativeHttp) lines.push('NODE HTTP: Set appropriate Content-Type (application/json or text/html); parse JSON safely (400 on invalid JSON); export server cleanly (module.exports = server; module.exports.server = server;). Return 404 on unknown routes.');
-  if (needsStaticHtml) lines.push('STATIC HTML ROUTING: Output a separate code block for EVERY required .html file (matching the paths your server reads via fs.readFile/path.join(__dirname, ...)), set Content-Type text/html, return HTTP 404 for unknown routes, and ensure the server actually listens on process.env.PORT || <port from .env or 8080/3000> (do NOT skip listen() with NODE_ENV !== "test" when external HTTP tests connect directly to localhost:PORT unless starter already guards it for supertest).');
-  if (hasRootIndex) lines.push('DUAL ENTRYPOINT (index.js + src/index.js): Respect starter root index.js (e.g. requiring ./src/index.js) and put full app implementation in the active entry file without breaking root index.js!');
+  if (needsStaticHtml) lines.push('STATIC HTML ROUTING: Output a separate code block for EVERY required .html file (matching the paths your server reads via fs.readFile/path.join(__dirname, ...)), set Content-Type text/html, return HTTP 404 for unknown routes, and ensure the server listens on process.env.PORT || <port from .env or 8080/3000> (do NOT skip listen() with NODE_ENV !== "test" when external HTTP tests connect directly to localhost:PORT unless starter already guards it for supertest).');
+  if (hasRootIndex) lines.push('DUAL ENTRYPOINT (index.js + src/index.js): Leave untouched starter root index.js wrapper alone unless broken; put your full application implementation inside src/index.js ONLY without duplicating it at root!');
   if (needsJwt) lines.push('JWT: Follow exact secret (e.g. JWT_SECRET/SECRET), payload fields (e.g. { email } vs { userId }), expiry (1h vs 15m), auth error status codes (401/403), and protected route response specified by THIS problem & tests.');
   if (needsExpressAuth) lines.push('EXPRESS AUTH: Validate inputs strictly (400), check duplicate records via findFirst/findUnique before create, hash password with installed bcrypt/bcryptjs, omit password from JSON response.');
   if (isDebug || /PREVIOUS ATTEMPT|FAILED/i.test(p)) lines.push('DEBUG: Fix EVERY failing test simultaneously in one complete replacement file without breaking passing routes.');

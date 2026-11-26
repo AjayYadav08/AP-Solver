@@ -104,13 +104,17 @@ export async function runUtilsTests() {
   const parsedNested = parseMultiFileSolution(nestedExplicit, 'src/index.js', ['src/index.js', 'src/middleware/validate.js', 'test/auth.test.js']);
   assert(parsedNested.length === 2 && parsedNested[0].filePath === 'src/index.js' && parsedNested[1].filePath === 'src/middleware/validate.js', 'Nested subfolder explicit path failed');
 
-  const nestedBareHeader = `\`\`\`javascript\n// validate.js\nmodule.exports = (req, res, next) => next();\n\`\`\`\n\`\`\`javascript\n// middleware/validate.js\nmodule.exports = (req, res, next) => next();\n\`\`\`\n\`\`\`javascript\n// src/routes/auth.js\nconst express = require('express');\nmodule.exports = express.Router();\n\`\`\``;
+  const bareResolved = parseMultiFileSolution(`\`\`\`javascript\n// validate.js\nmodule.exports = (req, res, next) => next();\n\`\`\``, 'src/index.js', ['src/index.js', 'src/middleware/validate.js']);
+  assert(bareResolved.length === 1 && bareResolved[0].filePath === 'src/middleware/validate.js', 'Bare filename did not resolve to existing nested workspace file');
+
+  const nestedBareHeader = `\`\`\`javascript\n// validate.js\nmodule.exports = (req, res, next) => old();\n\`\`\`\n\`\`\`javascript\n// middleware/validate.js\nmodule.exports = (req, res, next) => next();\n\`\`\`\n\`\`\`javascript\n// src/routes/auth.js\nconst express = require('express');\nmodule.exports = express.Router();\n\`\`\``;
   const parsedSubRes = parseMultiFileSolution(nestedBareHeader, 'src/index.js', ['src/index.js', 'src/middleware/validate.js', 'src/routes/auth.js']);
   assert(
+    parsedSubRes.length === 2 &&
     parsedSubRes[0].filePath === 'src/middleware/validate.js' &&
-    parsedSubRes[1].filePath === 'src/middleware/validate.js' &&
-    parsedSubRes[2].filePath === 'src/routes/auth.js',
-    'Workspace nested path lookup or express router preservation failed: ' + JSON.stringify(parsedSubRes.map(f => f.filePath))
+    parsedSubRes[0].code.includes('next()') &&
+    parsedSubRes[1].filePath === 'src/routes/auth.js',
+    'Workspace nested deduplication or express router preservation failed: ' + JSON.stringify(parsedSubRes.map(f => f.filePath))
   );
 
   // HTML / static multi-file parsing, <!-- filename --> headers, dual index.js preservation & cross-block folder alignment
@@ -146,7 +150,31 @@ export async function runUtilsTests() {
     parsedHtml[3].code === 'Welcome to Team Page',
     'HTML multi-file parsing or URL preservation failed: ' + JSON.stringify(parsedHtml.map(f => ({ p: f.filePath, c: f.code })))
   );
-  console.log('   ✓ Multi-file parser, nested directory resolution, HTML assets & Prisma routing verified');
+
+  // Strict location lock: bare `// index.js` full app maps to existing `src/index.js`, nested static __dirname subfolder maps inside `src/project/`, and flat duplicates drop
+  const bareIndexRedirect = `\`\`\`javascript\n// index.js\nconst express = require('express');\nconst app = express();\napp.get('/', (req, res) => res.sendFile(path.join(__dirname, 'project', 'services.html')));\napp.listen(3000);\n\`\`\`\n\`\`\`html\n<!-- services.html -->\nWelcome to Services Page\n\`\`\``;
+  const parsedRedirect = parseMultiFileSolution(bareIndexRedirect, 'src/index.js', ['index.js', 'src/index.js', 'package.json']);
+  assert(
+    parsedRedirect.length === 2 &&
+    parsedRedirect[0].filePath === 'src/index.js' &&
+    parsedRedirect[1].filePath === 'src/project/services.html',
+    'Strict location lock / __dirname subfolder alignment failed: ' + JSON.stringify(parsedRedirect.map(f => f.filePath))
+  );
+
+  const lockPrompt = buildPrompt({
+    questionTitle: 'Routing',
+    activeFile: 'src/index.js',
+    workspaceFiles: ['index.js', 'src/index.js', 'package.json'],
+    referenceFiles: { 'index.js': "require('./src/index');", 'src/index.js': '// starter' },
+    questionDetails: 'Serve pages',
+    testCases: []
+  });
+  assert(
+    lockPrompt.includes('[EXISTING ROOT LOADER for src/index.js — DO NOT overwrite, duplicate, or re-emit!]') &&
+    lockPrompt.includes('[PRIMARY FILE TO EDIT IN-PLACE]'),
+    'Prompt missing strict file location lock annotations'
+  );
+  console.log('   ✓ Multi-file parser, nested directory resolution, location lock, HTML assets & Prisma routing verified');
 
   // 5. Post-write commands, auto-remediation & script builder
   const multiWithCmds = `\`\`\`javascript\n// src/index.js\nconst app = require('express')();\nmodule.exports = app;\n\`\`\`\n\`\`\`bash\n// __commands__\nnpx prisma generate\nnpm run build\nrm -rf /\nnpm start\n\`\`\``;
@@ -170,11 +198,13 @@ export async function runUtilsTests() {
     'Auto-remediation detection failed: ' + JSON.stringify(autoRem)
   );
 
-  const scriptOut = buildBase64TerminalScript([{ filePath: 'src/seed.js', code: '// comment\nconst a = 1;' }], ['npm run build']);
+  const scriptOut = buildBase64TerminalScript([{ filePath: 'src/seed.js', code: '// comment\nconst a = 1;' }], ['npm run build'], ['src/validate.js', '../etc/passwd']);
   assert(
     scriptOut.includes('sudo -n true') &&
     scriptOut.includes('sudo chmod -R 777') &&
     scriptOut.includes('rm -f .git/index.lock') &&
+    scriptOut.includes('rm -f "src/validate.js"') &&
+    !scriptOut.includes('../etc/passwd') &&
     scriptOut.includes('node src/seed.js || true') &&
     scriptOut.includes('(npm run build || true)') &&
     !scriptOut.includes('// comment'),

@@ -123,13 +123,19 @@ export function detectRequiredPostWriteCommands({
 }
 
 /** Build atomic base64 single-line bash command for direct container disk writes + setup commands + git commit. */
-export function buildBase64TerminalScript(files, postCommands = []) {
+export function buildBase64TerminalScript(files, postCommands = [], cleanupFiles = []) {
   if (!files || files.length === 0) return '';
   let cmd = '';
 
   cmd += `git config --global --add safe.directory /app/code 2>/dev/null || true && `;
   cmd += `(sudo -n true 2>/dev/null && sudo chmod -R 777 /app/code/.git 2>/dev/null && sudo chown -R newton:newton /app/code 2>/dev/null || true) && `;
   cmd += `(rm -f .git/index.lock 2>/dev/null || true) && `;
+  for (const stale of (Array.isArray(cleanupFiles) ? cleanupFiles : [])) {
+    const s = String(stale || '').trim();
+    if (s && !s.startsWith('/') && !s.includes('..') && /^[a-zA-Z0-9_.\-\/]+$/.test(s)) {
+      cmd += `rm -f "${s}" 2>/dev/null || true && `;
+    }
+  }
   cmd += `sed -i '/mkdir -p/d' src/index.js 2>/dev/null || true && `;
   cmd += `sed -i '/base64 -d/d' src/index.js 2>/dev/null || true && `;
   cmd += `sed -i '/=== AP-SOLVER/d' src/index.js 2>/dev/null || true && `;

@@ -18,6 +18,9 @@
   let cachedCommands = [];
   let attemptHistory = [];
   let filesWrittenViaTerminal = false;
+  let initialWorkspaceFiles = new Set();
+  let initialReferenceFiles = {};
+  let staleTempFilesToRemove = new Set();
 
   /** Safe extension runtime message dispatcher with timeout & error recovery. */
   function sendMsg(msg, timeoutMs = 25000) {
@@ -299,6 +302,10 @@
       testCasesCount: cachedQuestion.testCases.length,
       activeFile: sanitizeActiveFile(cachedEditor?.activeFile)
     });
+    if (initialWorkspaceFiles.size === 0) {
+      for (const f of (cachedEditor?.allFiles || [])) initialWorkspaceFiles.add(f);
+      initialReferenceFiles = { ...(cachedEditor?.referenceFiles || {}) };
+    }
     ui.setStatus('Context Loaded', `${cachedQuestion.testCases.length} test cases detected. Ready to generate.`, 'normal');
   }
 
@@ -359,14 +366,26 @@
     for (const f of (cachedGeneratedFiles || [])) if (f.filePath && f.code) mergedFilesMap.set(f.filePath, f);
     for (const f of newFiles) {
       if (!f.filePath || !f.code) continue;
+      // Do not clobber/re-list untouched starter bootstrap files (e.g. root index.js -> require('./src/index'))
+      const initCode = initialReferenceFiles?.[f.filePath];
+      if (
+        f.filePath === 'index.js' &&
+        initCode &&
+        initialWorkspaceFiles.has('src/index.js') &&
+        f.code.trim() === initCode.trim()
+      ) {
+        continue;
+      }
       const base = f.filePath.split('/').pop().toLowerCase();
-      // If nested file like src/middleware/validate.js arrives, drop any stale flattened src/validate.js
-      if (f.filePath.split('/').length > 2) {
-        const flatTwin = 'src/' + base;
-        if (flatTwin !== f.filePath.toLowerCase()) {
-          for (const k of [...mergedFilesMap.keys()]) {
-            if (k.toLowerCase() === flatTwin) mergedFilesMap.delete(k);
-          }
+      for (const k of [...mergedFilesMap.keys()]) {
+        if (k === f.filePath) continue;
+        const kBase = k.split('/').pop().toLowerCase();
+        if (kBase !== base) continue;
+        // Supersede earlier mistakenly flattened or moved file with same basename (and queue AP-created temp file for safe removal)
+        const isOldBootstrap = k === 'index.js' && f.filePath === 'src/index.js';
+        if (!initialWorkspaceFiles.has(k) || isOldBootstrap) {
+          if (!initialWorkspaceFiles.has(k)) staleTempFilesToRemove.add(k);
+          mergedFilesMap.delete(k);
         }
       }
       mergedFilesMap.set(f.filePath, f);
@@ -422,7 +441,9 @@
       filesToWrite
     );
     const mergedPostCmds = [...new Set([...(cachedCommands || []), ...detectedPostCmds])];
-    const bashScript = AP.buildTerminalBashScript(filesToWrite, mergedPostCmds);
+    const cleanupList = [...staleTempFilesToRemove].filter(p => !initialWorkspaceFiles.has(p) && !filesToWrite.some(f => f.filePath === p));
+    const bashScript = AP.buildTerminalBashScript(filesToWrite, mergedPostCmds, cleanupList);
+    if (cleanupList.length > 0) staleTempFilesToRemove.clear();
     if (mergedPostCmds.length > 0) ui.addLog(`⚙️ [Post-Write Commands] Running in terminal before commit: ${mergedPostCmds.join(' && ')}`, 'normal');
 
     try {
@@ -630,6 +651,9 @@
       cachedGeneratedFiles = [];
       cachedCommands = [];
       attemptHistory = [];
+      initialWorkspaceFiles = new Set();
+      initialReferenceFiles = {};
+      staleTempFilesToRemove = new Set();
       const remediatedCmds = new Set();
       filesWrittenViaTerminal = false;
 

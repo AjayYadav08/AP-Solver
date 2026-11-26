@@ -138,7 +138,7 @@ function formatByFileType(rawCode, filePath) {
 }
 
 /** Resolve parsed filename/subpath against known workspace paths so nested folders (e.g. src/middleware/validate.js) are never flattened. */
-function resolveWorkspaceFilePath(rawFn, workspaceFiles = []) {
+function resolveWorkspaceFilePath(rawFn, workspaceFiles = [], preferredActiveFile = 'src/index.js', codeSnippet = '') {
   const fn = normalizeRelPath(rawFn);
   if (!fn) return '';
 
@@ -149,6 +149,16 @@ function resolveWorkspaceFilePath(rawFn, workspaceFiles = []) {
   const wsClean = (workspaceFiles || []).map(normalizeRelPath).filter(Boolean);
   const nonTestWs = wsClean.filter(w => !/(?:^|\/)(?:test|tests|__tests__)\/|(?:\.test|\.spec)\./i.test(w) && !/package-lock/i.test(w));
   const pool = nonTestWs.length > 0 ? nonTestWs : wsClean;
+
+  const prefNorm = normalizeRelPath(preferredActiveFile || 'src/index.js');
+  // When AI writes bare `// index.js` with full app code while starter workspace runs `src/index.js`, keep changes inside `src/index.js`
+  if (!fn.includes('/') && fn.toLowerCase() === 'index.js' && prefNorm.toLowerCase() === 'src/index.js') {
+    const hasSrcIndex = pool.some(w => w.toLowerCase() === 'src/index.js');
+    const isBootstrapOnly = codeSnippet && codeSnippet.trim().length < 140 && /require\s*\(\s*['"]\.\/src\//i.test(codeSnippet);
+    if (hasSrcIndex && !isBootstrapOnly) {
+      return pool.find(w => w.toLowerCase() === 'src/index.js');
+    }
+  }
 
   const exact = pool.find(w => w.toLowerCase() === fn.toLowerCase());
   if (exact) return exact;
@@ -195,18 +205,49 @@ function alignStaticFilePaths(files) {
     const fp = f.filePath || '';
     if (!/\.(?:html?|css|txt|json)$/i.test(fp) || fp.includes('/')) return f;
     const escaped = fp.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    // 1. Explicit subpath string inside code like 'project/services.html' or path.join(..., 'project', 'services.html')
+    // 1. Explicit subpath inside path.join(__dirname, ...) or string literal like 'project/services.html'
+    const dirSubJoinM = combinedJs.match(new RegExp(`__dirname\\s*,\\s*['"\`]([a-zA-Z0-9_.-]+)['"\`]\\s*,\\s*['"\`]${escaped}['"\`]`, 'i'));
+    if (dirSubJoinM && dirSubJoinM[1] !== '..' && dirSubJoinM[1] !== '.') {
+      return { ...f, filePath: hasSrcServer ? `src/${dirSubJoinM[1]}/${fp}` : `${dirSubJoinM[1]}/${fp}` };
+    }
     const explicitSubM = combinedJs.match(new RegExp(`['"\`](?:\\.\\/)?([a-zA-Z0-9_.-]+\\/${escaped})['"\`]`, 'i'))
       || combinedJs.match(new RegExp(`['"\`]([a-zA-Z0-9_.-]+)['"\`]\\s*,\\s*['"\`]${escaped}['"\`]`, 'i'));
-    if (explicitSubM) {
+    if (explicitSubM && !/^\.\.(?:\/|$)/.test(explicitSubM[1])) {
       const folder = explicitSubM[1].includes('/') ? explicitSubM[1] : `${explicitSubM[1]}/${fp}`;
       return { ...f, filePath: folder.startsWith('../') ? folder.replace(/^\.\.\//, '') : folder };
     }
     // 2. If server runs in src/index.js and uses __dirname without '..', resolve inside src/
-    if (hasSrcServer && new RegExp(`__dirname\\s*[,+]\\s*['"\`]/??(?:\\.\\/)?${escaped}['"\`]`, 'i').test(combinedJs)) {
+    if (hasSrcServer && new RegExp(`__dirname\\s*[,+]\\s*['"\`]/?(?:\\.\\/)?${escaped}['"\`]`, 'i').test(combinedJs)) {
       return { ...f, filePath: 'src/' + fp };
     }
     return f;
+  });
+}
+
+/** Deduplicate identical paths and drop redundant flat copies when canonical workspace path is present. */
+function dedupeCanonicalFiles(files, workspaceFiles = []) {
+  if (!Array.isArray(files) || files.length === 0) return [];
+  const wsSet = new Set((workspaceFiles || []).map(normalizeRelPath).map(s => s.toLowerCase()));
+  const byPath = new Map();
+  for (const f of files) {
+    if (!f || !f.filePath || !f.code) continue;
+    byPath.set(f.filePath, f);
+  }
+  const deduped = Array.from(byPath.values());
+  // Drop accidental non-workspace flat twin (e.g. validate.js when src/middleware/validate.js exists)
+  return deduped.filter(f => {
+    const fpLow = f.filePath.toLowerCase();
+    const base = fpLow.split('/').pop();
+    const hasCanonicalNested = deduped.some(other =>
+      other !== f &&
+      other.filePath.toLowerCase().split('/').pop() === base &&
+      other.filePath.split('/').length > f.filePath.split('/').length &&
+      (wsSet.size === 0 || wsSet.has(other.filePath.toLowerCase()) || !wsSet.has(fpLow))
+    );
+    if (hasCanonicalNested && !wsSet.has(fpLow) && !/index\.(?:js|ts)$/i.test(base)) {
+      return false;
+    }
+    return true;
   });
 }
 
@@ -238,10 +279,11 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
       return 'src/seed.js';
     }
     if (fn && isValidFilename(fn)) {
-      return resolveWorkspaceFilePath(fn, workspaceFiles);
+      return resolveWorkspaceFilePath(fn, workspaceFiles, defaultActiveFile, codeSnippet);
     }
     if (/express|createServer|app\.listen|app\.use/i.test(codeSnippet) && !/PrismaClient|prisma\.\w+/i.test(codeSnippet)) {
-      return resolveWorkspaceFilePath('index.js', workspaceFiles) || 'src/index.js';
+      const def = resolveWorkspaceFilePath(defaultActiveFile, workspaceFiles, defaultActiveFile, codeSnippet);
+      return /index\.(?:js|ts)$/i.test(def) ? def : (resolveWorkspaceFilePath('src/index.js', workspaceFiles, defaultActiveFile, codeSnippet) || 'src/index.js');
     }
     if (/"prisma"\s*:\s*\{|"scripts"\s*:\s*\{/i.test(codeSnippet) || fn === 'package.json') {
       return 'package.json';
@@ -313,7 +355,7 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
     }
 
     if (parsedBlocks.length > 0 && (blocks.length > 1 || parsedBlocks[0].filePath !== defaultResolved)) {
-      return alignStaticFilePaths(parsedBlocks);
+      return dedupeCanonicalFiles(alignStaticFilePaths(parsedBlocks), workspaceFiles);
     }
   }
 
@@ -330,7 +372,7 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
       rawCode = rawCode.replace(/^```[a-z]*\s*\n?/i, '').replace(/```+$/g, '').trim();
       rawCode = stripFileCommentHeaders(rawCode);
       if (rawCode.length > 5) {
-        const fp = resolveWorkspaceFilePath(fn, workspaceFiles);
+        const fp = resolveWorkspaceFilePath(fn, workspaceFiles, defaultActiveFile, rawCode);
         inlineFiles.push({
           filePath: fp,
           code: formatByFileType(rawCode, fp)
@@ -338,7 +380,7 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
       }
     }
     if (inlineFiles.length > 0) {
-      return alignStaticFilePaths(inlineFiles);
+      return dedupeCanonicalFiles(alignStaticFilePaths(inlineFiles), workspaceFiles);
     }
   }
 
@@ -348,8 +390,8 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
   if (topMatch && isValidFilename(topMatch[1])) {
     const fn = topMatch[1];
     cleaned = stripFileCommentHeaders(cleaned);
-    const fp = resolveWorkspaceFilePath(fn, workspaceFiles);
-    return alignStaticFilePaths([{ filePath: fp, code: formatByFileType(cleaned, fp) }]);
+    const fp = resolveWorkspaceFilePath(fn, workspaceFiles, defaultActiveFile, cleaned);
+    return dedupeCanonicalFiles(alignStaticFilePaths([{ filePath: fp, code: formatByFileType(cleaned, fp) }]), workspaceFiles);
   }
 
   const singleCode = stripFileCommentHeaders(extractCodeBlock(parseSource));

@@ -137,8 +137,10 @@ export async function runContentTests() {
 
   assert(
     contentSrc.includes('[Step 1/6]') &&
-    contentSrc.includes('minVerifyLen = isStaticAsset ? 5 : 12'),
-    'content/content.js static asset verification check missing'
+    contentSrc.includes('minVerifyLen = isStaticAsset ? 5 : 12') &&
+    contentSrc.includes('initialWorkspaceFiles') &&
+    contentSrc.includes('staleTempFilesToRemove'),
+    'content/content.js static asset verification or canonical supersession check missing'
   );
   const econnTrace = [
     '  1) Company Website Routes',

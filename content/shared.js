@@ -112,12 +112,18 @@
   };
 
   /** Single shared atomic base64 terminal script builder (used by both content orchestrator and UI copy button). */
-  AP.buildTerminalBashScript = function buildTerminalBashScript(filesToWrite, postCommands = []) {
+  AP.buildTerminalBashScript = function buildTerminalBashScript(filesToWrite, postCommands = [], cleanupFiles = []) {
     if (!filesToWrite || filesToWrite.length === 0) return '';
     let bashScript = '';
     bashScript += `git config --global --add safe.directory /app/code 2>/dev/null || true && `;
     bashScript += `(sudo -n true 2>/dev/null && sudo chmod -R 777 /app/code/.git 2>/dev/null && sudo chown -R newton:newton /app/code 2>/dev/null || true) && `;
     bashScript += `(rm -f .git/index.lock 2>/dev/null || true) && `;
+    for (const stale of (Array.isArray(cleanupFiles) ? cleanupFiles : [])) {
+      const s = String(stale || '').trim();
+      if (s && !s.startsWith('/') && !s.includes('..') && /^[a-zA-Z0-9_.\-\/]+$/.test(s)) {
+        bashScript += `rm -f "${s}" 2>/dev/null || true && `;
+      }
+    }
     bashScript += `sed -i '/mkdir -p/d' src/index.js 2>/dev/null || true && `;
     bashScript += `sed -i '/base64 -d/d' src/index.js 2>/dev/null || true && `;
     bashScript += `sed -i '/=== AP-SOLVER/d' src/index.js 2>/dev/null || true && `;
