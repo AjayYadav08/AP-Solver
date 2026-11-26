@@ -20,7 +20,7 @@ Ek powerful Chrome Extension jo specifically **3-Section Coding Interface** ke q
   - Sahi status codes (200, 201, 400, 404).
   - Proper error object format: `{ error: "Descriptive message" }`.
   - Native `node:http` vs Express framework compliance (starter code ka framework preserve karta hai).
-- **🔁 Auto-Retry with Grader Feedback:** Agar 16 me se 1-2 test cases fail hote hain, toh failing test cases ko AI ke pass bhejkar automatically bug fix karwata hai aur re-submit karta hai (up to 3 attempts).
+- **🔁 Auto-Retry with Grader Feedback:** Agar 16 me se 1-2 test cases fail hote hain, toh failing test cases ko AI ke pass bhejkar automatically bug fix karwata hai aur re-submit karta hai (up to 5 attempts).
 - **🖥️ VS Code Web / Monaco Multi-Frame Bridge:** Iframe aur webview ke andar running Monaco editor me safe `executeEdits` aur `setValue` ke sath code inject karta hai.
 - **👁️ Code Preview & Clipboard Copy:** Generated code ko preview kar sakte hain ya ek click me clipboard pe copy kar sakte hain.
 

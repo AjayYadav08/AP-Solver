@@ -1764,7 +1764,7 @@
     if (attemptHistory.length > 0) {
       feedbackBlocks.push(
         `⚠️ PREVIOUS ATTEMPTS HISTORY (DO NOT REPEAT FAILED APPROACHES):\n` +
-        attemptHistory.slice(-4).map(h => `- ${h}`).join('\n')
+        attemptHistory.slice(-5).map(h => `- ${h}`).join('\n')
       );
     }
 
@@ -1947,7 +1947,7 @@
       await sleep(300);
       await handleReadContext();
 
-      let maxAttempts = ui.options.autoRetry ? 3 : 1;
+      let maxAttempts = ui.options.autoRetry ? 5 : 1;
       let feedback = null;
 
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {

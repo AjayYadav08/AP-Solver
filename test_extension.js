@@ -607,8 +607,8 @@ if (!contentJs22.includes('[Step 1/6]') ||
 }
 
 // 2. Loop repetition enforcement when testcases fail (Step 6)
-if (!contentJs22.includes('let maxAttempts = ui.options.autoRetry ? 3 : 1')) {
-  throw new Error('handleOneClickSolve must allow up to 3 attempts when autoRetry is active to repeat steps 4 & 5!');
+if (!contentJs22.includes('let maxAttempts = ui.options.autoRetry ? 5 : 1')) {
+  throw new Error('handleOneClickSolve must allow up to 5 attempts when autoRetry is active to repeat steps 4 & 5!');
 }
 
 // 3. Code completeness gate before submit (Step 3 to 4)

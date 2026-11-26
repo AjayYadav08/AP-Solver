@@ -11,7 +11,7 @@ export const DEFAULT_SETTINGS = {
   openaiBaseUrl: 'https://api.openai.com/v1',
   autoSubmit: true,
   autoRetry: true,
-  maxRetries: 3,
+  maxRetries: 5,
 };
 
 export async function getSettings() {
