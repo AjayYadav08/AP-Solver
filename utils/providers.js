@@ -3,6 +3,7 @@ import { extractCodeBlock, parseMultiFileSolution } from './code-format.js';
 import { extractCommandsFromResponse } from './commands.js';
 import { SYSTEM_PROMPT, buildPrompt, buildCompactGroqMessages, getContextGatedSystemPrompt } from './prompts.js';
 import { analyzeFileModificationPlan, enforceFilePlan } from './file-planner.js';
+import { formatFullCollaborationHistory } from './attempt-history.js';
 
 export const DEFAULT_SETTINGS = {
   provider: 'race', // 'race' (Turbo Parallel) | 'groq' | 'gemini' | 'openai'
@@ -462,14 +463,25 @@ export async function generateSolution(promptData, settingsOverride = null) {
     }
   }
   const isDebugMode = !!(promptData.feedback && String(promptData.feedback).trim().length > 0);
+  const attemptNumber = Math.max(1, Number(promptData.attemptNumber) || (isDebugMode ? 2 : 1));
+  const collaborationHistory = promptData.collaborationHistory ||
+    (Array.isArray(promptData.attemptRecords) && promptData.attemptRecords.length > 0
+      ? formatFullCollaborationHistory(promptData.attemptRecords, { maxTotalChars: 13000 })
+      : '');
   const filePlan = promptData.filePlan || analyzeFileModificationPlan(promptData);
   settings.isDebugMode = isDebugMode;
+  settings.attemptNumber = attemptNumber;
   settings.filePlan = filePlan;
   settings.activeFile = filePlan.primaryFile || promptData.activeFile || 'src/index.js';
   settings.workspaceFiles = filePlan.allExistingFiles?.length ? filePlan.allExistingFiles : (promptData.workspaceFiles || []);
   settings.deadlineAt = Date.now() + (isDebugMode ? 120000 : 85000);
 
-  const prompt = buildPrompt({ ...promptData, filePlan });
+  const prompt = buildPrompt({
+    ...promptData,
+    filePlan,
+    attemptNumber,
+    collaborationHistory
+  });
 
   const hasGemini = !!(settings.geminiKey && settings.geminiKey.trim());
   const hasGroq = !!(settings.groqKey && settings.groqKey.trim());
@@ -486,9 +498,12 @@ export async function generateSolution(promptData, settingsOverride = null) {
 
   let provider = settings.provider || 'race';
 
-  // MODEL ESCALATION FOR DEBUGGING (Attempt 2+ / Local Test Fix)
+  // MODEL ESCALATION FOR DEBUGGING (Attempt 2+ / Stage 3+ Multi-AI Collaborator)
   if (isDebugMode) {
-    console.log('[AP-Solver] 🧠 Debug Escalation Mode active: prioritizing High-Reasoning analysis...');
+    const roleTag = attemptNumber >= 3
+      ? `Stage ${attemptNumber}/5 Multi-AI Collaborator`
+      : `Stage ${attemptNumber}/5 Debug Escalation`;
+    console.log(`[AP-Solver] 🧠 ${roleTag} active (analyzing prior attempts)...`);
     const debugOrder = [];
     if (hasGemini) debugOrder.push('gemini');
     if (provider === 'openai' && hasOpenAI) debugOrder.push('openai');
@@ -512,8 +527,9 @@ export async function generateSolution(promptData, settingsOverride = null) {
         }
         res.latencyMs = Date.now() - t0;
         res.debugEscalated = true;
+        res.attemptNumber = attemptNumber;
         res.commands = res.commands || [];
-        res.raceWinner = `🧠 Debug Escalated (${p === 'gemini' ? 'Gemini High-Reasoning' : p}: ${res.model})`;
+        res.raceWinner = `🧠 ${roleTag} (${p === 'gemini' ? 'Gemini High-Reasoning' : p}: ${res.model})`;
         return res;
       } catch (err) {
         console.warn(`[AP-Solver] Debug Escalation provider (${p}) failed:`, err);

@@ -22,6 +22,12 @@
   let initialReferenceFiles = {};
   let staleTempFilesToRemove = new Set();
   let lockedFilePlan = null;
+  let terminalPreAnalysis = null;
+  let sessionAttemptRecords = [];
+  let sessionCollaborationHistory = '';
+  let currentQuestionKey = '';
+  let lastExecutedCommands = [];
+  let currentAttemptNum = 1;
 
   function pruneBareTabDuplicates(files = []) {
     const uniq = [...new Set((files || []).filter(Boolean))];
@@ -313,6 +319,63 @@
       }
     } catch (e) {}
 
+    // Step 1B: Thorough Pre-Coding Terminal, Workflow & Command Analysis
+    try {
+      let sideTermText = '';
+      try {
+        sideTermText = await AP.readTerminalOutput(1600);
+        AP.switchToQuestionTab();
+      } catch (e) {}
+      let integTermText = '';
+      try {
+        const itResp = await sendMsg({ op: 'AP_READ_INTEGRATED_TERMINAL' }, 3000);
+        if (itResp?.ok) integTermText = itResp.text || '';
+      } catch (e) {}
+      const detectedPostCmds = AP.detectPostWriteCommands(
+        cachedQuestion?.details || '',
+        cachedEditor?.referenceFiles?.['package.json'] || '',
+        lockedFilePlan?.targets || [],
+        `${sideTermText}\n${integTermText}`
+      );
+      const termResp = await sendMsg({
+        op: 'AP_ANALYZE_TERMINAL',
+        data: {
+          sideTerminalText: sideTermText,
+          integratedTerminalText: integTermText,
+          questionDetails: cachedQuestion?.details || '',
+          readmeText: cachedEditor?.referenceFiles?.['README.md'] || '',
+          packageJsonStr: cachedEditor?.referenceFiles?.['package.json'] || '',
+          detectedPostCommands: detectedPostCmds
+        }
+      }, 4000);
+      if (termResp?.ok && termResp.analysis) {
+        terminalPreAnalysis = termResp.analysis;
+        if (terminalPreAnalysis.requiredPostCommands?.length > 0) {
+          ui.addLog(`🖥️ [Pre-Coding Terminal Analysis] Requires post-write command(s) before Submit: ${terminalPreAnalysis.requiredPostCommands.join(' && ')}`, 'warn');
+        } else {
+          ui.addLog('🖥️ [Pre-Coding Terminal Analysis] No extra build/migration command needed beyond clean code writes.', 'ok');
+        }
+        if (terminalPreAnalysis.hasPriorTerminalErrors) {
+          ui.addLog(`⚠️ [Pre-Coding Terminal Analysis] Existing terminal error detected [${terminalPreAnalysis.preErrorCategory}] — feeding context to Attempt 1.`, 'warn');
+        }
+      }
+    } catch (e) {}
+
+    // Load per-question persistent history (prevents repeating failed strategies from prior sessions)
+    try {
+      const hResp = await sendMsg({
+        op: 'AP_LOAD_ATTEMPT_HISTORY',
+        data: { url: location.href, questionTitle: cachedQuestion?.title || '' }
+      }, 3000);
+      if (hResp?.ok) {
+        currentQuestionKey = hResp.questionKey || '';
+        if (hResp.priorCollab && !sessionCollaborationHistory) {
+          sessionCollaborationHistory = hResp.priorCollab;
+          ui.addLog(`📚 [Persistent History] Loaded ${hResp.history?.attempts?.length || 0} prior attempt(s) for this question so known bugs are avoided.`, 'normal');
+        }
+      }
+    } catch (e) {}
+
     ui.updateProblemInfo({
       title: cachedQuestion.title,
       difficulty: cachedQuestion.difficulty,
@@ -375,7 +438,11 @@
       referenceFiles: mergedReferenceFiles,
       language: cachedEditor?.language || 'javascript',
       feedback,
-      filePlan: lockedFilePlan
+      filePlan: lockedFilePlan,
+      attemptNumber: currentAttemptNum,
+      terminalPreAnalysis,
+      attemptRecords: sessionAttemptRecords,
+      collaborationHistory: sessionCollaborationHistory
     };
 
     const keepAliveTimer = setInterval(() => { sendMsg({ op: 'AP_KEEPALIVE' }, 3000).catch(() => {}); }, 20000);
@@ -497,7 +564,11 @@
       cachedEditor?.referenceFiles?.['package.json'] || '',
       filesToWrite
     );
-    const mergedPostCmds = [...new Set([...(cachedCommands || []), ...detectedPostCmds])];
+    const preCommands = (terminalPreAnalysis?.requiredPostCommands && !cachedCommands?.length && !detectedPostCmds.length)
+      ? terminalPreAnalysis.requiredPostCommands
+      : [];
+    const mergedPostCmds = [...new Set([...(cachedCommands || []), ...detectedPostCmds, ...preCommands])];
+    lastExecutedCommands = [...mergedPostCmds];
     const cleanupList = [...staleTempFilesToRemove].filter(p => !initialWorkspaceFiles.has(p) && !filesToWrite.some(f => f.filePath === p));
     const bashScript = AP.buildTerminalBashScript(filesToWrite, mergedPostCmds, cleanupList);
     if (cleanupList.length > 0) staleTempFilesToRemove.clear();
@@ -712,6 +783,12 @@
       initialReferenceFiles = {};
       staleTempFilesToRemove = new Set();
       lockedFilePlan = null;
+      terminalPreAnalysis = null;
+      sessionAttemptRecords = [];
+      sessionCollaborationHistory = '';
+      currentQuestionKey = '';
+      lastExecutedCommands = [];
+      currentAttemptNum = 1;
       const remediatedCmds = new Set();
       filesWrittenViaTerminal = false;
 
@@ -725,8 +802,18 @@
       let feedback = null;
 
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        currentAttemptNum = attempt;
         filesWrittenViaTerminal = false;
-        if (attempt > 1) ui.addLog(`🔁 [Attempt ${attempt}/${maxAttempts}] Generating fix from side bar terminal & retrying steps 4 & 5...`, 'warn');
+        const stageBanner = attempt === 1
+          ? 'Attempt 1/5 — Initial Question & Terminal Analysis Solution'
+          : attempt === 2
+            ? 'Attempt 2/5 — First Error-Driven Fix'
+            : attempt === 3
+              ? 'Attempt 3/5 — Multi-AI Collaborator (Full History Audit)'
+              : attempt === 4
+                ? 'Attempt 4/5 — Deep Edge-Case & Boundary Audit'
+                : 'Attempt 5/5 — Final High-Reliability Synthesis';
+        ui.addLog(`🧭 [${stageBanner}]`, attempt >= 2 ? 'warn' : 'ok');
 
         const maxLocalTries = ui.options.autoRetry ? 3 : 1;
         let writeBlockedOrIncomplete = false;
@@ -770,6 +857,7 @@
               ui.addLog(`🛠️ [Auto-Command Remediation] Executing missing setup command(s) in Terminal: ${freshCmds.join(' && ')}`, 'warn');
               const cmdRes = await sendMsg({ op: 'AP_RUN_TERMINAL_COMMANDS', data: { commands: freshCmds } }, 48000);
               if (cmdRes?.output) ui.addLog(`⚙️ Command finished (exit=${cmdRes.exitCode ?? 0}). Re-running local pre-tests...`, cmdRes.ok ? 'ok' : 'warn');
+              lastExecutedCommands = [...new Set([...lastExecutedCommands, ...freshCmds])];
               localRes = await sendMsg({ op: 'AP_RUN_LOCAL_TESTS', data: { files: filesToCheck.map(f => f.filePath) } }, 45000);
             }
           }
@@ -782,11 +870,34 @@
             const firstErrLine = (localRes.output || '').split('\n').find(l => /Error:|AssertionError|expected|Cannot find/i.test(l)) || 'Local test assertion failed';
             attemptHistory.push(`Local ${attempt}.${localTry} (${localRes.passed || 0}/${(localRes.passed || 0) + (localRes.failed || 0)}): ${firstErrLine.trim().slice(0, 120)}`);
             if (ui.options.autoRetry && localTry < maxLocalTries) {
+              try {
+                const recResp = await sendMsg({
+                  op: 'AP_RECORD_ATTEMPT',
+                  data: {
+                    questionKey: currentQuestionKey,
+                    existingRecords: sessionAttemptRecords,
+                    attemptNumber: attempt,
+                    stage: `local-${attempt}.${localTry}`,
+                    questionTitle: cachedQuestion?.title || '',
+                    originalQuestion: cachedQuestion?.details || '',
+                    submittedFiles: filesToCheck,
+                    terminalOutput: localRes.output || '',
+                    subRes: { passed: localRes.passed || 0, total: (localRes.passed || 0) + (localRes.failed || 0), failedTests: localRes.failed > 0 ? [`${localRes.failed} local test(s) failed`] : [] },
+                    commandsExecuted: [...lastExecutedCommands],
+                    whatWentWrong: firstErrLine.trim().slice(0, 220),
+                    strategyUsed: `Local Pre-Test ${attempt}.${localTry}`
+                  }
+                }, 4000);
+                if (recResp?.ok) {
+                  sessionAttemptRecords = recResp.records || sessionAttemptRecords;
+                  sessionCollaborationHistory = recResp.collaborationHistory || sessionCollaborationHistory;
+                }
+              } catch (e) {}
               feedback = await AP.buildDebugFeedback(
                 localRes.output || '',
                 { passed: localRes.passed || 0, total: (localRes.passed || 0) + (localRes.failed || 0), failedTests: localRes.failed > 0 ? [`${localRes.failed} test(s) failed during local Terminal npm test`] : [] },
                 `${attempt}.${localTry} (Local Pre-Test)`,
-                { attemptHistory, cachedGeneratedFiles, cachedEditor, filesWrittenViaTerminal, sendMsg, ui }
+                { attemptHistory, collaborationHistory: sessionCollaborationHistory, commandsExecuted: lastExecutedCommands, cachedGeneratedFiles, cachedEditor, filesWrittenViaTerminal, sendMsg, ui }
               );
               ui.addLog(`🧠 Skipping slow remote Submit — escalating to Debug Model for fast local fix (${localTry + 1}/${maxLocalTries})...`, 'warn');
               continue;
@@ -824,6 +935,25 @@
         }
 
         if (subRes && subRes.ok) {
+          try {
+            await sendMsg({
+              op: 'AP_RECORD_ATTEMPT',
+              data: {
+                questionKey: currentQuestionKey,
+                existingRecords: sessionAttemptRecords,
+                attemptNumber: attempt,
+                stage: 'remote',
+                questionTitle: cachedQuestion?.title || '',
+                originalQuestion: cachedQuestion?.details || '',
+                submittedFiles: (cachedGeneratedFiles && cachedGeneratedFiles.length > 0) ? cachedGeneratedFiles : [{ filePath: sanitizeActiveFile(cachedEditor?.activeFile), code: cachedGeneratedCode }],
+                terminalOutput: subRes?.terminalLog || '',
+                subRes,
+                commandsExecuted: [...lastExecutedCommands],
+                whatWentWrong: 'Passed all assertions',
+                strategyUsed: `Attempt ${attempt}/5`
+              }
+            }, 3000);
+          } catch (e) {}
           ui.addLog(`🎉 CHALLENGE SOLVED! All ${subRes.passed || 'all'} test cases passed on Attempt ${attempt} (${timeStr})!`, 'ok');
           ui.setStatus('Accepted 🎉', `All ${subRes.passed || 'all'} test cases passed at ${timeStr}!`, 'success');
           ui.setRunning(false);
@@ -832,7 +962,7 @@
           ui.addLog(`🔍 [Step 5/6] Tests failed. Checking error message in side bar terminal & analyzing failure...`, 'warn');
           ui.setStatus(`Attempt ${attempt}/${maxAttempts} - Step 5/6: Analyzing Terminal Errors...`, 'Checking error messages in side bar terminal...', 'running', true);
 
-          const terminalOutput = await AP.readTerminalOutput(5500);
+          const terminalOutput = (await AP.readTerminalOutput(5500)) || subRes?.terminalLog || '';
           const remoteAutoCmds = AP.detectPostWriteCommands(
             cachedQuestion?.details || '',
             cachedEditor?.referenceFiles?.['package.json'] || '',
@@ -841,24 +971,87 @@
           ).filter(c => !remediatedCmds.has(c));
           if (remoteAutoCmds.length > 0) {
             remoteAutoCmds.forEach(c => remediatedCmds.add(c));
+            lastExecutedCommands = [...new Set([...lastExecutedCommands, ...remoteAutoCmds])];
             ui.addLog(`🛠️ [Auto-Command Remediation] Executing terminal command detected from grader error: ${remoteAutoCmds.join(' && ')}`, 'warn');
             await sendMsg({ op: 'AP_RUN_TERMINAL_COMMANDS', data: { commands: remoteAutoCmds } }, 48000);
           }
 
-          const errHint = (terminalOutput || '').split('\n').find(l => /AssertionError|TypeError|SyntaxError|ReferenceError|Cannot find|expected/i.test(l)) || `${subRes?.passed || 0}/${subRes?.total || 0} passed`;
+          const errHint = (terminalOutput || '').split('\n').find(l => /AssertionError|TypeError|SyntaxError|ReferenceError|ECONNREFUSED|Cannot find|expected/i.test(l)) || `${subRes?.passed || 0}/${subRes?.total || 0} passed`;
           attemptHistory.push(`Remote Attempt ${attempt} (${subRes?.passed || 0}/${subRes?.total || 0}): ${errHint.trim().slice(0, 120)}`);
+
+          // Persist complete attempt snapshot & update chronological AI-to-AI collaboration transcript
+          try {
+            const filesSubmitted = (cachedGeneratedFiles && cachedGeneratedFiles.length > 0)
+              ? cachedGeneratedFiles
+              : [{ filePath: sanitizeActiveFile(cachedEditor?.activeFile), code: cachedGeneratedCode }];
+            const recResp = await sendMsg({
+              op: 'AP_RECORD_ATTEMPT',
+              data: {
+                questionKey: currentQuestionKey,
+                existingRecords: sessionAttemptRecords,
+                attemptNumber: attempt,
+                stage: 'remote',
+                questionTitle: cachedQuestion?.title || '',
+                originalQuestion: cachedQuestion?.details || '',
+                submittedFiles: filesSubmitted,
+                terminalOutput,
+                subRes,
+                commandsExecuted: [...lastExecutedCommands],
+                whatWentWrong: errHint.trim().slice(0, 260),
+                strategyUsed: attempt === 1 ? 'Initial Question + Terminal Analysis' : `Attempt ${attempt}/5 Fix`
+              }
+            }, 4000);
+            if (recResp?.ok) {
+              sessionAttemptRecords = recResp.records || sessionAttemptRecords;
+              sessionCollaborationHistory = recResp.collaborationHistory || sessionCollaborationHistory;
+              ui.addLog(`📝 [Attempt History] Saved Attempt ${attempt} (${recResp.record?.errorCategory || 'FAILED'}) & built AI collaboration handoff.`, 'normal');
+            }
+          } catch (e) {}
+
           feedback = await AP.buildDebugFeedback(
             terminalOutput,
             subRes,
             String(attempt),
-            { attemptHistory, cachedGeneratedFiles, cachedEditor, filesWrittenViaTerminal, sendMsg, ui }
+            {
+              attemptHistory,
+              collaborationHistory: sessionCollaborationHistory,
+              commandsExecuted: lastExecutedCommands,
+              cachedGeneratedFiles,
+              cachedEditor,
+              filesWrittenViaTerminal,
+              sendMsg,
+              ui
+            }
           );
 
-          ui.addLog(`🔁 [Step 6/6] Repeating steps 4 and 5 with targeted fix on Attempt ${attempt + 1}/${maxAttempts}...`, 'warn');
+          ui.addLog(`🔁 [Step 6/6] Escalating with complete attempt history to Attempt ${attempt + 1}/${maxAttempts}...`, 'warn');
           AP.switchToQuestionTab();
           await sleep(1500);
           continue;
         } else {
+          const finalTerm = (await AP.readTerminalOutput(3000)) || subRes?.terminalLog || '';
+          try {
+            const filesSubmitted = (cachedGeneratedFiles && cachedGeneratedFiles.length > 0)
+              ? cachedGeneratedFiles
+              : [{ filePath: sanitizeActiveFile(cachedEditor?.activeFile), code: cachedGeneratedCode }];
+            await sendMsg({
+              op: 'AP_RECORD_ATTEMPT',
+              data: {
+                questionKey: currentQuestionKey,
+                existingRecords: sessionAttemptRecords,
+                attemptNumber: attempt,
+                stage: 'remote',
+                questionTitle: cachedQuestion?.title || '',
+                originalQuestion: cachedQuestion?.details || '',
+                submittedFiles: filesSubmitted,
+                terminalOutput: finalTerm,
+                subRes,
+                commandsExecuted: [...lastExecutedCommands],
+                whatWentWrong: `${subRes?.passed || 0}/${subRes?.total || 0} passed on Attempt ${attempt}`,
+                strategyUsed: `Attempt ${attempt}/5 Final`
+              }
+            }, 3000);
+          } catch (e) {}
           ui.addLog(`⚠️ Attempt ${attempt} finished: ${subRes?.passed || 0}/${subRes?.total || 0} test cases passed.`, 'warn');
           if (!ui.options.autoRetry) ui.addLog('ℹ️ Auto-retry is disabled. Review error messages above or click Solve to retry.', 'normal');
           ui.setRunning(false);

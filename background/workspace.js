@@ -23,6 +23,7 @@ try{
 }catch(e){}
 try{if(fs.existsSync('.env'))out.files['.env']=fs.readFileSync('.env','utf8').slice(0,1000);}catch(e){}
 try{if(fs.existsSync('nodemon.json'))out.files['nodemon.json']=fs.readFileSync('nodemon.json','utf8').slice(0,600);}catch(e){}
+try{if(fs.existsSync('README.md'))out.files['README.md']=fs.readFileSync('README.md','utf8').slice(0,1200);}catch(e){}
 const testCands=[],keyCands=[];
 function walk(d,depth){
   if(depth>4)return;
@@ -43,11 +44,13 @@ for(const p of testCands.slice(0,4)){try{out.files[p]=fs.readFileSync(p,'utf8').
 for(const p of keyCands.slice(0,8)){try{if(fs.statSync(p).size<12000)out.files[p]=fs.readFileSync(p,'utf8').slice(0,2200);}catch(e){}}
 let gz=zlib.gzipSync(Buffer.from(JSON.stringify(out))).toString('base64');
 if(gz.length>1600){
+  if(out.files['README.md'])out.files['README.md']=out.files['README.md'].slice(0,500);
   for(const p of keyCands){if(out.files[p]&&p!=='prisma/schema.prisma'&&!p.endsWith('schema.prisma'))out.files[p]=out.files[p].slice(0,1100);}
   for(const p of testCands){if(out.files[p])out.files[p]=out.files[p].slice(0,2800);}
   gz=zlib.gzipSync(Buffer.from(JSON.stringify(out))).toString('base64');
 }
 if(gz.length>1600){
+  delete out.files['README.md'];
   for(const p of keyCands){if(out.files[p]&&p!=='prisma/schema.prisma'&&!p.endsWith('schema.prisma'))out.files[p]=out.files[p].slice(0,650);}
   for(const p of testCands){if(out.files[p])out.files[p]=out.files[p].slice(0,2200);}
   gz=zlib.gzipSync(Buffer.from(JSON.stringify(out))).toString('base64');

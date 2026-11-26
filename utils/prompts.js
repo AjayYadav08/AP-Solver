@@ -182,10 +182,39 @@ export function buildPrompt({
   referenceFiles = {},
   language = 'javascript',
   feedback = null,
-  filePlan = null
+  filePlan = null,
+  attemptNumber = 1,
+  terminalPreAnalysis = null,
+  collaborationHistory = ''
 }) {
   const parts = [];
   parts.push(`# PROBLEM: ${questionTitle || 'Coding Challenge'}`);
+
+  const stageDirectives = {
+    1: 'STAGE 1/5 (Initial Analysis & Solution): Thoroughly read every constraint, I/O format, example & terminal workflow requirement BEFORE writing code. Output the cleanest complete solution.',
+    2: 'STAGE 2/5 (Error-Driven Fix): Analyze Attempt 1 exact terminal errors & failure category. Fix the proven root causes without guessing randomly.',
+    3: 'STAGE 3/5 (Multi-AI Collaborator — Full History Synthesis): You have the ENTIRE history of Attempts 1–2 (original question, all prior submitted code, terminal errors & commands). Identify recurring mistakes across attempts and fix them systematically.',
+    4: 'STAGE 4/5 (Deep Edge-Case & Boundary Audit): Scrutinize every subtle edge case, async error path, input/output shape, rounding rule, status code, and post-write execution command across Attempts 1–3.',
+    5: 'STAGE 5/5 (Final High-Reliability Synthesis): Produce the highest-confidence solution integrating all evidence from Attempts 1–4. Double-check every test case requirement.'
+  };
+  parts.push(`## 🧠 PROBLEM-SOLVING STAGE: Attempt ${attemptNumber}/5\n${stageDirectives[Math.min(Math.max(attemptNumber || 1, 1), 5)]}`);
+
+  if (terminalPreAnalysis) {
+    const cmdsText = (terminalPreAnalysis.requiredPostCommands && terminalPreAnalysis.requiredPostCommands.length > 0)
+      ? `YES — Post-write terminal commands detected: ${terminalPreAnalysis.requiredPostCommands.join(' && ')}`
+      : (terminalPreAnalysis.requiresPostWriteCommands
+          ? `MAYBE — ${terminalPreAnalysis.commandReasons?.join('; ') || 'Check build/migration commands cleanly.'}`
+          : 'NO additional compilation/migration command detected beyond clean disk writes.');
+    const termLines = [
+      `- Execution / Pre-Submit Command Requirement: ${cmdsText}`,
+      ...(terminalPreAnalysis.commandReasons || []).map(r => `- Note: ${r}`),
+      ...(terminalPreAnalysis.submissionNotes || []).map(n => `- Submission Workflow: ${n}`),
+      terminalPreAnalysis.hasPriorTerminalErrors
+        ? `- ⚠️ Existing Error Observed in Terminal BEFORE Coding [${terminalPreAnalysis.preErrorCategory}]:\n\`\`\`\n${terminalPreAnalysis.preErrorSummary}\n\`\`\``
+        : '- Initial Terminal State: Clean (no pre-existing build error trace).'
+    ];
+    parts.push(`## 🖥️ PRE-CODING TERMINAL & WORKFLOW ANALYSIS:\n${termLines.join('\n')}`);
+  }
 
   if (activeFile) {
     parts.push(`## Target Active File in Editor: \`${activeFile}\``);
@@ -224,6 +253,14 @@ export function buildPrompt({
   }
 
   const feedbackEmbeddedFiles = new Set();
+  if (collaborationHistory && !String(feedback || '').includes('COMPLETE CHRONOLOGICAL ATTEMPT HISTORY')) {
+    parts.push(
+      `## 🤝 COMPLETE CHRONOLOGICAL ATTEMPT HISTORY (AI-TO-AI COLLABORATION):\n` +
+      `Analyze every prior attempt below alongside the original question above before coding:\n\n` +
+      collaborationHistory
+    );
+  }
+
   if (feedback) {
     for (const m of String(feedback).matchAll(/### File:\s*`([^`]+)`/g)) {
       if (m[1]) feedbackEmbeddedFiles.add(m[1].trim());
@@ -294,6 +331,14 @@ export function buildPrompt({
       ? `## Previous Attempt Solution Code in \`${activeFile}\` (${language}):`
       : `## Current Starter Code in \`${activeFile}\` (${language}):`;
     parts.push(`${codeHeader}\n\`\`\`${language}\n${currentCode}\n\`\`\``);
+  }
+
+  if (collaborationHistory && !String(feedback || '').includes('COMPLETE CHRONOLOGICAL ATTEMPT HISTORY')) {
+    parts.push(
+      `## 🤝 COMPLETE CHRONOLOGICAL ATTEMPT HISTORY (AI-TO-AI COLLABORATION):\n` +
+      `Analyze every prior attempt below alongside the original question above before coding:\n\n` +
+      collaborationHistory
+    );
   }
 
   if (feedback) {
@@ -438,7 +483,7 @@ export function getContextGatedSystemPrompt(userPrompt, isDebug = false) {
   if (hasRootIndex) lines.push('DUAL ENTRYPOINT (index.js + src/index.js): Leave untouched starter root index.js wrapper alone unless broken; put your full application implementation inside src/index.js ONLY without duplicating it at root!');
   if (needsJwt) lines.push('JWT: Follow exact secret (e.g. JWT_SECRET/SECRET), payload fields (e.g. { email } vs { userId }), expiry (1h vs 15m), auth error status codes (401/403), and protected route response specified by THIS problem & tests.');
   if (needsExpressAuth) lines.push('EXPRESS AUTH: Validate inputs strictly (400), check duplicate records via findFirst/findUnique before create, hash password with installed bcrypt/bcryptjs, omit password from JSON response.');
-  if (isDebug || /PREVIOUS ATTEMPT|FAILED/i.test(p)) lines.push('DEBUG: Fix EVERY failing test simultaneously in one complete replacement file without breaking passing routes.');
+  if (isDebug || /PREVIOUS ATTEMPT|FAILED/i.test(p)) lines.push('DEBUG & AI COLLABORATION: Analyze the complete chronological attempt history (submitted code, categorized errors, commands executed & diffs). Never repeat a previously failed approach; produce an evidence-based fix resolving EVERY failing test simultaneously.');
   return lines.join('\n');
 }
 
@@ -519,11 +564,15 @@ export function buildCompactGroqMessages(systemPrompt, userPrompt, desiredMaxTok
 
       if (debugPart.length > debugBudget) {
         const codeMarkerIdx = debugPart.indexOf('=== CURRENT CODE OF ALL WORKSPACE FILES');
+        const collabMarkerIdx = debugPart.indexOf('COMPLETE CHRONOLOGICAL ATTEMPT HISTORY');
         if (codeMarkerIdx > 0) {
-          const topFailures = debugPart.slice(0, Math.min(codeMarkerIdx, Math.floor(debugBudget * 0.48)));
+          const histLimit = Math.floor(debugBudget * 0.56);
+          const topFailures = debugPart.slice(0, Math.min(codeMarkerIdx, histLimit));
           const codeBottom = debugPart.slice(codeMarkerIdx);
           const remForCode = debugBudget - topFailures.length - 12;
           debugPart = topFailures + '\n...\n' + codeBottom.slice(0, Math.max(800, remForCode));
+        } else if (collabMarkerIdx > 0) {
+          debugPart = debugPart.slice(0, debugBudget);
         } else {
           debugPart = debugPart.slice(0, debugBudget);
         }

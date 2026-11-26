@@ -165,10 +165,27 @@
     return analysisItems;
   }
 
-  // Shared helper: Builds comprehensive debugging prompt from terminal traces, test failures, and current solution files
+  function classifyErrorCategory(terminalOutput = '', subRes = null) {
+    const txt = `${terminalOutput || ''} ${(subRes?.failedTests || []).join(' ')} ${(subRes?.tests || []).map(t => t.error || '').join(' ')}`;
+    if (subRes?.ok === true) return { category: 'PASSED', label: 'Passed' };
+    if (/SyntaxError|Unexpected token|Cannot use import statement outside a module|TS\d{4}:|error TS|Compilation failed|Build failed|ParseError/i.test(txt)) {
+      return { category: 'COMPILATION_ERROR', label: 'Compilation / Syntax / Module Error' };
+    }
+    if (/Cannot find module|MODULE_NOT_FOUND|TypeError:|ReferenceError:|RangeError:|PrismaClient\w*Error|UnhandledPromiseRejection|Uncaught\b|did not initialize/i.test(txt)) {
+      return { category: 'RUNTIME_ERROR', label: 'Runtime / Dependency / Exception Error' };
+    }
+    if (/ECONNREFUSED|EADDRINUSE|ETIMEDOUT|timeout of \d+ms exceeded|Async callback was not invoked|Command failed|No test files found|non-zero exit code|Submission Blocked/i.test(txt)) {
+      return { category: 'SUBMISSION_FAILURE', label: 'Submission / Startup / Harness Failure' };
+    }
+    return { category: 'INCORRECT_OUTPUT', label: 'Incorrect Output / Assertion Mismatch' };
+  }
+
+  // Shared helper: Builds comprehensive debugging prompt from terminal traces, categorized failures, full attempt history & current files
   async function buildDebugFeedback(terminalOutput, subRes, attemptLabel = '1', ctx = {}) {
     const {
       attemptHistory = [],
+      collaborationHistory = '',
+      commandsExecuted = [],
       cachedGeneratedFiles = [],
       cachedEditor = null,
       filesWrittenViaTerminal = false,
@@ -177,12 +194,21 @@
     } = ctx;
 
     const timeStr = subRes?.timestamp || new Date().toLocaleTimeString();
+    const errCls = classifyErrorCategory(terminalOutput, subRes);
     const failureItems = parseAndStructureFailures(terminalOutput, subRes);
+    ui?.addLog(`🔬 [Error Classification] Category: ${errCls.label}`, 'warn');
 
     const feedbackBlocks = [];
-    feedbackBlocks.push(`=== PREVIOUS ATTEMPT ${attemptLabel} FAILED (${subRes?.passed || 0}/${subRes?.total || 0} PASSED AT ${timeStr}) ===`);
+    feedbackBlocks.push(`=== PREVIOUS ATTEMPT ${attemptLabel} FAILED [${errCls.category}] (${subRes?.passed || 0}/${subRes?.total || 0} PASSED AT ${timeStr}) ===`);
+    feedbackBlocks.push(`FAILURE CATEGORY: ${errCls.label}\nEXECUTED POST-WRITE COMMANDS: ${commandsExecuted.length > 0 ? commandsExecuted.join(' && ') : 'None executed'}`);
 
-    if (attemptHistory.length > 0) {
+    if (collaborationHistory && collaborationHistory.trim().length > 0) {
+      feedbackBlocks.push(
+        `🤝 COMPLETE CHRONOLOGICAL ATTEMPT HISTORY (AI-TO-AI COLLABORATION — DO NOT REPEAT FAILED APPROACHES):\n` +
+        `Review EVERY prior attempt below (original code submitted, errors encountered, commands run, and what changed) before making an evidence-based fix:\n\n` +
+        collaborationHistory
+      );
+    } else if (attemptHistory.length > 0) {
       feedbackBlocks.push(
         `⚠️ PREVIOUS ATTEMPTS HISTORY (DO NOT REPEAT FAILED APPROACHES):\n` +
         attemptHistory.slice(-5).map(h => `- ${h}`).join('\n')
@@ -294,5 +320,5 @@
     return feedbackBlocks.join('\n\n');
   }
 
-  Object.assign(AP, { diagnoseErrorMessage, parseAndStructureFailures, buildDebugFeedback });
+  Object.assign(AP, { diagnoseErrorMessage, classifyErrorCategory, parseAndStructureFailures, buildDebugFeedback });
 })();

@@ -14,7 +14,13 @@ import {
   sanitizePostWriteCommand,
   buildBase64TerminalScript,
   analyzeFileModificationPlan,
-  enforceFilePlan
+  enforceFilePlan,
+  classifyFailureCategory,
+  analyzePreCodingTerminal,
+  summarizeCodeChanges,
+  buildAttemptRecord,
+  formatFullCollaborationHistory,
+  buildQuestionStorageKey
 } from '../utils/llm.js';
 
 export async function runUtilsTests() {
@@ -25,6 +31,7 @@ export async function runUtilsTests() {
     'utils/code-format.js',
     'utils/commands.js',
     'utils/file-planner.js',
+    'utils/attempt-history.js',
     'utils/prompts.js',
     'utils/providers.js'
   ]);
@@ -235,7 +242,88 @@ export async function runUtilsTests() {
     'enforceFilePlan failed deterministic remap to canonical paths: ' + JSON.stringify(remapTest.files.map(f => f.filePath))
   );
 
-  console.log('   ✓ Multi-file parser, locked file analyzer, enforcement gate & Prisma routing verified');
+  // Error-driven 5-attempt history, pre-coding terminal analysis & AI-to-AI collaboration tests
+  assert(
+    classifyFailureCategory('SyntaxError: Unexpected token }').category === 'COMPILATION_ERROR' &&
+    classifyFailureCategory('TypeError: Cannot read properties of undefined').category === 'RUNTIME_ERROR' &&
+    classifyFailureCategory('Error: connect ECONNREFUSED 127.0.0.1:3000').category === 'SUBMISSION_FAILURE' &&
+    classifyFailureCategory('AssertionError: expected 18.7 to equal 18.75').category === 'INCORRECT_OUTPUT',
+    'Failure category classifier mismatch'
+  );
+
+  const preTerm = analyzePreCodingTerminal({
+    sideTerminalText: 'TypeError: Cannot find module "./controllers/ride.controller"',
+    questionDetails: 'After writing code run `npx prisma generate`.',
+    packageJsonStr: JSON.stringify({ scripts: { build: 'tsc', test: 'mocha' }, dependencies: { '@prisma/client': '^5.0.0' } }),
+    detectedPostCommands: ['npm run build']
+  });
+  assert(
+    preTerm.requiresPostWriteCommands === true &&
+    preTerm.requiredPostCommands.includes('npm run build') &&
+    preTerm.requiredPostCommands.includes('npx prisma generate') &&
+    preTerm.hasPriorTerminalErrors === true &&
+    preTerm.preErrorCategory === 'RUNTIME_ERROR',
+    'Pre-coding terminal analyzer failed: ' + JSON.stringify(preTerm)
+  );
+
+  const cleanPreTerm = analyzePreCodingTerminal({
+    sideTerminalText: '',
+    questionDetails: 'Implement GET /health',
+    packageJsonStr: JSON.stringify({ scripts: { test: 'mocha' }, dependencies: { express: '^4.18.0' } })
+  });
+  assert(cleanPreTerm.requiresPostWriteCommands === false && cleanPreTerm.hasPriorTerminalErrors === false, 'Clean pre-terminal check failed');
+
+  const rec1 = buildAttemptRecord({
+    attemptNumber: 1,
+    stage: 'remote',
+    questionTitle: 'Surge Engine',
+    submittedFiles: [{ filePath: 'src/services/ride.service.js', code: 'const fare = 18.7;' }],
+    terminalOutput: 'AssertionError: expected 18.7 to equal 18.75',
+    subRes: { passed: 2, total: 5, failedTests: ['should round surge fare to 2 decimals'] },
+    commandsExecuted: ['npm run build'],
+    whatWentWrong: 'Rounded to 1 decimal place',
+    strategyUsed: 'Initial Analysis'
+  });
+  const rec2 = buildAttemptRecord({
+    attemptNumber: 2,
+    stage: 'remote',
+    questionTitle: 'Surge Engine',
+    submittedFiles: [{ filePath: 'src/services/ride.service.js', code: 'const fare = Number((12.5 * 1.5).toFixed(2));' }],
+    terminalOutput: 'Error: connect ECONNREFUSED 127.0.0.1:3000',
+    subRes: { passed: 0, total: 5, failedTests: ['should return 200'] },
+    commandsExecuted: ['npm run build', 'node src/seed.js'],
+    whatWentWrong: 'Server failed to listen on port 3000',
+    strategyUsed: 'Attempt 2 Fix'
+  });
+  rec1.whatChangedNext = summarizeCodeChanges(rec1.submittedFiles, rec2.submittedFiles);
+  const collabText = formatFullCollaborationHistory([rec1, rec2]);
+  assert(
+    collabText.includes('ATTEMPT 1') &&
+    collabText.includes('ATTEMPT 2') &&
+    collabText.includes('const fare = 18.7;') &&
+    collabText.includes('Modified src/services/ride.service.js') &&
+    collabText.includes('node src/seed.js') &&
+    buildQuestionStorageKey('https://my.newtonschool.co/playground/code/abc123', 'Surge Engine').startsWith('ap_attempt_history_v1:'),
+    'AI-to-AI collaboration history or storage key check failed'
+  );
+
+  const stage3Prompt = buildPrompt({
+    questionTitle: 'Surge Engine',
+    questionDetails: 'Implement surge multiplier',
+    attemptNumber: 3,
+    terminalPreAnalysis: preTerm,
+    collaborationHistory: collabText,
+    feedback: 'Previous attempt failed'
+  });
+  assert(
+    stage3Prompt.includes('PROBLEM-SOLVING STAGE: Attempt 3/5') &&
+    stage3Prompt.includes('Multi-AI Collaborator') &&
+    stage3Prompt.includes('PRE-CODING TERMINAL & WORKFLOW ANALYSIS') &&
+    stage3Prompt.includes('COMPLETE CHRONOLOGICAL ATTEMPT HISTORY'),
+    'Stage 3 collaborative prompt missing required sections'
+  );
+
+  console.log('   ✓ Multi-file parser, locked file analyzer, pre-coding terminal, 5-attempt history & Prisma routing verified');
 
   // 5. Post-write commands, auto-remediation & script builder
   const multiWithCmds = `\`\`\`javascript\n// src/index.js\nconst app = require('express')();\nmodule.exports = app;\n\`\`\`\n\`\`\`bash\n// __commands__\nnpx prisma generate\nnpm run build\nrm -rf /\nnpm start\n\`\`\``;

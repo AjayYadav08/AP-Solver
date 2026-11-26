@@ -77,7 +77,9 @@ export async function runContentTests() {
     contentSrc.includes('[Step 5/6]') &&
     contentSrc.includes('[Step 6/6]') &&
     contentSrc.includes('let maxAttempts = ui.options.autoRetry ? 5 : 1') &&
-    contentSrc.includes('for (let attempt = 1; attempt <= maxAttempts; attempt++) {\n        filesWrittenViaTerminal = false;') &&
+    contentSrc.includes('for (let attempt = 1; attempt <= maxAttempts; attempt++)') &&
+    contentSrc.includes('currentAttemptNum = attempt;') &&
+    contentSrc.includes('filesWrittenViaTerminal = false;') &&
     contentSrc.includes('maxLocalTries') &&
     contentSrc.includes('async function verifyCodeCompleteness') &&
     contentSrc.includes('Submission BLOCKED: Do not click submit until each required file\'s code is updated!') &&
@@ -141,9 +143,15 @@ export async function runContentTests() {
     contentSrc.includes('initialWorkspaceFiles') &&
     contentSrc.includes('staleTempFilesToRemove') &&
     contentSrc.includes('lockedFilePlan') &&
+    contentSrc.includes('terminalPreAnalysis') &&
+    contentSrc.includes('sessionAttemptRecords') &&
     contentSrc.includes('AP_BUILD_FILE_PLAN') &&
-    contentSrc.includes('AP_ENFORCE_FILE_PLAN'),
-    'content/content.js static asset verification, locked file planner, or canonical supersession check missing'
+    contentSrc.includes('AP_ENFORCE_FILE_PLAN') &&
+    contentSrc.includes('AP_ANALYZE_TERMINAL') &&
+    contentSrc.includes('AP_RECORD_ATTEMPT') &&
+    parserSrc.includes('classifyErrorCategory') &&
+    parserSrc.includes('COMPLETE CHRONOLOGICAL ATTEMPT HISTORY'),
+    'content/content.js or error-parser.js missing 5-attempt history, terminal pre-analysis, or error classification'
   );
   const econnTrace = [
     '  1) Company Website Routes',

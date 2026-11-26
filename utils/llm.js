@@ -29,6 +29,17 @@ export {
 } from './file-planner.js';
 
 export {
+  buildQuestionStorageKey,
+  classifyFailureCategory,
+  analyzePreCodingTerminal,
+  summarizeCodeChanges,
+  buildAttemptRecord,
+  formatFullCollaborationHistory,
+  loadQuestionAttemptHistory,
+  saveQuestionAttemptHistory
+} from './attempt-history.js';
+
+export {
   DEFAULT_SETTINGS,
   getSettings,
   saveSettings,

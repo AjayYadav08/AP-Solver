@@ -1,10 +1,24 @@
 // background.js - AP-Solver MV3 Service Worker Entry & Message Router
-import { generateSolution, getSettings, saveSettings, buildBase64TerminalScript, analyzeFileModificationPlan, enforceFilePlan } from './utils/llm.js';
+import {
+  generateSolution,
+  getSettings,
+  saveSettings,
+  buildBase64TerminalScript,
+  analyzeFileModificationPlan,
+  enforceFilePlan,
+  buildQuestionStorageKey,
+  analyzePreCodingTerminal,
+  summarizeCodeChanges,
+  buildAttemptRecord,
+  formatFullCollaborationHistory,
+  loadQuestionAttemptHistory,
+  saveQuestionAttemptHistory
+} from './utils/llm.js';
 import { queryEditorInTab, writeEditorInTab } from './background/editor.js';
-import { writeFilesViaTerminal } from './background/terminal.js';
+import { writeFilesViaTerminal, readIntegratedTerminalText } from './background/terminal.js';
 import { probeWorkspaceViaTerminal, runLocalTestsViaTerminal, runTerminalCommandsViaTerminal } from './background/workspace.js';
 
-export { buildBase64TerminalScript, analyzeFileModificationPlan, enforceFilePlan };
+export { buildBase64TerminalScript, analyzeFileModificationPlan, enforceFilePlan, analyzePreCodingTerminal };
 
 console.log('[AP-Solver] Background service worker initialized.');
 
@@ -38,6 +52,50 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } else if (op === 'AP_ENFORCE_FILE_PLAN') {
         const verified = enforceFilePlan(data?.files || [], data?.filePlan || null);
         sendResponse({ ok: true, ...verified });
+      } else if (op === 'AP_ANALYZE_TERMINAL') {
+        const analysis = analyzePreCodingTerminal(data || {});
+        sendResponse({ ok: true, analysis });
+      } else if (op === 'AP_READ_INTEGRATED_TERMINAL') {
+        const tabId = sender.tab?.id;
+        if (!tabId) return sendResponse({ ok: false, error: 'No tab ID found in sender.' });
+        const text = await readIntegratedTerminalText(tabId);
+        sendResponse({ ok: true, text: text || '' });
+      } else if (op === 'AP_LOAD_ATTEMPT_HISTORY') {
+        const key = buildQuestionStorageKey(data?.url || sender.tab?.url || '', data?.questionTitle || '');
+        const history = await loadQuestionAttemptHistory(key);
+        const priorCollab = (history && !history.solved && Array.isArray(history.attempts) && history.attempts.length > 0)
+          ? formatFullCollaborationHistory(history.attempts, { maxTotalChars: 6000 })
+          : '';
+        sendResponse({ ok: true, questionKey: key, history, priorCollab });
+      } else if (op === 'AP_RECORD_ATTEMPT') {
+        const { questionKey, existingRecords = [], ...recArgs } = data || {};
+        const key = questionKey || buildQuestionStorageKey(sender.tab?.url || '', recArgs.questionTitle || '');
+        const records = [...(Array.isArray(existingRecords) ? existingRecords : [])];
+        if (records.length > 0 && recArgs.submittedFiles) {
+          const prev = records[records.length - 1];
+          records[records.length - 1] = {
+            ...prev,
+            whatChangedNext: summarizeCodeChanges(prev.submittedFiles, recArgs.submittedFiles)
+          };
+        }
+        const rec = buildAttemptRecord(recArgs);
+        records.push(rec);
+        await saveQuestionAttemptHistory(key, {
+          questionTitle: recArgs.questionTitle,
+          originalQuestion: recArgs.originalQuestion,
+          solved: rec.errorCategory === 'PASSED',
+          attempts: records
+        });
+        sendResponse({
+          ok: true,
+          questionKey: key,
+          record: rec,
+          records,
+          collaborationHistory: formatFullCollaborationHistory(records, { maxTotalChars: 14000 })
+        });
+      } else if (op === 'AP_SAVE_ATTEMPT_HISTORY') {
+        const ok = await saveQuestionAttemptHistory(data?.questionKey, data?.payload);
+        sendResponse({ ok });
       } else if (op === 'AP_QUERY_EDITOR') {
         const tabId = sender.tab?.id;
         if (!tabId) return sendResponse({ ok: false, error: 'No tab ID found in sender.' });

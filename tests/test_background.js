@@ -35,6 +35,7 @@ export async function runBackgroundTests() {
     'utils/code-format.js',
     'utils/commands.js',
     'utils/file-planner.js',
+    'utils/attempt-history.js',
     'utils/prompts.js',
     'utils/providers.js',
     'content/shared.js',
@@ -145,6 +146,7 @@ export async function runBackgroundTests() {
     wsSrc.includes("const S='===AP'+'_CTX_START==='") &&
     wsSrc.includes('main:p.main') &&
     wsSrc.includes('nodemon.json') &&
+    wsSrc.includes('README.md') &&
     wsSrc.includes('needsMissingTestDir') &&
     wsSrc.includes('probeWorkspaceViaTerminal') &&
     wsSrc.includes('runLocalTestsViaTerminal') &&
@@ -155,7 +157,7 @@ export async function runBackgroundTests() {
   );
 
   // 8. Message router operations
-  for (const op of ['AP_KEEPALIVE', 'AP_GENERATE', 'AP_BUILD_FILE_PLAN', 'AP_ENFORCE_FILE_PLAN', 'AP_QUERY_EDITOR', 'AP_PROBE_WORKSPACE', 'AP_RUN_LOCAL_TESTS', 'AP_RUN_TERMINAL_COMMANDS', 'AP_WRITE_TERMINAL', 'AP_CLEAN_EDITOR_ARTIFACTS']) {
+  for (const op of ['AP_KEEPALIVE', 'AP_GENERATE', 'AP_BUILD_FILE_PLAN', 'AP_ENFORCE_FILE_PLAN', 'AP_ANALYZE_TERMINAL', 'AP_READ_INTEGRATED_TERMINAL', 'AP_LOAD_ATTEMPT_HISTORY', 'AP_RECORD_ATTEMPT', 'AP_SAVE_ATTEMPT_HISTORY', 'AP_QUERY_EDITOR', 'AP_PROBE_WORKSPACE', 'AP_RUN_LOCAL_TESTS', 'AP_RUN_TERMINAL_COMMANDS', 'AP_WRITE_TERMINAL', 'AP_CLEAN_EDITOR_ARTIFACTS']) {
     assert(routerSrc.includes(op), `background.js router missing op: ${op}`);
   }
   assert(allBgSrc.includes('monaco.model.setValue') && allBgSrc.includes('dom.insertTextAndPaste'), 'Missing fallback editor strategies');
