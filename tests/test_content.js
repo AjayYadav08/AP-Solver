@@ -135,5 +135,24 @@ export async function runContentTests() {
   const recovered = runParser(buildOnlyLog, subResPending0of13);
   assert(recovered.length >= 3 && recovered.some(item => item.title.includes('HTTP-only session cookie')), '0/13 PENDING failure recovery failed');
 
-  console.log('   ✓ Content scrapers, UI delegation, Mocha/ANSI & 0/13 PENDING recovery verified');
+  assert(
+    contentSrc.includes('[Step 1/6]') &&
+    contentSrc.includes('minVerifyLen = isStaticAsset ? 5 : 12'),
+    'content/content.js static asset verification check missing'
+  );
+  const econnTrace = [
+    '  1) Company Website Routes',
+    '       should serve Services Page for "/" route:',
+    '     Error: connect ECONNREFUSED 127.0.0.1:3000',
+    '      at TCPConnectWrap.afterConnect (node:net:1611:16)'
+  ].join('\n');
+  const parsedEconn = runParser(econnTrace, null);
+  assert(
+    parsedEconn.length >= 1 &&
+    parsedEconn[0].diagnosis.includes('ECONNREFUSED') &&
+    parsedEconn[0].diagnosis.includes('3000'),
+    'ECONNREFUSED diagnosis missing port guidance'
+  );
+
+  console.log('   ✓ Content scrapers, UI delegation, Mocha/ANSI/ECONNREFUSED & 0/13 PENDING recovery verified');
 }

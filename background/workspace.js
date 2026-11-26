@@ -16,12 +16,13 @@ let pkgRaw='';
 try{
   if(fs.existsSync('package.json')){
     const raw=fs.readFileSync('package.json','utf8');
-    try{const p=JSON.parse(raw);pkgRaw=JSON.stringify({name:p.name,type:p.type,scripts:p.scripts,dependencies:p.dependencies,devDependencies:p.devDependencies},null,2);}
+    try{const p=JSON.parse(raw);pkgRaw=JSON.stringify({name:p.name,main:p.main,type:p.type,scripts:p.scripts,dependencies:p.dependencies,devDependencies:p.devDependencies},null,2);}
     catch(e){pkgRaw=raw.slice(0,2500);}
     out.files['package.json']=pkgRaw;
   }
 }catch(e){}
 try{if(fs.existsSync('.env'))out.files['.env']=fs.readFileSync('.env','utf8').slice(0,1000);}catch(e){}
+try{if(fs.existsSync('nodemon.json'))out.files['nodemon.json']=fs.readFileSync('nodemon.json','utf8').slice(0,600);}catch(e){}
 const testCands=[],keyCands=[];
 function walk(d,depth){
   if(depth>3)return;
@@ -33,7 +34,7 @@ function walk(d,depth){
     else{
       out.allFiles.push(p);
       if(/(?:^|\\/)(?:test|tests|__tests__)\\/|\\.(?:test|spec)\\.(?:js|ts|mjs|cjs)$/i.test(p))testCands.push(p);
-      else if(/\\.prisma$|^db\\/.*\\.js$|^src\\/.*\\.js$/i.test(p))keyCands.push(p);
+      else if(/\\.prisma$|^db\\/.*\\.js$|^src\\/.*\\.js$|^(?:index|app|server)\\.(?:js|ts|mjs|cjs)$|\\.html?$/i.test(p))keyCands.push(p);
     }
   }
 }
@@ -91,10 +92,11 @@ for(const f of syntaxCandidates){
 let pkgRaw='';let pkg={};try{pkgRaw=fs.readFileSync('package.json','utf8');pkg=JSON.parse(pkgRaw);}catch(e){}
 const script=(pkg.scripts&&pkg.scripts.test)||'';
 const hasScript=Boolean(script&&!/no test specified/i.test(script));
-const dirs=['test','tests','__tests__','src/__tests__','src/test'].filter(d=>fs.existsSync(d));
+const dirs=['test','tests','__tests__','src/__tests__','src/test'].filter(d=>fs.existsSync(d)&&fs.readdirSync(d).some(f=>/\\.(?:js|ts|mjs|cjs)$/i.test(f)));
 const rootTests=fs.readdirSync('.').filter(f=>/\\.(test|spec)\\.(js|ts|mjs|cjs)$/i.test(f));
-if(!hasScript&&dirs.length===0&&rootTests.length===0){
-  const entry=syntaxCandidates.find(f=>/index\\.js$/i.test(f))||syntaxCandidates[0];
+const needsMissingTestDir=/__tests__|tests?\\//i.test(script)&&dirs.length===0&&rootTests.length===0;
+if((!hasScript||needsMissingTestDir)&&dirs.length===0&&rootTests.length===0){
+  const entry=syntaxCandidates.find(f=>/^(?:src\\/)?index\\.js$/i.test(f))||syntaxCandidates[0];
   if(entry&&pkg.type!=='module'){
     const probeCode='process.on("uncaughtException",e=>{if(e&&e.code==="EADDRINUSE")process.exit(0);console.error(e);process.exit(1);});setTimeout(()=>process.exit(0),250);require("./"+'+JSON.stringify(entry)+');';
     const smk=spawnSync('node',['-e',probeCode],{encoding:'utf8',timeout:2500,env:{...process.env,NODE_ENV:'test',PORT:'0'}});

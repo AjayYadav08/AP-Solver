@@ -20,6 +20,11 @@
     if (/EADDRINUSE|address already in use/i.test(combined)) {
       return `Port Conflict (EADDRINUSE): Guard server startup with 'if (process.env.NODE_ENV !== "test") { app.listen(...); }' and ensure 'module.exports = app;' is exported cleanly.`;
     }
+    const connRefM = combined.match(/ECONNREFUSED\s+(?:[\d.]+|localhost|\[::1\]):(\d+)/i);
+    if (connRefM || /ECONNREFUSED/i.test(combined)) {
+      const portHint = connRefM?.[1] || '3000';
+      return `Connection Refused on port ${portHint} (ECONNREFUSED): No HTTP server was listening on port ${portHint} when tests ran! Use \`process.env.PORT || ${portHint}\` (check .env — NEVER hardcode a different port like 8080 if tests connect to ${portHint}), do NOT skip \`.listen()\` behind NODE_ENV guards if external HTTP tests connect directly, and verify both root entrypoint & src/index.js start cleanly.`;
+    }
     if (/expected\s+(\d+)\s+to equal\s+(\d+)/i.test(combined) || /-(\d+)\s*\+(\d+)/.test(combined)) {
       const m = combined.match(/expected\s+(\d+)\s+to equal\s+(\d+)/i) || combined.match(/-(\d+)\s*\+(\d+)/);
       if (m) {

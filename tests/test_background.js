@@ -142,12 +142,15 @@ export async function runBackgroundTests() {
   // 7. Workspace probe, local tests & setup command runner
   assert(
     wsSrc.includes("const S='===AP'+'_CTX_START==='") &&
+    wsSrc.includes('main:p.main') &&
+    wsSrc.includes('nodemon.json') &&
+    wsSrc.includes('needsMissingTestDir') &&
     wsSrc.includes('probeWorkspaceViaTerminal') &&
     wsSrc.includes('runLocalTestsViaTerminal') &&
     wsSrc.includes('runTerminalCommandsViaTerminal') &&
     wsSrc.includes('no_local_tests') &&
     !stripComments(wsSrc).includes('document.execCommand'),
-    'background/workspace.js missing workspace probe, local pre-tests, or command runner'
+    'background/workspace.js missing workspace probe, root entrypoint scan, missing-test-dir check, or command runner'
   );
 
   // 8. Message router operations

@@ -1,8 +1,14 @@
 // utils/code-format.js - Code cleanup, 2-space indentation, comment stripping, and multi-file solution parser
 
+const NON_COMMENT_STRIP_EXT_RE = /\.(?:html?|txt|md|json|env|svg|xml|yml|yaml)$/i;
+const JS_LIKE_INDENT_EXT_RE = /\.(?:js|ts|jsx|tsx|mjs|cjs|json|css|prisma)$/i;
+
 /** Strip all single-line and multi-line comments from generated JS/TS/Prisma code while preserving strings. */
-export function stripComments(code) {
+export function stripComments(code, filePath = '') {
   if (!code) return '';
+  if (filePath && NON_COMMENT_STRIP_EXT_RE.test(filePath)) {
+    return code.trim();
+  }
   let clean = code.replace(/\/\*[\s\S]*?\*\//g, '');
   const lines = clean.split('\n');
   const result = [];
@@ -79,12 +85,12 @@ export function formatCodeIndentation(code) {
   return result.join('\n');
 }
 
-/** Remove generic "File 1" or filename header comment lines from top of code blocks. */
+/** Remove generic "File 1" or filename header comment lines from top of code blocks (supports //, /*, #, <!-- -->). */
 export function stripFileCommentHeaders(code) {
   if (!code) return '';
   return code
-    .replace(/^\s*(?:\/\/|\/\*|#+)\s*file\s*\d+[^\n]*(?:\*\/)?\s*\n?/gim, '')
-    .replace(/^\s*(?:\/\/|\/\*|#+)\s*(?:(?:\d+|step\s*\d+)[\.:\-\)]\s*)?(?:src\/)?[a-zA-Z0-9_\-]+\.(?:js|ts|json|txt|prisma|sql|env|graphql)[^\n]*(?:\*\/)?\s*\n?/gi, '')
+    .replace(/^\s*(?:\/\/|\/\*|#+|<!--)\s*file\s*\d+[^\n]*(?:\*\/|-->)?\s*\n?/gim, '')
+    .replace(/^\s*(?:\/\/|\/\*|#+|<!--)\s*(?:file:?\s*|---\s*)?(?:(?:\d+|step\s*\d+)[\.:\-\)]\s*)?(?:[a-zA-Z0-9_.\-]+\/)*[a-zA-Z0-9_\-]+\.(?:js|ts|mjs|cjs|json|txt|prisma|sql|env|graphql|html?|css)[^\n]*(?:\*\/|-->)?\s*\n?/gi, '')
     .trim();
 }
 
@@ -122,6 +128,15 @@ function normalizeRelPath(raw) {
     .replace(/\/{2,}/g, '/');
 }
 
+function formatByFileType(rawCode, filePath) {
+  const cleanHeaders = stripFileCommentHeaders(rawCode);
+  if (filePath && NON_COMMENT_STRIP_EXT_RE.test(filePath)) {
+    return cleanHeaders.trim();
+  }
+  const stripped = stripComments(cleanHeaders, filePath);
+  return (filePath && !JS_LIKE_INDENT_EXT_RE.test(filePath)) ? stripped.trim() : formatCodeIndentation(stripped);
+}
+
 /** Resolve parsed filename/subpath against known workspace paths so nested folders (e.g. src/middleware/validate.js) are never flattened. */
 function resolveWorkspaceFilePath(rawFn, workspaceFiles = []) {
   const fn = normalizeRelPath(rawFn);
@@ -149,10 +164,14 @@ function resolveWorkspaceFilePath(rawFn, workspaceFiles = []) {
     return suffixMatches[0];
   }
 
-  if (fn.startsWith('src/') || /^(?:prisma|db|test|tests|__tests__|public|config|scripts)\//i.test(fn)) {
+  if (fn.startsWith('src/') || /^(?:prisma|db|test|tests|__tests__|public|project|views|static|assets|config|scripts)\//i.test(fn)) {
     return fn;
   }
   if (fn === 'package.json' || fn.startsWith('.')) return fn;
+  if (/\.(?:html?|css|svg|txt|md)$/i.test(fn)) {
+    // Keep explicitly named static assets at their given relative path (alignStaticPaths adjusts against JS code references later)
+    return fn;
+  }
   if (fn.includes('/')) {
     const hasSrcLayout = wsClean.length === 0 || wsClean.some(w => w.startsWith('src/'));
     const subRoot = fn.split('/')[0].toLowerCase();
@@ -162,6 +181,33 @@ function resolveWorkspaceFilePath(rawFn, workspaceFiles = []) {
     return fn;
   }
   return 'src/' + fn;
+}
+
+/** Align bare static filenames (e.g. services.html) with folder paths referenced in generated JS server code. */
+function alignStaticFilePaths(files) {
+  if (!Array.isArray(files) || files.length < 2) return files;
+  const jsBlocks = files.filter(f => /\.(?:js|ts|mjs|cjs)$/i.test(f.filePath || ''));
+  const combinedJs = jsBlocks.map(f => f.code || '').join('\n');
+  if (!combinedJs) return files;
+
+  const hasSrcServer = jsBlocks.some(f => /^src\/index\.(?:js|ts)$/i.test(f.filePath) || /^src\//i.test(f.filePath));
+  return files.map(f => {
+    const fp = f.filePath || '';
+    if (!/\.(?:html?|css|txt|json)$/i.test(fp) || fp.includes('/')) return f;
+    const escaped = fp.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // 1. Explicit subpath string inside code like 'project/services.html' or path.join(..., 'project', 'services.html')
+    const explicitSubM = combinedJs.match(new RegExp(`['"\`](?:\\.\\/)?([a-zA-Z0-9_.-]+\\/${escaped})['"\`]`, 'i'))
+      || combinedJs.match(new RegExp(`['"\`]([a-zA-Z0-9_.-]+)['"\`]\\s*,\\s*['"\`]${escaped}['"\`]`, 'i'));
+    if (explicitSubM) {
+      const folder = explicitSubM[1].includes('/') ? explicitSubM[1] : `${explicitSubM[1]}/${fp}`;
+      return { ...f, filePath: folder.startsWith('../') ? folder.replace(/^\.\.\//, '') : folder };
+    }
+    // 2. If server runs in src/index.js and uses __dirname without '..', resolve inside src/
+    if (hasSrcServer && new RegExp(`__dirname\\s*[,+]\\s*['"\`]/??(?:\\.\\/)?${escaped}['"\`]`, 'i').test(combinedJs)) {
+      return { ...f, filePath: 'src/' + fp };
+    }
+    return f;
+  });
 }
 
 /** Parse one or more code files from LLM output using explicit headers, content routing, and workspace hints. */
@@ -180,8 +226,8 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
     fn = normalizeRelPath(fn);
     if (/__commands__|run_commands/i.test(fn)) return false;
     const base = fn.split('/').pop();
-    if (/^(1|2|3|4|5|one|two|file1|file2|file_1|file_2)(\.(js|ts|prisma|sql))?$/i.test(base)) return false;
-    return /\.(js|ts|mjs|cjs|json|txt|prisma|sql|env|graphql|html|css)$/i.test(base);
+    if (/^(1|2|3|4|5|one|two|file1|file2|file_1|file_2)(\.(js|ts|prisma|sql|html?))?$/i.test(base)) return false;
+    return /\.(js|ts|mjs|cjs|json|txt|prisma|sql|env|graphql|html?|css)$/i.test(base);
   };
 
   const resolveTargetFile = (fn, codeSnippet, idx) => {
@@ -221,11 +267,13 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
     return resolveWorkspaceFilePath(defaultActiveFile, workspaceFiles);
   };
 
-  const relPathGroup = '((?:[a-zA-Z0-9_.\\-]+\\/)*[a-zA-Z0-9_.\\-]+\\.(?:js|ts|mjs|cjs|json|txt|prisma|sql|env|graphql))';
-  const fileHeaderPattern = new RegExp(`^(?:\\/\\/\\s*|\\/\\*\\s*|#+\\s*)?(?:file:?\\s*|---\\s*)?(?:(?:\\d+|step\\s*\\d+|file\\s*\\d+)[\\.:\\-\\)]\\s*)?${relPathGroup}(?:\\s*---|\\s*\\*\\/)?\\s*(?:\\n|$)`, 'i');
+  const relPathGroup = '((?:[a-zA-Z0-9_.\\-]+\\/)*[a-zA-Z0-9_.\\-]+\\.(?:js|ts|mjs|cjs|json|txt|prisma|sql|env|graphql|html?|css))';
+  const cmtPrefix = '(?:\\/\\/\\s*|\\/\\*\\s*|#+\\s*|<!--\\s*)';
+  const cmtSuffix = '(?:\\s*---|\\s*\\*\\/|\\s*-->)?';
+  const fileHeaderPattern = new RegExp(`^${cmtPrefix}?(?:file:?\\s*|---\\s*)?(?:(?:\\d+|step\\s*\\d+|file\\s*\\d+)[\\.:\\-\\)]\\s*)?${relPathGroup}${cmtSuffix}\\s*(?:\\n|$)`, 'i');
   const langFileRegex = new RegExp(relPathGroup, 'i');
   const precedingFileRegex = new RegExp(`(?:file:?\\s*)?(?:(?:\\d+|step\\s*\\d+)[\\.:\\-\\)]\\s*)?(?:\\\`|'|\\")?${relPathGroup}`, 'i');
-  const headerRegex = new RegExp(`(?:^|\\n)\\s*(?:\\/\\/|\\/\\*|#+)\\s*(?:file:?\\s*|---\\s*)?(?:(?:\\d+|step\\s*\\d+|file\\s*\\d+)[\\.:\\-\\)]\\s*)?${relPathGroup}(?:\\s*---|\\s*\\*\\/)?\\s*(?:\\n|$)`, 'gi');
+  const headerRegex = new RegExp(`(?:^|\\n)\\s*${cmtPrefix}(?:file:?\\s*|---\\s*)?(?:(?:\\d+|step\\s*\\d+|file\\s*\\d+)[\\.:\\-\\)]\\s*)?${relPathGroup}${cmtSuffix}\\s*(?:\\n|$)`, 'gi');
 
   // Strategy 1: Multiple or Single markdown code blocks
   const blockRegex = /```(?:[a-zA-Z0-9_\-]+)?(?::([^\n]+))?([^\n]*)\n([\s\S]*?)```/g;
@@ -260,12 +308,12 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
 
       const finalPath = resolveTargetFile(detectedFilename, code, i);
       if (finalPath && code) {
-        parsedBlocks.push({ filePath: finalPath, code: formatCodeIndentation(stripComments(stripFileCommentHeaders(code))) });
+        parsedBlocks.push({ filePath: finalPath, code: formatByFileType(code, finalPath) });
       }
     }
 
     if (parsedBlocks.length > 0 && (blocks.length > 1 || parsedBlocks[0].filePath !== defaultResolved)) {
-      return parsedBlocks;
+      return alignStaticFilePaths(parsedBlocks);
     }
   }
 
@@ -282,14 +330,15 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
       rawCode = rawCode.replace(/^```[a-z]*\s*\n?/i, '').replace(/```+$/g, '').trim();
       rawCode = stripFileCommentHeaders(rawCode);
       if (rawCode.length > 5) {
+        const fp = resolveWorkspaceFilePath(fn, workspaceFiles);
         inlineFiles.push({
-          filePath: resolveWorkspaceFilePath(fn, workspaceFiles),
-          code: formatCodeIndentation(stripComments(rawCode))
+          filePath: fp,
+          code: formatByFileType(rawCode, fp)
         });
       }
     }
     if (inlineFiles.length > 0) {
-      return inlineFiles;
+      return alignStaticFilePaths(inlineFiles);
     }
   }
 
@@ -299,13 +348,14 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
   if (topMatch && isValidFilename(topMatch[1])) {
     const fn = topMatch[1];
     cleaned = stripFileCommentHeaders(cleaned);
-    return [{ filePath: resolveWorkspaceFilePath(fn, workspaceFiles), code: formatCodeIndentation(stripComments(cleaned)) }];
+    const fp = resolveWorkspaceFilePath(fn, workspaceFiles);
+    return alignStaticFilePaths([{ filePath: fp, code: formatByFileType(cleaned, fp) }]);
   }
 
   const singleCode = stripFileCommentHeaders(extractCodeBlock(parseSource));
   const finalSinglePath = resolveTargetFile('', singleCode, 0);
   return [{
     filePath: finalSinglePath,
-    code: formatCodeIndentation(stripComments(singleCode))
+    code: formatByFileType(singleCode, finalSinglePath)
   }];
 }

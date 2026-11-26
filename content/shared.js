@@ -135,7 +135,9 @@
       }
       const dir = targetPath.includes('/') ? targetPath.substring(0, targetPath.lastIndexOf('/')) : '';
       if (dir) bashScript += `mkdir -p "${dir}" && `;
-      const cleanCode = AP.stripAllComments(f.code || '').trim();
+      const cleanCode = /\.(?:html?|txt|md|json|env|svg|xml)$/i.test(targetPath)
+        ? (f.code || '').trim()
+        : AP.stripAllComments(f.code || '').trim();
       let b64 = '';
       try { b64 = btoa(unescape(encodeURIComponent(cleanCode))); }
       catch (e) { b64 = btoa(cleanCode); }

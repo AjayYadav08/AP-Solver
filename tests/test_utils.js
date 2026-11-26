@@ -112,7 +112,41 @@ export async function runUtilsTests() {
     parsedSubRes[2].filePath === 'src/routes/auth.js',
     'Workspace nested path lookup or express router preservation failed: ' + JSON.stringify(parsedSubRes.map(f => f.filePath))
   );
-  console.log('   ✓ Multi-file parser, nested directory resolution & Prisma routing verified');
+
+  // HTML / static multi-file parsing, <!-- filename --> headers, dual index.js preservation & cross-block folder alignment
+  const htmlMultiResp = [
+    '```javascript',
+    '// src/index.js',
+    'const http = require("http");',
+    'const fs = require("fs");',
+    'const path = require("path");',
+    'http.createServer((req, res) => { fs.readFile(path.join(__dirname, "project", "services.html"), () => {}); }).listen(process.env.PORT || 3000);',
+    '```',
+    '```javascript',
+    '// index.js',
+    'require("./src/index");',
+    '```',
+    '```html',
+    '<!-- project/services.html -->',
+    '<p>Visit http://localhost:8080/ - Welcome to Services Page</p>',
+    '```',
+    '```html',
+    '<!-- team.html -->',
+    'Welcome to Team Page',
+    '```'
+  ].join('\n');
+  const parsedHtml = parseMultiFileSolution(htmlMultiResp, 'src/index.js', ['index.js', 'src/index.js', 'package.json']);
+  assert(
+    parsedHtml.length === 4 &&
+    parsedHtml[0].filePath === 'src/index.js' &&
+    parsedHtml[1].filePath === 'index.js' &&
+    parsedHtml[2].filePath === 'project/services.html' &&
+    parsedHtml[2].code.includes('http://localhost:8080/') &&
+    parsedHtml[3].filePath === 'team.html' &&
+    parsedHtml[3].code === 'Welcome to Team Page',
+    'HTML multi-file parsing or URL preservation failed: ' + JSON.stringify(parsedHtml.map(f => ({ p: f.filePath, c: f.code })))
+  );
+  console.log('   ✓ Multi-file parser, nested directory resolution, HTML assets & Prisma routing verified');
 
   // 5. Post-write commands, auto-remediation & script builder
   const multiWithCmds = `\`\`\`javascript\n// src/index.js\nconst app = require('express')();\nmodule.exports = app;\n\`\`\`\n\`\`\`bash\n// __commands__\nnpx prisma generate\nnpm run build\nrm -rf /\nnpm start\n\`\`\``;

@@ -239,17 +239,28 @@ export async function dispatchCommandToTerminal(tabId, cmdText, settleMs = 1500)
           const ta = document.querySelector('textarea.xterm-helper-textarea, .terminal textarea, .integrated-terminal textarea, [class*="xterm" i] textarea');
           if (ta && !ta.closest('.monaco-editor')) {
             try { ta.focus(); } catch(e) {}
-            const termEls = [...document.querySelectorAll('.terminal, .terminal-wrapper, .terminal.xterm, .pane-body.integrated-terminal, .xterm, .xterm-screen, canvas.xterm-text-layer')];
+            const rawEls = [...document.querySelectorAll('.terminal, .terminal-wrapper, .terminal.xterm, .pane-body.integrated-terminal, .xterm, .xterm-screen, canvas.xterm-text-layer')];
+            const termEls = rawEls.sort((a, b) => {
+              const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+              const visA = (a.offsetParent !== null && ra.width > 50 && ra.height > 30) ? 1 : 0;
+              const visB = (b.offsetParent !== null && rb.width > 50 && rb.height > 30) ? 1 : 0;
+              return visB - visA;
+            });
             for (const termEl of termEls) {
               for (const k of ['xterm', '_xterm', '__xterm']) {
-                if (termEl && termEl[k] && typeof termEl[k].paste === 'function') {
+                const term = termEl && termEl[k];
+                if (term && typeof term.paste === 'function') {
                   try {
-                    if (typeof termEl[k].input === 'function') {
-                      termEl[k].input('\x03', true);
-                      termEl[k].input('\x15', true);
-                    }
-                    termEl[k].paste(cmd);
-                    if (typeof termEl[k].input === 'function') termEl[k].input('\r', true);
+                    const sendRaw = (seq) => {
+                      if (typeof term.input === 'function') { term.input(seq, true); return true; }
+                      if (term._core?.coreService?.triggerDataEvent) { term._core.coreService.triggerDataEvent(seq, true); return true; }
+                      if (term._core?._onData?.fire) { term._core._onData.fire(seq); return true; }
+                      return false;
+                    };
+                    sendRaw('\x03');
+                    sendRaw('\x15');
+                    term.paste(cmd);
+                    sendRaw('\r');
                     return true;
                   } catch(e) {}
                 }
@@ -321,7 +332,13 @@ export async function readIntegratedTerminalText(tabId, targetFrameId = undefine
       world: 'MAIN',
       func: () => {
         const texts = [];
-        const termWrappers = document.querySelectorAll('.terminal, .terminal-wrapper, .terminal.xterm, .pane-body.integrated-terminal, .xterm, .xterm-screen, canvas.xterm-text-layer');
+        const rawWrappers = [...document.querySelectorAll('.terminal, .terminal-wrapper, .terminal.xterm, .pane-body.integrated-terminal, .xterm, .xterm-screen, canvas.xterm-text-layer')];
+        const termWrappers = rawWrappers.sort((a, b) => {
+          const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+          const visA = (a.offsetParent !== null && ra.width > 40 && ra.height > 20) ? 1 : 0;
+          const visB = (b.offsetParent !== null && rb.width > 40 && rb.height > 20) ? 1 : 0;
+          return visB - visA;
+        });
         for (const el of termWrappers) {
           for (const k of ['xterm', '_xterm', '__xterm']) {
             const inst = el && el[k];
@@ -336,7 +353,11 @@ export async function readIntegratedTerminalText(tabId, targetFrameId = undefine
                   if (line && line.translateToString) lines.push(line.translateToString(true));
                 }
                 const joined = lines.join('\n').trim();
-                if (joined) texts.push(joined);
+                if (joined) {
+                  const isVis = el.offsetParent !== null && el.getBoundingClientRect().height > 20;
+                  if (isVis) return joined;
+                  texts.push(joined);
+                }
               } catch(e) {}
             }
           }

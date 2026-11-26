@@ -91,7 +91,8 @@ STRICT GUIDELINES:
        2. 'src/seed.js' with complete seeding implementation.
        3. 'src/index.js' with clean express starter (module.exports = app;) free of any artifacts.
    - For Native Node.js HTTP Server ('node:http'):
-     * Always set 'Content-Type: application/json; charset=utf-8' on every response.
+     * Set 'Content-Type: text/html; charset=utf-8' when serving HTML pages, or 'Content-Type: application/json; charset=utf-8' for JSON APIs.
+     * Follow exact problem routes and port (use process.env.PORT || <env_or_spec_port>); ALWAYS create separate files for every required HTML/static asset when requested.
      * For GET /tasks:
        - Support '?completed=true' and '?completed=false'.
        - If '?completed' has an invalid value, return status 400 with { error: "Invalid completed filter" }.
@@ -211,10 +212,11 @@ export function buildPrompt({
           ? 'ES Modules ("type": "module" -> MUST use `import`/`export` syntax)'
           : 'CommonJS (default -> MUST use `require()`/`module.exports`)';
         const scriptsStr = pkg.scripts ? JSON.stringify(pkg.scripts) : '{}';
+        const mainStr = pkg.main ? `\n- **Entry Point (` + '`package.json` main)**: `' + pkg.main + '`' : '';
         parts.push(`## 📦 INSTALLED PACKAGES & SCRIPTS (\`package.json\` — STRICT CONTRACT):
 - **Module System**: ${moduleType}
 - **Installed Dependencies**: ${deps.length > 0 ? deps.join(', ') : 'None listed'}
-- **Dev Dependencies**: ${devDeps.length > 0 ? devDeps.join(', ') : 'None listed'}
+- **Dev Dependencies**: ${devDeps.length > 0 ? devDeps.join(', ') : 'None listed'}${mainStr}
 - **NPM Scripts**: \`${scriptsStr}\`
 - **CRITICAL IMPORT RULE**: ONLY import/require packages explicitly listed above or built-in Node modules (\`node:http\`, \`fs\`, \`path\`, \`crypto\`, \`events\`, \`url\`). NEVER import an uninstalled package (e.g. do NOT write \`require('bcrypt')\` if only \`bcryptjs\` is installed!).`);
       } catch (e) {}
@@ -387,19 +389,24 @@ export function getContextGatedSystemPrompt(userPrompt, isDebug = false) {
   const needsJwt = /jwt|jsonwebtoken|refresh\s*token|\/login|\/refresh|bearer/i.test(specSection);
   const needsNativeHttp = /node:http|createServer|http\.createServer/i.test(specSection);
   const needsExpressAuth = /bcrypt|\/register/i.test(specSection);
+  const needsStaticHtml = /\.html?\b|create a .*folder|serving .*page|text\/html|sendFile/i.test(specSection);
+  const hasRootIndex = /-\s*index\.js\b/i.test(specSection) && /-\s*src\/index\.js\b/i.test(specSection);
 
   const lines = [
     'You are a Senior Full-Stack Software Engineer. Write complete, bug-free, test-compliant solutions.',
     'RULES: Follow every requirement in Problem Description & Grading Test Files verbatim (every Task 1/2/3, exact status codes, exact JSON keys & messages).',
     'Match starter code style (CommonJS vs ESM, Express vs node:http), preserve pre-implemented working routes, and preserve exact exports & nested file paths (e.g. // src/middleware/validate.js — NEVER flatten nested folders into src/validate.js).',
-    'NEVER invent extra files (e.g. NEVER create prisma/schema.prisma or seed.js unless explicitly required by the problem!).',
+    'OUTPUT ALL REQUIRED FILES: If the problem asks to create HTML/static/module files (e.g. services.html, team.html, careers.html, error.html), output EVERY required file as its own separate code block with its exact filepath on line 1 (NEVER skip them or inline everything into index.js). Otherwise NEVER invent unrequested extra files like prisma/schema.prisma.',
+    'PORT & ENTRYPOINT: Inspect .env and root index.js vs src/index.js! Always load dotenv if installed or read process.env.PORT (so .env PORT=3000 works seamlessly even if prompt prose gives an example like 8080). Preserve starter root index.js -> src/index.js wiring cleanly.',
     'NEVER invent uninstalled packages; strictly use packages in package.json or Node built-ins. Fix JSON SyntaxError with express error handler returning 400. Return res.status(...).json(...) on every branch so requests never hang or timeout.',
-    'Output ONLY clean executable code (NO comments, NO explanations, NO "... rest of code") in markdown fenced code block(s) with exact workspace file path on line 1.',
+    'Output ONLY clean executable code (NO comments, NO explanations, NO "... rest of code") in markdown fenced code block(s) with exact workspace file path on line 1 (for HTML use <!-- path/file.html --> or // path/file.html).',
     'If setup/migration/build/seed commands must run in terminal after writing files, add a separate ```bash block starting with // __commands__ and list one shell command per line.',
     '2-space indentation only; no tabs.'
   ];
   if (needsPrisma) lines.push('PRISMA: Output prisma/schema.prisma, src/seed.js (deleteMany child-then-parent, await prisma.$disconnect() in finally), and src/index.js cleanly.');
-  if (needsNativeHttp) lines.push('NODE HTTP: Set Content-Type application/json; parse JSON safely (400 on invalid JSON); export server cleanly (module.exports = server; module.exports.server = server;). Return 404 on unknown routes.');
+  if (needsNativeHttp) lines.push('NODE HTTP: Set appropriate Content-Type (application/json or text/html); parse JSON safely (400 on invalid JSON); export server cleanly (module.exports = server; module.exports.server = server;). Return 404 on unknown routes.');
+  if (needsStaticHtml) lines.push('STATIC HTML ROUTING: Output a separate code block for EVERY required .html file (matching the paths your server reads via fs.readFile/path.join(__dirname, ...)), set Content-Type text/html, return HTTP 404 for unknown routes, and ensure the server actually listens on process.env.PORT || <port from .env or 8080/3000> (do NOT skip listen() with NODE_ENV !== "test" when external HTTP tests connect directly to localhost:PORT unless starter already guards it for supertest).');
+  if (hasRootIndex) lines.push('DUAL ENTRYPOINT (index.js + src/index.js): Respect starter root index.js (e.g. requiring ./src/index.js) and put full app implementation in the active entry file without breaking root index.js!');
   if (needsJwt) lines.push('JWT: Follow exact secret (e.g. JWT_SECRET/SECRET), payload fields (e.g. { email } vs { userId }), expiry (1h vs 15m), auth error status codes (401/403), and protected route response specified by THIS problem & tests.');
   if (needsExpressAuth) lines.push('EXPRESS AUTH: Validate inputs strictly (400), check duplicate records via findFirst/findUnique before create, hash password with installed bcrypt/bcryptjs, omit password from JSON response.');
   if (isDebug || /PREVIOUS ATTEMPT|FAILED/i.test(p)) lines.push('DEBUG: Fix EVERY failing test simultaneously in one complete replacement file without breaking passing routes.');

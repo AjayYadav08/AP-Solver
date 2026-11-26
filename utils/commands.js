@@ -149,7 +149,9 @@ export function buildBase64TerminalScript(files, postCommands = []) {
     if (dir) {
       cmd += `mkdir -p "${dir}" && `;
     }
-    const cleanCode = stripComments(f.code || '').trim();
+    const cleanCode = /\.(?:html?|txt|md|json|env|svg|xml)$/i.test(targetPath)
+      ? (f.code || '').trim()
+      : stripComments(f.code || '').trim();
     let b64 = '';
     try {
       b64 = btoa(unescape(encodeURIComponent(cleanCode)));

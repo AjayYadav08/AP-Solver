@@ -408,7 +408,11 @@
     }
 
     try { await sendMsg({ op: 'AP_CLEAN_EDITOR_ARTIFACTS' }, 2000); } catch (e) {}
-    for (const f of filesToWrite) f.code = AP.stripAllComments(f.code);
+    for (const f of filesToWrite) {
+      if (!/\.(?:html?|txt|md|json|env|svg|xml)$/i.test(f.filePath || '')) {
+        f.code = AP.stripAllComments(f.code);
+      }
+    }
 
     ui.setStatus(`Injecting solution into ${filesToWrite.length} file(s)...`, '', 'running', true);
 
@@ -492,8 +496,10 @@
     for (const f of filesToWrite) {
       ui.addLog(`Erasing initial code & writing complete solution into "${f.filePath}"...`, 'info');
       const curCode = f.code || '';
+      const isStaticAsset = /\.(?:html?|txt|md|css|env|sql|svg)$/i.test(f.filePath || '');
       const hasTerminalArtifact = /base64\s*-d|mkdir\s*-p|=== AP-SOLVER/i.test(curCode);
-      const hasCleanCode = curCode.length > 50 && !/\/\/\s*write your code here|\/\*\s*write your code here\s*\*\//i.test(curCode) && !hasTerminalArtifact;
+      const minLen = isStaticAsset ? 5 : 12;
+      const hasCleanCode = curCode.trim().length >= minLen && !/\/\/\s*write your code here|\/\*\s*write your code here\s*\*\//i.test(curCode) && !hasTerminalArtifact;
       const codeMatches = hasCleanCode && !hasTerminalArtifact;
       if (filesWrittenViaTerminal || codeMatches) updatedFiles.push(f.filePath);
       else failedFiles.push(f.filePath);
@@ -518,7 +524,9 @@
 
     for (const f of filesToWrite) {
       const code = f.code || '';
-      if (!code || code.trim().length < 30) {
+      const isStaticAsset = /\.(?:html?|txt|md|css|env|sql|svg)$/i.test(f.filePath || '');
+      const minVerifyLen = isStaticAsset ? 5 : 12;
+      if (!code || code.trim().length < minVerifyLen) {
         ui.addLog(`🛑 Verification failed: "${f.filePath}" code is too short or empty (${code.trim().length} chars). Submission aborted.`, 'bad');
         ui.setStatus('Incomplete Code', `Code for ${f.filePath} is incomplete.`, 'error');
         return false;
