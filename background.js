@@ -12,13 +12,14 @@ import {
   buildAttemptRecord,
   formatFullCollaborationHistory,
   loadQuestionAttemptHistory,
-  saveQuestionAttemptHistory
+  saveQuestionAttemptHistory,
+  buildLocalTestSpec
 } from './utils/llm.js';
 import { queryEditorInTab, writeEditorInTab } from './background/editor.js';
 import { writeFilesViaTerminal, readIntegratedTerminalText } from './background/terminal.js';
 import { probeWorkspaceViaTerminal, runLocalTestsViaTerminal, runTerminalCommandsViaTerminal } from './background/workspace.js';
 
-export { buildBase64TerminalScript, analyzeFileModificationPlan, enforceFilePlan, analyzePreCodingTerminal };
+export { buildBase64TerminalScript, analyzeFileModificationPlan, enforceFilePlan, analyzePreCodingTerminal, buildLocalTestSpec };
 
 console.log('[AP-Solver] Background service worker initialized.');
 
@@ -107,7 +108,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } else if (op === 'AP_RUN_LOCAL_TESTS') {
         const tabId = sender.tab?.id;
         if (!tabId) return sendResponse({ ok: false, error: 'No tab ID found in sender.' });
-        sendResponse(await runLocalTestsViaTerminal(tabId, data?.files || []));
+        sendResponse(await runLocalTestsViaTerminal(tabId, data || []));
       } else if (op === 'AP_RUN_TERMINAL_COMMANDS') {
         const tabId = sender.tab?.id;
         if (!tabId) return sendResponse({ ok: false, error: 'No tab ID found in sender.' });

@@ -132,6 +132,38 @@ export function summarizeCodeChanges(prevFiles = [], nextFiles = []) {
   return changes.join('; ') || 'Refined implementation';
 }
 
+/** Normalize compact structured local pre-test telemetry for storage & AI debugging. */
+function normalizeLocalTestLogs(localTestResult) {
+  if (!localTestResult || typeof localTestResult !== 'object') return null;
+  return {
+    strategy: localTestResult.strategy || '',
+    status: localTestResult.status || '',
+    passed: localTestResult.passed ?? 0,
+    failed: localTestResult.failed ?? 0,
+    executedCommands: [...new Set((localTestResult.executedCommands || []).filter(Boolean))].slice(0, 8),
+    compileResult: localTestResult.compileResult ? {
+      ok: !!localTestResult.compileResult.ok,
+      command: String(localTestResult.compileResult.command || '').slice(0, 140),
+      output: String(localTestResult.compileResult.output || '').slice(-400)
+    } : null,
+    runtimeResult: localTestResult.runtimeResult ? {
+      ok: !!localTestResult.runtimeResult.ok,
+      command: String(localTestResult.runtimeResult.command || '').slice(0, 140),
+      output: String(localTestResult.runtimeResult.output || '').slice(-600)
+    } : null,
+    cases: Array.isArray(localTestResult.cases)
+      ? localTestResult.cases.slice(0, 12).map(c => ({
+          name: String(c?.name || '').slice(0, 90),
+          input: String(c?.input || '').slice(0, 120),
+          expected: String(c?.expected || '').slice(0, 120),
+          actual: String(c?.actual || '').slice(0, 160),
+          ok: !!c?.ok
+        }))
+      : [],
+    output: String(localTestResult.output || '').slice(-2500)
+  };
+}
+
 /** Create a complete structured record for an evaluation attempt. */
 export function buildAttemptRecord({
   attemptNumber = 1,
@@ -141,11 +173,13 @@ export function buildAttemptRecord({
   terminalOutput = '',
   subRes = null,
   commandsExecuted = [],
+  localTestResult = null,
   whatWentWrong = '',
   strategyUsed = ''
 } = {}) {
   const cls = classifyFailureCategory(terminalOutput, subRes);
   const compactTerm = String(terminalOutput || '').replace(/\u001b\[[0-9;]*[a-zA-Z]/g, '').trim();
+  const localTestLogs = normalizeLocalTestLogs(localTestResult);
   return {
     attemptNumber,
     timestamp: subRes?.timestamp || new Date().toLocaleTimeString(),
@@ -162,6 +196,7 @@ export function buildAttemptRecord({
       code: f.code || ''
     })),
     commandsExecuted: [...new Set((commandsExecuted || []).filter(Boolean))],
+    localTestLogs,
     terminalOutput: compactTerm.slice(-6000),
     whatWentWrong: whatWentWrong || `${cls.label}: ${subRes?.passed ?? 0}/${subRes?.total ?? 0} passed`,
     whatChangedNext: '',
@@ -198,10 +233,26 @@ export function formatFullCollaborationHistory(records = [], { maxTotalChars = 1
 
     const termSnippet = (r.terminalOutput || '').slice(isLatest ? -2500 : -900) || '(no terminal trace captured)';
 
+    let localSummaryBlock = '';
+    const lt = r.localTestLogs;
+    if (lt && lt.status) {
+      const ltCmds = (lt.executedCommands || []).join(' && ') || 'None';
+      const caseLines = (lt.cases || []).slice(0, isLatest ? 10 : 4).map(c =>
+        `  - [${c.ok ? 'PASS' : 'FAIL'}] ${c.name} | in: ${c.input || '-'} | expected: ${c.expected || '-'} | actual: ${c.actual || '-'}`
+      );
+      localSummaryBlock = [
+        `- Local Pre-Test: strategy=${lt.strategy || 'auto'}, status=${lt.status} (${lt.passed} passed, ${lt.failed} failed)`,
+        `- Local Test Commands: ${ltCmds}`,
+        lt.compileResult ? `- Compile Check: ${lt.compileResult.ok ? 'PASS' : 'FAIL'} (${lt.compileResult.command || 'syntax'})` : '',
+        caseLines.length ? `- Local Test Cases:\n${caseLines.join('\n')}` : ''
+      ].filter(Boolean).join('\n');
+    }
+
     const entryLines = [
       `### ATTEMPT ${r.attemptNumber} [${r.stage.toUpperCase()}] — ${r.errorCategoryLabel || r.errorCategory} (${r.passed}/${r.total} passed at ${r.timestamp})`,
       `- Strategy: ${r.strategyUsed}`,
       `- Post-Write Commands Executed: ${cmdsStr}`,
+      localSummaryBlock,
       `- Failed Tests: ${failList}`,
       `- Root Cause / What Went Wrong: ${r.whatWentWrong}`,
       r.whatChangedNext ? `- What Changed in Next Attempt: ${r.whatChangedNext}` : '',
@@ -218,6 +269,7 @@ export function formatFullCollaborationHistory(records = [], { maxTotalChars = 1
     const compactOlder = records.slice(0, -1).map(r => (
       `### ATTEMPT ${r.attemptNumber} [${r.errorCategoryLabel || r.errorCategory} | ${r.passed}/${r.total} passed]\n` +
       `- Commands: ${(r.commandsExecuted || []).join(' && ') || 'None'}\n` +
+      (r.localTestLogs?.status ? `- Local Pre-Test: ${r.localTestLogs.strategy} -> ${r.localTestLogs.status} (${r.localTestLogs.passed}P/${r.localTestLogs.failed}F)\n` : '') +
       `- What Went Wrong: ${r.whatWentWrong}\n` +
       (r.whatChangedNext ? `- Change Applied Next: ${r.whatChangedNext}\n` : '') +
       `- Error Excerpt: ${(r.terminalOutput || '').slice(-400).replace(/\s+/g, ' ')}\n` +

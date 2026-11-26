@@ -800,10 +800,12 @@
 
       let maxAttempts = ui.options.autoRetry ? 5 : 1;
       let feedback = null;
+      let lastLocalTestResult = null;
 
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         currentAttemptNum = attempt;
         filesWrittenViaTerminal = false;
+        lastLocalTestResult = null;
         const stageBanner = attempt === 1
           ? 'Attempt 1/5 — Initial Question & Terminal Analysis Solution'
           : attempt === 2
@@ -846,9 +848,18 @@
           const isComplete = await verifyCodeCompleteness(filesToCheck);
           if (!isComplete) { writeBlockedOrIncomplete = true; break; }
 
-          ui.setStatus(`${stepTag} - Local Pre-Test Check...`, 'Running container test suite in Terminal first...', 'running', true);
-          ui.addLog(`🧪 [Local Pre-Test] Running local container tests before remote submission...`, 'running');
-          let localRes = await sendMsg({ op: 'AP_RUN_LOCAL_TESTS', data: { files: filesToCheck.map(f => f.filePath) } }, 45000);
+          ui.setStatus(`${stepTag} - Local Pre-Test Check...`, 'Running question-specific verification in Terminal...', 'running', true);
+          ui.addLog(`🧪 [Local Pre-Test] Executing terminal verification before remote submission...`, 'running');
+          const runLocalTestPayload = {
+            files: filesToCheck.map(f => f.filePath),
+            questionTitle: cachedQuestion?.title || '',
+            questionDetails: cachedQuestion?.details || '',
+            testCases: cachedQuestion?.testCases || [],
+            referenceFiles: Object.keys(cachedEditor?.referenceFiles || {}),
+            packageJsonStr: cachedEditor?.referenceFiles?.['package.json'] || '',
+            terminalPreAnalysis
+          };
+          let localRes = await sendMsg({ op: 'AP_RUN_LOCAL_TESTS', data: runLocalTestPayload }, 48000);
 
           if (localRes && localRes.status === 'failed' && Array.isArray(localRes.autoFixCommands) && localRes.autoFixCommands.length > 0) {
             const freshCmds = localRes.autoFixCommands.filter(c => !remediatedCmds.has(c));
@@ -858,17 +869,40 @@
               const cmdRes = await sendMsg({ op: 'AP_RUN_TERMINAL_COMMANDS', data: { commands: freshCmds } }, 48000);
               if (cmdRes?.output) ui.addLog(`⚙️ Command finished (exit=${cmdRes.exitCode ?? 0}). Re-running local pre-tests...`, cmdRes.ok ? 'ok' : 'warn');
               lastExecutedCommands = [...new Set([...lastExecutedCommands, ...freshCmds])];
-              localRes = await sendMsg({ op: 'AP_RUN_LOCAL_TESTS', data: { files: filesToCheck.map(f => f.filePath) } }, 45000);
+              localRes = await sendMsg({ op: 'AP_RUN_LOCAL_TESTS', data: runLocalTestPayload }, 48000);
+            }
+          }
+
+          lastLocalTestResult = localRes || null;
+          if (localRes?.executedCommands?.length) {
+            lastExecutedCommands = [...new Set([...lastExecutedCommands, ...localRes.executedCommands])];
+          }
+          if (localRes?.strategy && localRes.status !== 'unreadable' && localRes.status !== 'error') {
+            ui.addLog(`🔬 [Local Pre-Test Strategy] ${localRes.strategy} | cmds: ${(localRes.executedCommands || []).join(' ; ') || 'node runtime'}`, 'normal');
+          }
+          if (Array.isArray(localRes?.cases) && localRes.cases.length > 0) {
+            for (const c of localRes.cases.slice(0, 10)) {
+              if (c.ok) {
+                ui.addLog(`   ✅ [Local] ${c.name} (${c.actual || 'ok'})`, 'ok');
+              } else {
+                ui.addLog(`   ❌ [Local] ${c.name} | input: ${c.input || '-'} | expected: ${c.expected || '-'} | actual: ${c.actual || '-'}`, 'bad');
+              }
             }
           }
 
           if (localRes && localRes.status === 'passed') {
-            ui.addLog(`✅ [Local Pre-Test] Passed (${localRes.passed || 'all'} tests passing)! Submitting with confidence...`, 'ok');
+            ui.addLog(`✅ [Local Pre-Test] Passed (${localRes.passed || 'all'} check(s) passing)! Submitting with confidence...`, 'ok');
             break;
           } else if (localRes && localRes.status === 'failed') {
             ui.addLog(`❌ [Local Pre-Test] Failed locally (${localRes.passed || 0} passed, ${localRes.failed || 0} failed)!`, 'bad');
-            const firstErrLine = (localRes.output || '').split('\n').find(l => /Error:|AssertionError|expected|Cannot find/i.test(l)) || 'Local test assertion failed';
-            attemptHistory.push(`Local ${attempt}.${localTry} (${localRes.passed || 0}/${(localRes.passed || 0) + (localRes.failed || 0)}): ${firstErrLine.trim().slice(0, 120)}`);
+            const firstFailedCase = (localRes.cases || []).find(c => !c.ok);
+            const firstErrLine = firstFailedCase
+              ? `${firstFailedCase.name}: expected ${firstFailedCase.expected}, got ${firstFailedCase.actual}`
+              : ((localRes.output || '').split('\n').find(l => /FAIL|Error:|AssertionError|expected|Cannot find/i.test(l)) || 'Local test assertion failed');
+            const failedCaseList = (localRes.cases || [])
+              .filter(c => !c.ok)
+              .map(c => `${c.name} [input: ${c.input} | expected: ${c.expected} | actual: ${c.actual}]`);
+            attemptHistory.push(`Local ${attempt}.${localTry} (${localRes.passed || 0}/${(localRes.passed || 0) + (localRes.failed || 0)}): ${firstErrLine.trim().slice(0, 140)}`);
             if (ui.options.autoRetry && localTry < maxLocalTries) {
               try {
                 const recResp = await sendMsg({
@@ -882,10 +916,11 @@
                     originalQuestion: cachedQuestion?.details || '',
                     submittedFiles: filesToCheck,
                     terminalOutput: localRes.output || '',
-                    subRes: { passed: localRes.passed || 0, total: (localRes.passed || 0) + (localRes.failed || 0), failedTests: localRes.failed > 0 ? [`${localRes.failed} local test(s) failed`] : [] },
+                    subRes: { passed: localRes.passed || 0, total: (localRes.passed || 0) + (localRes.failed || 0), failedTests: failedCaseList.length ? failedCaseList : [`${localRes.failed} local check(s) failed`] },
                     commandsExecuted: [...lastExecutedCommands],
+                    localTestResult: localRes,
                     whatWentWrong: firstErrLine.trim().slice(0, 220),
-                    strategyUsed: `Local Pre-Test ${attempt}.${localTry}`
+                    strategyUsed: `Local Pre-Test (${localRes.strategy || 'auto'}) ${attempt}.${localTry}`
                   }
                 }, 4000);
                 if (recResp?.ok) {
@@ -895,19 +930,19 @@
               } catch (e) {}
               feedback = await AP.buildDebugFeedback(
                 localRes.output || '',
-                { passed: localRes.passed || 0, total: (localRes.passed || 0) + (localRes.failed || 0), failedTests: localRes.failed > 0 ? [`${localRes.failed} test(s) failed during local Terminal npm test`] : [] },
+                { passed: localRes.passed || 0, total: (localRes.passed || 0) + (localRes.failed || 0), failedTests: failedCaseList.length ? failedCaseList : [`${localRes.failed} check(s) failed during local Terminal pre-test`] },
                 `${attempt}.${localTry} (Local Pre-Test)`,
                 { attemptHistory, collaborationHistory: sessionCollaborationHistory, commandsExecuted: lastExecutedCommands, cachedGeneratedFiles, cachedEditor, filesWrittenViaTerminal, sendMsg, ui }
               );
-              ui.addLog(`🧠 Skipping slow remote Submit — escalating to Debug Model for fast local fix (${localTry + 1}/${maxLocalTries})...`, 'warn');
+              ui.addLog(`🧠 Skipping slow remote Submit — fixing failed local checks before submission (${localTry + 1}/${maxLocalTries})...`, 'warn');
               continue;
             }
             ui.addLog(`⚠️ Max local debug tries reached (${maxLocalTries}); proceeding to remote Submit...`, 'warn');
             break;
           } else {
             const skipMsg = localRes?.status === 'no_local_tests'
-              ? 'No local test suite present (startup check clean; tests run remotely on Newton grader).'
-              : 'Proceeding directly to remote Newton grader.';
+              ? 'No runnable entrypoint or test files found locally; proceeding to remote Newton grader.'
+              : `Local terminal capture fallback (${localRes?.error || 'buffer unavailable'}); proceeding to remote Newton grader.`;
             ui.addLog(`ℹ️ [Local Pre-Test] ${skipMsg}`, 'normal');
             break;
           }
@@ -949,6 +984,7 @@
                 terminalOutput: subRes?.terminalLog || '',
                 subRes,
                 commandsExecuted: [...lastExecutedCommands],
+                localTestResult: lastLocalTestResult,
                 whatWentWrong: 'Passed all assertions',
                 strategyUsed: `Attempt ${attempt}/5`
               }
@@ -997,6 +1033,7 @@
                 terminalOutput,
                 subRes,
                 commandsExecuted: [...lastExecutedCommands],
+                localTestResult: lastLocalTestResult,
                 whatWentWrong: errHint.trim().slice(0, 260),
                 strategyUsed: attempt === 1 ? 'Initial Question + Terminal Analysis' : `Attempt ${attempt}/5 Fix`
               }

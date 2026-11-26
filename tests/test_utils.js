@@ -20,7 +20,8 @@ import {
   summarizeCodeChanges,
   buildAttemptRecord,
   formatFullCollaborationHistory,
-  buildQuestionStorageKey
+  buildQuestionStorageKey,
+  buildLocalTestSpec
 } from '../utils/llm.js';
 
 export async function runUtilsTests() {
@@ -32,6 +33,7 @@ export async function runUtilsTests() {
     'utils/commands.js',
     'utils/file-planner.js',
     'utils/attempt-history.js',
+    'utils/local-test-planner.js',
     'utils/prompts.js',
     'utils/providers.js'
   ]);
@@ -281,6 +283,15 @@ export async function runUtilsTests() {
     terminalOutput: 'AssertionError: expected 18.7 to equal 18.75',
     subRes: { passed: 2, total: 5, failedTests: ['should round surge fare to 2 decimals'] },
     commandsExecuted: ['npm run build'],
+    localTestResult: {
+      strategy: 'http_routes_and_exports',
+      status: 'failed',
+      passed: 2,
+      failed: 1,
+      executedCommands: ['node --check src/services/ride.service.js', 'NODE_ENV=test PORT=0 node <local-harness>'],
+      compileResult: { ok: true, command: 'node --check src/services/ride.service.js', output: 'ok' },
+      cases: [{ name: 'POST /api/rides/request missing body', input: 'POST /api/rides/request {}', expected: 'status 400', actual: 'HTTP 500', ok: false }]
+    },
     whatWentWrong: 'Rounded to 1 decimal place',
     strategyUsed: 'Initial Analysis'
   });
@@ -303,8 +314,41 @@ export async function runUtilsTests() {
     collabText.includes('const fare = 18.7;') &&
     collabText.includes('Modified src/services/ride.service.js') &&
     collabText.includes('node src/seed.js') &&
+    collabText.includes('Local Pre-Test') &&
     buildQuestionStorageKey('https://my.newtonschool.co/playground/code/abc123', 'Surge Engine').startsWith('ap_attempt_history_v1:'),
     'AI-to-AI collaboration history or storage key check failed'
+  );
+
+  // Question-specific local test planner across HTTP Auth, Static HTML, MVC, and CLI scripts
+  const authSpec = buildLocalTestSpec({
+    questionTitle: 'Login API with Protected Middleware',
+    questionDetails: [
+      'Complete POST /login endpoint: Receive email and password. If either is missing, return a 400 status.',
+      'Protect GET /protected using authenticateToken middleware (return 401 if token missing).'
+    ].join('\n'),
+    filesToWrite: ['src/index.js'],
+    packageJsonStr: JSON.stringify({ main: 'src/index.js', dependencies: { express: '^4.18.2' } })
+  });
+  assert(
+    authSpec.strategy === 'http_routes' &&
+    authSpec.httpProbes.some(p => p.method === 'POST' && p.path === '/login' && p.kind === 'missing_fields_400') &&
+    authSpec.httpProbes.some(p => p.method === 'GET' && p.path === '/protected' && p.kind === 'auth_guard'),
+    'Local test spec failed on Auth Express API: ' + JSON.stringify(authSpec)
+  );
+
+  const staticSpec = buildLocalTestSpec({
+    questionTitle: 'Multi-Page Website Routing',
+    questionDetails: 'services.html | Welcome to Services Page\nVisiting http://localhost:8080/ should display the Services page.\nReturn status 404 for undefined routes.',
+    testCases: ['should serve Services Page for "/" route'],
+    filesToWrite: ['src/index.js', 'services.html'],
+    packageJsonStr: JSON.stringify({ main: 'src/index.js' })
+  });
+  assert(
+    staticSpec.strategy === 'http_static_routing' &&
+    staticSpec.fileChecks.some(f => f.filePath === 'services.html' && f.mustContain === 'Welcome to Services Page') &&
+    staticSpec.httpProbes.some(p => p.path === '/' && p.expectedContentType === 'text/html') &&
+    staticSpec.httpProbes.some(p => p.kind === 'not_found_404'),
+    'Local test spec failed on Static HTML Routing: ' + JSON.stringify(staticSpec)
   );
 
   const stage3Prompt = buildPrompt({

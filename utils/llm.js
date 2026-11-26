@@ -40,6 +40,15 @@ export {
 } from './attempt-history.js';
 
 export {
+  detectRuntimeEnvironment,
+  extractFileContentChecks,
+  extractExpectedModuleExports,
+  extractHttpProbes,
+  extractSampleIoCases,
+  buildLocalTestSpec
+} from './local-test-planner.js';
+
+export {
   DEFAULT_SETTINGS,
   getSettings,
   saveSettings,

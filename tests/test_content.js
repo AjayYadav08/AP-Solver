@@ -149,6 +149,9 @@ export async function runContentTests() {
     contentSrc.includes('AP_ENFORCE_FILE_PLAN') &&
     contentSrc.includes('AP_ANALYZE_TERMINAL') &&
     contentSrc.includes('AP_RECORD_ATTEMPT') &&
+    contentSrc.includes('lastLocalTestResult') &&
+    contentSrc.includes('runLocalTestPayload') &&
+    contentSrc.includes('localTestResult: localRes') &&
     parserSrc.includes('classifyErrorCategory') &&
     parserSrc.includes('COMPLETE CHRONOLOGICAL ATTEMPT HISTORY'),
     'content/content.js or error-parser.js missing 5-attempt history, terminal pre-analysis, or error classification'
