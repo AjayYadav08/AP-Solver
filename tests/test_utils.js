@@ -24,14 +24,6 @@ import {
   buildLocalTestSpec
 } from '../utils/llm.js';
 
-import {
-  validateApiKeyFormat,
-  getConfiguredProviders,
-  analyzeTaskProfile,
-  scoreProviderForTask,
-  planModelOrchestration
-} from '../utils/orchestrator.js';
-
 export async function runUtilsTests() {
   console.log('📦 [Suite 1/3] Running utils/ tests...');
 
@@ -415,8 +407,8 @@ export async function runUtilsTests() {
 
   // 6. System rules, model lists & provider defaults
   assert(
-    allUtilsSrc.includes('adaptive_race') &&
-    allUtilsSrc.includes('Promise.any(plan.parallelCandidates') &&
+    allUtilsSrc.includes('Turbo Parallel Race') &&
+    allUtilsSrc.includes('Promise.any([runGroq(), runGemini()])') &&
     allUtilsSrc.includes('openai/gpt-oss-120b') &&
     allUtilsSrc.includes('qwen/qwen3-32b') &&
     allUtilsSrc.includes('gemini-2.5-pro') &&
@@ -548,28 +540,4 @@ export async function runUtilsTests() {
     globalThis.fetch = origFetch;
   }
   console.log('   ✓ Provider fallbacks, priority 8K compaction, Gemini routing & TPD switching verified');
-
-  // 9. Orchestrator: validateApiKeyFormat, getConfiguredProviders, analyzeTaskProfile, scoreProviderForTask
-  assert(validateApiKeyFormat('gemini', 'AIzaSy_something_long_enough_1234567890').valid, 'Gemini key should be valid');
-  assert(!validateApiKeyFormat('gemini', 'short').valid, 'Short gemini key should be invalid');
-  assert(validateApiKeyFormat('groq', 'gsk_somethingvalid_1234567890abc').valid, 'Groq key should be valid');
-  assert(validateApiKeyFormat('cerebras', 'csk_mykey_1234567890abc').valid, 'Cerebras key should be valid');
-
-  const cfgProviders = getConfiguredProviders({ geminiKey: 'AIzaSy_abcdefghijklmnopqrstuvwxyz12345', groqKey: '', cerebrasKey: 'csk_test123456789', openaiKey: '' });
-  assert(cfgProviders.includes('gemini'), 'getConfiguredProviders should return gemini when key set');
-  assert(cfgProviders.includes('cerebras'), 'getConfiguredProviders should return cerebras when key set');
-  assert(!cfgProviders.includes('groq'), 'getConfiguredProviders should exclude groq when key empty');
-
-  const debugProfile = analyzeTaskProfile({ questionTitle: 'Auth API Login', feedback: 'CRITICAL: 500 error on POST /login — test failed', attemptNumber: 2 });
-  assert(debugProfile.isDebug === true, 'analyzeTaskProfile should detect debug mode from feedback');
-
-  const freshProfile = analyzeTaskProfile({ questionTitle: 'Simple Node Server', feedback: null, attemptNumber: 1 });
-  const groqScore = scoreProviderForTask('groq', freshProfile, {});
-  const geminiScore = scoreProviderForTask('gemini', freshProfile, {});
-  assert(typeof groqScore.score === 'number' && typeof geminiScore.score === 'number', 'scoreProviderForTask should return numeric scores');
-
-  const plan = planModelOrchestration({ questionTitle: 'Simple Node Server', feedback: null, attemptNumber: 1 }, '', { geminiKey: 'AIzaSy_abcdefghijklmnopqrstuvwxyz12345', groqKey: 'gsk_abcdefghij123456789', cerebrasKey: '' });
-  assert(plan && (plan.executionMode === 'adaptive_race' || plan.executionMode === 'dynamic_route' || plan.executionMode === 'explicit_with_fallback'), 'planModelOrchestration should return a valid execution mode');
-  assert(Array.isArray(plan.ranked) && plan.ranked.length > 0, 'planModelOrchestration should return ranked providers');
-  console.log('   ✓ Orchestrator: validateApiKeyFormat, getConfiguredProviders, analyzeTaskProfile, scoreProviderForTask, planModelOrchestration verified');
 }

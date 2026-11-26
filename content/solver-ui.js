@@ -9,9 +9,7 @@ window.APSolverUI = class APSolverUI {
     this.showSettings = false; // toggle for inline API keys panel
     this.apiKeys = {
       geminiKey: '',
-      groqKey: '',
-      cerebrasKey: '',
-      openaiKey: ''
+      groqKey: ''
     };
     this.problemInfo = {
       title: 'Detecting...',
@@ -25,9 +23,9 @@ window.APSolverUI = class APSolverUI {
     this.generatedFiles = [];
     this.logs = [];
     this.options = {
-      autoSubmit: false,
+      autoSubmit: true,
       autoRetry: true,
-      provider: 'auto'
+      provider: 'race'
     };
 
     this.init();
@@ -46,12 +44,7 @@ window.APSolverUI = class APSolverUI {
   setApiKeys(keys) {
     this.apiKeys = { ...this.apiKeys, ...keys };
     // If no keys are set, open inline settings drawer by default
-    const hasAny = !!(
-      this.apiKeys.geminiKey?.trim() ||
-      this.apiKeys.groqKey?.trim() ||
-      this.apiKeys.cerebrasKey?.trim() ||
-      this.apiKeys.openaiKey?.trim()
-    );
+    const hasAny = !!(this.apiKeys.geminiKey?.trim() || this.apiKeys.groqKey?.trim());
     if (!hasAny) {
       this.showSettings = true;
     }
@@ -166,32 +159,27 @@ window.APSolverUI = class APSolverUI {
             <span class="ap-badge">AP-Solver</span>
             <span class="ap-title">Newton Copilot</span>
           </div>
-          <button class="ap-btn-icon ap-btn-settings" title="Configure API Keys (Gemini, Groq &amp; Cerebras)">⚙️</button>
+          <button class="ap-btn-icon ap-btn-settings" title="Configure API Keys (Gemini & Groq)">⚙️</button>
         </div>
 
         <!-- Inline API Keys Panel (Directly on Portal) -->
         <div class="ap-inline-settings" style="display: ${this.showSettings ? 'flex' : 'none'};">
           <div class="ap-inline-head">
-            <span>⚙️ Configure Free AI Keys</span>
+            <span>⚙️ Configure API Keys</span>
             <button class="ap-btn-icon ap-close-settings" title="Close Settings">✕</button>
           </div>
           <div class="ap-inline-field">
-            <label>Google Gemini API Key:</label>
+            <label>Google Gemini API Key (Recommended):</label>
             <input type="password" class="ap-input ap-inp-gemini" placeholder="AIzaSy..." value="${this.escapeHtml(this.apiKeys.geminiKey || '')}">
-            <small><a href="https://aistudio.google.com/apikey" target="_blank">Get Free Gemini Key (Large Context) ↗</a></small>
+            <small><a href="https://aistudio.google.com/apikey" target="_blank">Get Free Gemini Key ↗</a></small>
           </div>
           <div class="ap-inline-field">
-            <label>Groq Cloud API Key:</label>
+            <label>Groq Cloud API Key (Fast LLaMA 70B):</label>
             <input type="password" class="ap-input ap-inp-groq" placeholder="gsk_..." value="${this.escapeHtml(this.apiKeys.groqKey || '')}">
-            <small><a href="https://console.groq.com/keys" target="_blank">Get Free Groq Key (Fast LPU) ↗</a></small>
-          </div>
-          <div class="ap-inline-field">
-            <label>Cerebras Inference API Key:</label>
-            <input type="password" class="ap-input ap-inp-cerebras" placeholder="csk-..." value="${this.escapeHtml(this.apiKeys.cerebrasKey || '')}">
-            <small><a href="https://cloud.cerebras.ai" target="_blank">Get Free Cerebras Key (1M TPD · Qwen3/GPT-OSS) ↗</a></small>
+            <small><a href="https://console.groq.com/keys" target="_blank">Get Free Groq Key ↗</a></small>
           </div>
           <button class="ap-btn-save-inline-keys" style="background: linear-gradient(135deg, #0284c7, #2563eb); color: #fff; border: none; border-radius: 6px; padding: 8px 12px; font-size: 12px; font-weight: 600; cursor: pointer; margin-top: 4px;">
-            💾 Save Keys (Smart Auto-Orchestrator)
+            💾 Save Keys
           </button>
           <div class="ap-inline-msg" style="display:none;font-size:11px;padding:4px 8px;border-radius:4px;"></div>
         </div>
@@ -281,37 +269,26 @@ window.APSolverUI = class APSolverUI {
       saveInlineBtn.onclick = async () => {
         const geminiVal = (this.host.querySelector('.ap-inp-gemini')?.value || '').trim();
         const groqVal = (this.host.querySelector('.ap-inp-groq')?.value || '').trim();
-        const cerebrasVal = (this.host.querySelector('.ap-inp-cerebras')?.value || '').trim();
 
-        const msgEl = this.host.querySelector('.ap-inline-msg');
-        const showInlineErr = (txt) => {
-          if (!msgEl) return;
-          msgEl.style.display = 'block';
-          msgEl.style.background = 'rgba(239,68,68,0.2)';
-          msgEl.style.color = '#f87171';
-          msgEl.textContent = txt;
-        };
-
-        if (!geminiVal && !groqVal && !cerebrasVal && !this.apiKeys.openaiKey?.trim()) {
-          showInlineErr('Please enter at least one API key (Gemini, Groq, or Cerebras).');
-          return;
-        }
-        for (const [name, v] of [['Gemini', geminiVal], ['Groq', groqVal], ['Cerebras', cerebrasVal]]) {
-          if (v && (/\s/.test(v) || v.length < 14)) {
-            showInlineErr(`${name} API key looks invalid (spaces or too short).`);
-            return;
+        if (!geminiVal && !groqVal) {
+          const msgEl = this.host.querySelector('.ap-inline-msg');
+          if (msgEl) {
+            msgEl.style.display = 'block';
+            msgEl.style.background = 'rgba(239,68,68,0.2)';
+            msgEl.style.color = '#f87171';
+            msgEl.textContent = 'Please enter at least one API key (Gemini or Groq).';
           }
+          return;
         }
 
         saveInlineBtn.disabled = true;
         saveInlineBtn.textContent = 'Saving...';
 
         const updates = {
-          provider: 'auto',
-          geminiKey: geminiVal,
-          groqKey: groqVal,
-          cerebrasKey: cerebrasVal
+          provider: (geminiVal && groqVal) ? 'race' : (geminiVal ? 'gemini' : 'groq')
         };
+        if (geminiVal) updates.geminiKey = geminiVal;
+        if (groqVal) updates.groqKey = groqVal;
 
         try {
           if (chrome.storage?.local) {
@@ -326,10 +303,10 @@ window.APSolverUI = class APSolverUI {
         } catch (e) {}
 
         this.apiKeys = { ...this.apiKeys, ...updates };
-        this.options.provider = 'auto';
+        this.options.provider = updates.provider;
         this.showSettings = false;
 
-        this.addLog('✓ API keys saved cleanly! Smart Dynamic Orchestrator is active.', 'ok');
+        this.addLog('✓ API keys saved successfully! Ready to solve.', 'ok');
         this.render();
       };
     }

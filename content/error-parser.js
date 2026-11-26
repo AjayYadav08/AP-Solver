@@ -204,8 +204,8 @@
 
     if (collaborationHistory && collaborationHistory.trim().length > 0) {
       feedbackBlocks.push(
-        `🤝 COMPLETE CHRONOLOGICAL ATTEMPT HISTORY (AI-TO-AI COLLABORATION — DO NOT REPEAT FAILED APPROACHES):\n` +
-        `Review EVERY prior attempt below (original code submitted, errors encountered, commands run, and what changed) before making an evidence-based fix:\n\n` +
+        `🤝 COMPLETE CHRONOLOGICAL ATTEMPT HISTORY (CUMULATIVE LOG — ANALYZE EVERY PREVIOUS CODE & ERROR WITHOUT REPEATING MISTAKES):\n` +
+        `Every prior failed attempt below includes its COMPLETE submitted code, executed terminal commands, and full error output. Compare attempts, pinpoint recurring root causes, and produce a genuinely corrected solution:\n\n` +
         collaborationHistory
       );
     } else if (attemptHistory.length > 0) {

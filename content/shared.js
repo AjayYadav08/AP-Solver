@@ -115,6 +115,7 @@
   AP.buildTerminalBashScript = function buildTerminalBashScript(filesToWrite, postCommands = [], cleanupFiles = []) {
     if (!filesToWrite || filesToWrite.length === 0) return '';
     let bashScript = '';
+    bashScript += `(cd /app/code 2>/dev/null || { _ap_top="$(git rev-parse --show-toplevel 2>/dev/null)"; [ -n "$_ap_top" ] && cd "$_ap_top"; } || true) && `;
     bashScript += `git config --global --add safe.directory /app/code 2>/dev/null || true && `;
     bashScript += `(sudo -n true 2>/dev/null && sudo chmod -R 777 /app/code/.git 2>/dev/null && sudo chown -R newton:newton /app/code 2>/dev/null || true) && `;
     bashScript += `(rm -f .git/index.lock 2>/dev/null || true) && `;

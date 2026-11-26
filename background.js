@@ -13,14 +13,13 @@ import {
   formatFullCollaborationHistory,
   loadQuestionAttemptHistory,
   saveQuestionAttemptHistory,
-  buildLocalTestSpec,
-  testProviderConnections
+  buildLocalTestSpec
 } from './utils/llm.js';
 import { queryEditorInTab, writeEditorInTab } from './background/editor.js';
 import { writeFilesViaTerminal, readIntegratedTerminalText } from './background/terminal.js';
 import { probeWorkspaceViaTerminal, runLocalTestsViaTerminal, runTerminalCommandsViaTerminal } from './background/workspace.js';
 
-export { buildBase64TerminalScript, analyzeFileModificationPlan, enforceFilePlan, analyzePreCodingTerminal, buildLocalTestSpec, testProviderConnections };
+export { buildBase64TerminalScript, analyzeFileModificationPlan, enforceFilePlan, analyzePreCodingTerminal, buildLocalTestSpec };
 
 console.log('[AP-Solver] Background service worker initialized.');
 
@@ -66,7 +65,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const key = buildQuestionStorageKey(data?.url || sender.tab?.url || '', data?.questionTitle || '');
         const history = await loadQuestionAttemptHistory(key);
         const priorCollab = (history && !history.solved && Array.isArray(history.attempts) && history.attempts.length > 0)
-          ? formatFullCollaborationHistory(history.attempts, { maxTotalChars: 6000 })
+          ? formatFullCollaborationHistory(history.attempts, { maxTotalChars: 60000 })
           : '';
         sendResponse({ ok: true, questionKey: key, history, priorCollab });
       } else if (op === 'AP_RECORD_ATTEMPT') {
@@ -93,7 +92,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           questionKey: key,
           record: rec,
           records,
-          collaborationHistory: formatFullCollaborationHistory(records, { maxTotalChars: 14000 })
+          collaborationHistory: formatFullCollaborationHistory(records, { maxTotalChars: 90000 })
         });
       } else if (op === 'AP_SAVE_ATTEMPT_HISTORY') {
         const ok = await saveQuestionAttemptHistory(data?.questionKey, data?.payload);
@@ -138,8 +137,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         } catch(e) {
           sendResponse({ ok: false, error: e.message });
         }
-      } else if (op === 'AP_TEST_CONNECTIONS') {
-        sendResponse(await testProviderConnections(data?.settingsOverride || null));
       } else if (op === 'AP_RELOAD_EXT') {
         sendResponse({ ok: true });
         setTimeout(() => chrome.runtime.reload(), 100);

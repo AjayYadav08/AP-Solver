@@ -340,25 +340,43 @@ export async function readIntegratedTerminalText(tabId, targetFrameId = undefine
           return visB - visA;
         });
         for (const el of termWrappers) {
-          for (const k of ['xterm', '_xterm', '__xterm']) {
-            const inst = el && el[k];
+          const readXtermObj = (inst) => {
             const buf = inst?.buffer?.active || inst?.buffer?.normal || inst?._core?.buffer?.lines;
-            if (buf) {
-              try {
-                const len = buf.length || 0;
-                const lines = [];
-                const startIdx = Math.max(0, len - 320);
-                for (let i = startIdx; i < len; i++) {
-                  const line = buf.getLine ? buf.getLine(i) : (buf.get ? buf.get(i) : null);
-                  if (line && line.translateToString) lines.push(line.translateToString(true));
-                }
-                const joined = lines.join('\n').trim();
-                if (joined) {
-                  const isVis = el.offsetParent !== null && el.getBoundingClientRect().height > 20;
-                  if (isVis) return joined;
-                  texts.push(joined);
-                }
-              } catch(e) {}
+            if (!buf) return '';
+            try {
+              const len = buf.length || 0;
+              const lines = [];
+              const startIdx = Math.max(0, len - 320);
+              for (let i = startIdx; i < len; i++) {
+                const line = buf.getLine ? buf.getLine(i) : (buf.get ? buf.get(i) : null);
+                if (line && line.translateToString) lines.push(line.translateToString(true));
+              }
+              return lines.join('\n').trim();
+            } catch (e) { return ''; }
+          };
+
+          const candKeys = new Set(['xterm', '_xterm', '__xterm']);
+          try {
+            for (const pk of Object.getOwnPropertyNames(el)) {
+              if (/xterm|terminal|reactFiber|reactProps/i.test(pk)) candKeys.add(pk);
+            }
+          } catch (e) {}
+
+          for (const k of candKeys) {
+            const rawProp = el && el[k];
+            const directText = readXtermObj(rawProp);
+            if (directText) {
+              const isVis = el.offsetParent !== null && el.getBoundingClientRect().height > 20;
+              if (isVis) return directText;
+              texts.push(directText);
+            }
+            // Inspect React fiber / stateNode terminal references when encapsulated
+            const stateTerm = rawProp?.return?.stateNode?.terminal || rawProp?.memoizedProps?.terminal || rawProp?.child?.stateNode?.terminal;
+            const fiberText = readXtermObj(stateTerm);
+            if (fiberText) {
+              const isVis = el.offsetParent !== null && el.getBoundingClientRect().height > 20;
+              if (isVis) return fiberText;
+              texts.push(fiberText);
             }
           }
         }
@@ -441,8 +459,8 @@ export async function runTerminalCommandWithCapture(tabId, { bashCmd, startMarke
 
     await ensureTerminalOpen(tabId);
     let baseText = await readIntegratedTerminalText(tabId);
-    if (!baseText || !baseText.trim()) {
-      await sleep(200);
+    for (let waitPoll = 0; waitPoll < 5 && (!baseText || !baseText.trim()); waitPoll++) {
+      await sleep(300);
       baseText = await readIntegratedTerminalText(tabId);
     }
     if (!baseText || !baseText.trim()) {
@@ -475,7 +493,7 @@ export async function runTerminalCommandWithCapture(tabId, { bashCmd, startMarke
         const sliceStart = startIdx !== -1 ? startIdx + startMarker.length : Math.max(0, endIdx - 6000);
         return { ok: true, raw: curText.substring(sliceStart, endIdx), fullText: curText };
       }
-      if (!sawOutputChange && (Date.now() - tStart > 3500)) {
+      if (!sawOutputChange && (Date.now() - tStart > 4500)) {
         return { ok: false, unreadable: true, error: 'Terminal output unavailable in DOM/buffer' };
       }
     }

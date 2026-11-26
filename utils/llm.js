@@ -49,27 +49,11 @@ export {
 } from './local-test-planner.js';
 
 export {
-  OPENAI_COMPAT_PRESETS,
-  PROVIDER_CAPABILITIES,
-  validateApiKeyFormat,
-  getConfiguredProviders,
-  analyzeTaskProfile,
-  scoreProviderForTask,
-  planModelOrchestration,
-  recordProviderOutcome,
-  getProviderTelemetrySnapshot,
-  resetProviderTelemetry,
-  isUsableProviderResult
-} from './orchestrator.js';
-
-export {
   DEFAULT_SETTINGS,
   getSettings,
   saveSettings,
   callGemini,
   callGroq,
-  callCerebras,
   callOpenAI,
-  testProviderConnections,
   generateSolution
 } from './providers.js';

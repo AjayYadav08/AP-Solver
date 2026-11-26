@@ -311,8 +311,8 @@ export function buildPrompt({
 
   if (questionDetails) {
     let compactDetails = String(questionDetails).replace(/\n{3,}/g, '\n\n').trim();
-    if (feedback && compactDetails.length > 5500) {
-      compactDetails = compactDetails.slice(0, 3800) + '\n...\n' + compactDetails.slice(-1200);
+    if (compactDetails.length > 16000) {
+      compactDetails = compactDetails.slice(0, 11000) + '\n...\n' + compactDetails.slice(-4500);
     }
     parts.push(`## Problem Description & Requirements:\n${compactDetails}`);
   }
@@ -333,116 +333,39 @@ export function buildPrompt({
     parts.push(`${codeHeader}\n\`\`\`${language}\n${currentCode}\n\`\`\``);
   }
 
-  if (collaborationHistory && !String(feedback || '').includes('COMPLETE CHRONOLOGICAL ATTEMPT HISTORY')) {
+  const feedbackHasFullHistory = String(feedback || '').includes('COMPLETE CHRONOLOGICAL ATTEMPT HISTORY');
+  if (collaborationHistory && !feedbackHasFullHistory) {
     parts.push(
-      `## 🤝 COMPLETE CHRONOLOGICAL ATTEMPT HISTORY (AI-TO-AI COLLABORATION):\n` +
-      `Analyze every prior attempt below alongside the original question above before coding:\n\n` +
+      `## 🤝 COMPLETE CHRONOLOGICAL ATTEMPT HISTORY (ALL PREVIOUS ATTEMPTS 1..${Math.max(1, (attemptNumber || 1) - 1)}):\n` +
+      `Review EVERY previous attempt's complete code and exact error messages below before writing a single line of code:\n\n` +
       collaborationHistory
     );
   }
 
   if (feedback) {
     parts.push(`## CRITICAL: PREVIOUS SUBMISSION FAILED — ONE-SHOT SIMULTANEOUS ERROR RESOLUTION REQUIRED
-Earlier attempt resulted in test failures. The full terminal logs, assertion diffs, and itemized errors have been deeply analyzed below.
-You MUST analyze EVERY failure trace and implement a unified, comprehensive fix that resolves ALL test cases simultaneously in this single output.
+Previous submission(s) failed verification. Review the complete original problem above, EVERY previous attempt's complete code & errors, and the itemized diagnosis below carefully before writing the corrected solution.
 
 ${feedback}
 
-### MANDATORY ONE-SHOT REFINEMENT INSTRUCTIONS:
-1. Resolve EVERY failing test simultaneously. Do NOT cherry-pick or fix only the first failure.
-2. Cross-reference the exact line numbers and stack traces with the current file contents provided above.
-3. Match exact status codes (200, 201, 400, 404, 409) and exact JSON key shapes as demanded by tests.
-4. Guarantee no hanging async requests (every branch must call res.status(...).json(...) or res.send(...)).
-5. If setup/build/migration/seed commands must run in terminal after writing files, add an optional \`\`\`bash // __commands__\`\`\` block.
-6. Return complete, production-ready code for all updated files with \`// <filepath>\` on Line 1 and zero comments.`);
+### MANDATORY CUMULATIVE CORRECTION & SUBMISSION REQUIREMENTS (ATTEMPT ${attemptNumber}/5):
+1. ROOT-CAUSE AUDIT ACROSS ALL ATTEMPTS: Identify why EVERY previous attempt (Attempts 1..${Math.max(1, (attemptNumber || 2) - 1)}) failed, locate recurring mistakes, and explicitly change what broke rather than repeating failed code.
+2. SIMULTANEOUS FIX: Resolve EVERY single failing test case simultaneously in this output. Do NOT cherry-pick or leave partial edge cases broken.
+3. EXACT CONTRACT COMPLIANCE: Match exact HTTP status codes (200, 201, 400, 401, 403, 404, 409), exact JSON property names/messages, exact exported function signatures, and database/environment configuration.
+4. ZERO HANGS OR UNHANDLED REJECTIONS: Wrap async handlers in try/catch and guarantee every code path sends a complete response or properly exits/disconnects.
+5. TERMINAL COMMANDS IF NEEDED: If build/compile/Prisma/seed/install commands must execute in terminal after writing files, include a separate \`\`\`bash // __commands__\`\`\` block.
+6. COMPLETE EXECUTABLE OUTPUT: Output complete, runnable replacement code for EVERY modified/required file with \`// <filepath>\` on Line 1 (or \`<!-- <filepath> -->\` for HTML) and ZERO comments inside code.`);
   }
 
   const isPrismaTask = /prisma|schema\.prisma|seed\.js|one-to-one/i.test((questionTitle || '') + ' ' + (questionDetails || ''));
   if (isPrismaTask) {
     parts.push(`## MANDATORY PRISMA MULTI-FILE REQUIREMENTS:
-This challenge REQUIRES multiple files. You MUST output ALL required files in separate markdown code blocks:
-\`\`\`prisma
-// prisma/schema.prisma
-datasource db {
-  provider = "postgresql"
-  url = env("DATABASE_URL")
-}
-
-generator client {
-  provider = "prisma-client-js"
-}
-
-model User {
-  id Int @id @default(autoincrement())
-  name String
-  email String @unique
-  profile Profile?
-}
-
-model Profile {
-  id Int @id @default(autoincrement())
-  bio String
-  age Int
-  city String
-  userId Int @unique
-  user User @relation(fields: [userId], references: [id])
-}
-\`\`\`
-
-\`\`\`javascript
-// src/seed.js
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
-
-async function main() {
-  await prisma.profile.deleteMany();
-  await prisma.user.deleteMany();
-
-  await prisma.user.create({
-    data: {
-      name: 'Priya',
-      email: 'priya@example.com',
-      profile: {
-        create: {
-          bio: 'Priya bio',
-          age: 30,
-          city: 'New York'
-        }
-      }
-    }
-  });
-
-  await prisma.user.create({
-    data: {
-      name: 'Rahul',
-      email: 'rahul@example.com',
-      profile: {
-        create: {
-          bio: 'Rahul bio',
-          age: 25,
-          city: 'Los Angeles'
-        }
-      }
-    }
-  });
-}
-
-main().catch(e => { console.error(e); process.exit(1); }).finally(async () => { await prisma.$disconnect(); });
-\`\`\`
-
-\`\`\`javascript
-// src/index.js
-const express = require('express');
-const app = express();
-const PORT = process.env.PORT || 8000;
-app.use(express.json());
-app.get('/', (req, res) => { res.send('Server is running'); });
-if (process.env.NODE_ENV !== 'test') {
-  app.listen(PORT, () => { console.log('Server running on port ' + PORT); });
-}
-module.exports = app;
-\`\`\`
-DO NOT OMIT prisma/schema.prisma! It is required for the database tables to be created!`);
+This challenge REQUIRES complete Prisma + Node files in separate markdown code blocks derived strictly from the Problem Description above:
+1. \`// prisma/schema.prisma\`: Define \`datasource db { provider = "postgresql" url = env("DATABASE_URL") }\`, \`generator client { provider = "prisma-client-js" }\`, and ALL models, field types, relations, and unique/FK attributes required by THIS question.
+2. \`// src/seed.js\`: Instantiate \`new PrismaClient()\`, delete child records before parent records (e.g. \`deleteMany()\`) cleanly, insert ALL exact seed records required by THIS question, handle errors with \`process.exit(1)\`, and ALWAYS close with \`await prisma.$disconnect()\` in \`finally\`.
+3. \`// src/index.js\`: Implement all required Express endpoints cleanly, export \`app\`, and start listening cleanly unless guarded by \`NODE_ENV !== 'test'\`.
+4. \`\`\`bash // __commands__\`\`\`: Include \`npx prisma db push --skip-generate\`, \`npx prisma generate\`, and \`node src/seed.js\` when schema/seeding changed.
+DO NOT OMIT \`prisma/schema.prisma\`!`);
   }
 
   parts.push(`## Operational Process Guidelines:

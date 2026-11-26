@@ -69,7 +69,8 @@ console.log('\\n'+S+'\\nGZ:'+gz+'\\n'+E);
 `.trim();
 
   const b64 = typeof Buffer !== 'undefined' ? Buffer.from(probeJs).toString('base64') : btoa(unescape(encodeURIComponent(probeJs)));
-  const bashCmd = `echo "${b64}" | base64 -d | node 2>/dev/null || printf "===AP""_CTX_START===\\nRAW:e30=\\n===AP""_CTX_END===\\n"`;
+  const rootCd = `(cd /app/code 2>/dev/null || { _ap_top="$(git rev-parse --show-toplevel 2>/dev/null)"; [ -n "$_ap_top" ] && cd "$_ap_top"; } || true)`;
+  const bashCmd = `${rootCd} && (echo "${b64}" | base64 -d | node 2>/dev/null || printf "===AP""_CTX_START===\\nRAW:e30=\\n===AP""_CTX_END===\\n")`;
 
   const cap = await runTerminalCommandWithCapture(tabId, {
     bashCmd,
@@ -347,6 +348,15 @@ const dirs=['test','tests','__tests__','src/__tests__','src/test'].filter(d=>fs.
 const rootTests=fs.readdirSync('.').filter(f=>/\\.(test|spec)\\.(?:js|ts|mjs|cjs|py)$/i.test(f));
 const needsMissingTestDir=/__tests__|tests?\\//i.test(script)&&dirs.length===0&&rootTests.length===0;
 
+const rawDiskCheck=()=>{
+  const miss=targets.filter(t=>!fs.existsSync(t));
+  for(const m of miss){addCase('Target file written to disk: '+m,m,'file exists & non-empty','MISSING ON DISK',false,'disk');}
+  return miss;
+};
+const missingTargets=rawDiskCheck();
+if(missingTargets.length>0){
+  emit({skip:false,strategy:spec.strategy,pkgRaw,executedCommands:['disk check'],compileResult:{ok:false,command:'disk check',output:'Missing written file(s): '+missingTargets.join(', ')},runtimeResult:{ok:false,command:'',output:''},cases,isSyntaxError:false,exitCode:1,passed:0,failed:missingTargets.length,output:logs.join('\\n')});
+}
 if(jsCandidates.length===0&&pyCandidates.length===0&&tsCandidates.length===0&&dirs.length===0&&rootTests.length===0){
   const p=zlib.gzipSync(Buffer.from(JSON.stringify({skip:true}))).toString('base64');
   console.log('\\n'+S+'\\nGZ:'+p+'\\n'+E);
@@ -571,9 +581,10 @@ export async function runLocalTestsViaTerminal(tabId, filesOrOptions = [], maybe
 
   const runnerJs = buildLocalTestRunnerScript(targetFiles, spec);
   const b64 = typeof Buffer !== 'undefined' ? Buffer.from(runnerJs).toString('base64') : btoa(unescape(encodeURIComponent(runnerJs)));
+  const rootCd = `(cd /app/code 2>/dev/null || { _ap_top="$(git rev-parse --show-toplevel 2>/dev/null)"; [ -n "$_ap_top" ] && cd "$_ap_top"; } || true)`;
 
   let cap = await runTerminalCommandWithCapture(tabId, {
-    bashCmd: `echo "${b64}" | base64 -d | node`,
+    bashCmd: `${rootCd} && echo "${b64}" | base64 -d | node`,
     startMarker: '===AP_LTEST_START===',
     endMarker: '===AP_LTEST_END===',
     timeoutMs: 38000
@@ -583,7 +594,7 @@ export async function runLocalTestsViaTerminal(tabId, filesOrOptions = [], maybe
   if (!cap.ok && cap.unreadable) {
     await new Promise(r => setTimeout(r, 400));
     cap = await runTerminalCommandWithCapture(tabId, {
-      bashCmd: `echo "${b64}" | base64 -d | node`,
+      bashCmd: `${rootCd} && echo "${b64}" | base64 -d | node`,
       startMarker: '===AP_LTEST_START===',
       endMarker: '===AP_LTEST_END===',
       timeoutMs: 38000
@@ -634,52 +645,75 @@ export async function runLocalTestsViaTerminal(tabId, filesOrOptions = [], maybe
   };
 }
 
-/** Execute safe setup/build/migration/remediation commands in container terminal and capture structured results. */
+/** Execute safe setup/build/migration/remediation commands in container terminal and capture verified exit codes + output. */
 export async function runTerminalCommandsViaTerminal(tabId, commands = []) {
   const cleanCmds = (Array.isArray(commands) ? commands : [])
     .map(c => sanitizePostWriteCommand(c))
     .filter(Boolean);
   if (cleanCmds.length === 0) {
-    return { ok: true, ran: [], exitCode: 0, output: '' };
+    return { ok: true, verified: true, ran: [], exitCode: 0, output: '' };
   }
 
   const runnerJs = `
 const zlib=require('zlib'),{spawnSync}=require('child_process');
 const S='===AP'+'_CMD_START===',E='===AP'+'_CMD_END===';
 const cmds=${JSON.stringify(cleanCmds)};
-const logs=[];let lastCode=0;
+const logs=[];let lastCode=0;const failedCmds=[];
 for(const c of cmds){
-  const r=spawnSync('sh',['-c',c],{encoding:'utf8',timeout:35000,env:{...process.env,CI:'true'}});
+  const r=spawnSync('sh',['-c',c],{encoding:'utf8',timeout:40000,env:{...process.env,CI:'true'}});
+  const code=(r.status===null?1:r.status);
   const out=((r.stdout||'')+'\\n'+(r.stderr||'')).trim();
-  logs.push('$ '+c+' (exit='+(r.status??1)+')\\n'+out.slice(-800));
-  if((r.status??1)!==0){lastCode=r.status??1;}
+  logs.push('$ '+c+' (exit='+code+')\\n'+out.slice(-1200));
+  if(code!==0){lastCode=code;failedCmds.push({command:c,exitCode:code,output:out.slice(-600)});}
+}
+if(lastCode===0){
+  spawnSync('sh',['-c','(rm -f .git/index.lock 2>/dev/null; git config user.email "solver@ap.dev" 2>/dev/null; git config user.name "AP-Solver" 2>/dev/null; git add -A && git commit -m "post-commands" 2>/dev/null || true)'],{encoding:'utf8',timeout:8000});
 }
 const full=logs.join('\\n');
 let lim=4000,gz='';
-while(lim>=600){gz=zlib.gzipSync(Buffer.from(JSON.stringify({exitCode:lastCode,ran:cmds,output:full.slice(-lim)}))).toString('base64');if(gz.length<=1650)break;lim=Math.floor(lim*0.65);}
+while(lim>=600){gz=zlib.gzipSync(Buffer.from(JSON.stringify({exitCode:lastCode,ran:cmds,failedCmds,cwd:process.cwd(),output:full.slice(-lim)}))).toString('base64');if(gz.length<=1650)break;lim=Math.floor(lim*0.65);}
 console.log('\\n'+S+'\\nGZ:'+gz+'\\n'+E);
 `.trim();
 
   const b64 = typeof Buffer !== 'undefined' ? Buffer.from(runnerJs).toString('base64') : btoa(unescape(encodeURIComponent(runnerJs)));
+  const rootCd = `(cd /app/code 2>/dev/null || { _ap_top="$(git rev-parse --show-toplevel 2>/dev/null)"; [ -n "$_ap_top" ] && cd "$_ap_top"; } || true)`;
   const cap = await runTerminalCommandWithCapture(tabId, {
-    bashCmd: `echo "${b64}" | base64 -d | node`,
+    bashCmd: `${rootCd} && echo "${b64}" | base64 -d | node`,
     startMarker: '===AP_CMD_START===',
     endMarker: '===AP_CMD_END===',
-    timeoutMs: 42000
+    timeoutMs: 48000
   });
 
   if (cap.ok) {
     const decoded = await decodeTerminalJsonPayload(cap.raw);
     if (decoded) {
-      return { ok: decoded.exitCode === 0, ran: decoded.ran || cleanCmds, exitCode: decoded.exitCode || 0, output: decoded.output || '' };
+      return {
+        ok: decoded.exitCode === 0,
+        verified: true,
+        ran: decoded.ran || cleanCmds,
+        failedCmds: decoded.failedCmds || [],
+        cwd: decoded.cwd || '',
+        exitCode: decoded.exitCode || 0,
+        output: decoded.output || ''
+      };
     }
   }
 
   if (cap.unreadable) {
-    const chained = cleanCmds.map(c => `(${c} || true)`).join(' && ') + ' && (rm -f .git/index.lock 2>/dev/null; git add -A && git commit -m "solution" 2>/dev/null || true)';
-    const disp = await dispatchCommandToTerminal(tabId, chained, 2500);
-    return { ok: !!disp?.ok, ran: cleanCmds, exitCode: disp?.ok ? 0 : 1, output: '', fallbackDispatched: true };
+    const chained = `${rootCd} && ` + cleanCmds.map(c => c).join(' && ') + ' && (rm -f .git/index.lock 2>/dev/null; git add -A && git commit -m "solution" 2>/dev/null || true)';
+    const disp = await dispatchCommandToTerminal(tabId, chained, 3000);
+    // Do NOT claim verified success when terminal output could not be read!
+    return {
+      ok: false,
+      verified: false,
+      unreadable: true,
+      ran: cleanCmds,
+      exitCode: null,
+      error: cap.error || 'Command dispatched via terminal, but output/exit code could not be captured for verification.',
+      output: '',
+      fallbackDispatched: !!disp?.ok
+    };
   }
 
-  return { ok: false, ran: cleanCmds, exitCode: 1, output: cap.error || 'Command runner failed' };
+  return { ok: false, verified: false, ran: cleanCmds, exitCode: 1, output: cap.error || 'Command runner failed' };
 }

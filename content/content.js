@@ -369,9 +369,12 @@
       }, 3000);
       if (hResp?.ok) {
         currentQuestionKey = hResp.questionKey || '';
-        if (hResp.priorCollab && !sessionCollaborationHistory) {
-          sessionCollaborationHistory = hResp.priorCollab;
-          ui.addLog(`📚 [Persistent History] Loaded ${hResp.history?.attempts?.length || 0} prior attempt(s) for this question so known bugs are avoided.`, 'normal');
+        if (hResp.history && !hResp.history.solved && Array.isArray(hResp.history.attempts) && hResp.history.attempts.length > 0) {
+          sessionAttemptRecords = [...hResp.history.attempts];
+          if (hResp.priorCollab && !sessionCollaborationHistory) {
+            sessionCollaborationHistory = hResp.priorCollab;
+            ui.addLog(`📚 [Persistent History] Loaded ${sessionAttemptRecords.length} prior attempt(s) for this question so known bugs are avoided.`, 'normal');
+          }
         }
       }
     } catch (e) {}
@@ -395,10 +398,10 @@
     if (!cachedEditor) cachedEditor = await queryActiveEditor();
 
     const isDebug = !!feedback;
-    const provider = ui.options.provider || 'auto';
+    const provider = ui.options.provider || 'race';
     const providerName = isDebug
-      ? '🧠 Debug Escalation (Smart Orchestrator)'
-      : (provider === 'auto' || provider === 'race' ? '🧠 Smart Orchestrator (Auto)' : provider === 'gemini' ? 'Google Gemini' : provider === 'groq' ? 'Groq AI' : provider === 'cerebras' ? 'Cerebras' : 'Custom AI');
+      ? '🧠 Debug Escalation (Gemini Pro / Groq Fallback)'
+      : (provider === 'gemini' ? 'Google Gemini (2.5 Flash)' : provider === 'groq' ? 'Groq AI (GPT OSS 120B)' : provider === 'race' ? '⚡ Turbo Race (Groq vs Gemini Parallel)' : 'OpenAI');
 
     ui.setStatus(`Generating solution with ${providerName}...`, feedback ? 'Deep-analyzing failure traces & escalating model...' : 'Crafting 100% test-compliant code...', 'running', true);
     ui.addLog(`Calling AI solver (${providerName})...`);
@@ -467,11 +470,6 @@
       ui.addLog(`🚫 [Plan Guard] Blocked unapproved/duplicate file "${b.filePath}": ${b.reason}`, 'warn');
     }
     if (!lockedFilePlan && resp.result.filePlan) lockedFilePlan = resp.result.filePlan;
-
-    if (resp.result.orchestration) {
-      const orch = resp.result.orchestration;
-      ui.addLog(`🧠 [Orchestrator] ${orch.selectedLabel || orch.selectedProvider} (${orch.selectedModel}) | stage=${orch.taskStage} | ${orch.reason || ''}${orch.fallbackUsed ? ' | ⚡ auto-fallback used' : ''}`, 'ok');
-    }
 
     cachedGeneratedCode = resp.result.code;
     cachedCommands = Array.isArray(resp.result.commands) ? resp.result.commands : [];
@@ -575,9 +573,13 @@
     const mergedPostCmds = [...new Set([...(cachedCommands || []), ...detectedPostCmds, ...preCommands])];
     lastExecutedCommands = [...mergedPostCmds];
     const cleanupList = [...staleTempFilesToRemove].filter(p => !initialWorkspaceFiles.has(p) && !filesToWrite.some(f => f.filePath === p));
+    // Write files cleanly first (clipboard keeps complete script + post-commands for manual fallback; automated flow verifies post-commands via AP_RUN_TERMINAL_COMMANDS)
     const bashScript = AP.buildTerminalBashScript(filesToWrite, mergedPostCmds, cleanupList);
+    const automatedWriteScript = mergedPostCmds.length > 0
+      ? AP.buildTerminalBashScript(filesToWrite, [], cleanupList)
+      : bashScript;
     if (cleanupList.length > 0) staleTempFilesToRemove.clear();
-    if (mergedPostCmds.length > 0) ui.addLog(`⚙️ [Post-Write Commands] Running in terminal before commit: ${mergedPostCmds.join(' && ')}`, 'normal');
+    if (mergedPostCmds.length > 0) ui.addLog(`⚙️ [Post-Write Commands] Will execute & verify in terminal before test/submit: ${mergedPostCmds.join(' && ')}`, 'normal');
 
     try {
       await navigator.clipboard.writeText(bashScript);
@@ -585,16 +587,30 @@
     } catch (e) {}
 
     filesWrittenViaTerminal = false;
+    let commandFailure = null;
     for (let termAttempt = 1; termAttempt <= 2; termAttempt++) {
       try {
         ui.addLog(`⚡ [Terminal Turbo Engine] Writing ${filesToWrite.length} file(s) directly to disk via Integrated Terminal (Attempt ${termAttempt}/2)...`, 'ok');
-        const termResp = await sendMsg({ op: 'AP_WRITE_TERMINAL', data: { files: filesToWrite, script: bashScript, postCommands: mergedPostCmds } }, 28000);
+        const termResp = await sendMsg({ op: 'AP_WRITE_TERMINAL', data: { files: filesToWrite, script: automatedWriteScript, postCommands: [] } }, 28000);
         if (termResp && termResp.ok) {
           filesWrittenViaTerminal = true;
-          ui.addLog(`⚡ [Terminal Turbo Engine] Successfully wrote ${filesToWrite.length} file(s) directly to disk via Terminal (${termResp.method || 'terminal'})!`, 'ok');
+          ui.addLog(`⚡ [Terminal Turbo Engine] Successfully wrote ${filesToWrite.length} file(s) directly to disk via Terminal (${termResp.method || 'terminal'}, verified=${!!termResp.verified})!`, 'ok');
           for (const f of filesToWrite) ui.setFileStatus(f.filePath, 'injected');
-          ui.setStatus('Files Saved via Terminal', `${filesToWrite.length} file(s) saved to disk. Ready to submit!`, 'success');
-          await sleep(500);
+          ui.setStatus('Files Saved via Terminal', `${filesToWrite.length} file(s) saved to disk.`, 'success');
+          await sleep(400);
+
+          if (mergedPostCmds.length > 0) {
+            ui.addLog(`🛠️ [Terminal Command Verification] Running required command(s): ${mergedPostCmds.join(' && ')}`, 'running');
+            const cmdRes = await sendMsg({ op: 'AP_RUN_TERMINAL_COMMANDS', data: { commands: mergedPostCmds } }, 52000);
+            if (cmdRes && cmdRes.verified === false && cmdRes.unreadable) {
+              ui.addLog(`⚠️ [Terminal Command Verification] Commands dispatched, but output unreadable (WebGL buffer). Proceeding carefully to local/remote checks.`, 'warn');
+            } else if (!cmdRes || !cmdRes.ok || (cmdRes.exitCode && cmdRes.exitCode !== 0)) {
+              ui.addLog(`❌ [Terminal Command Verification] Command failed (exit=${cmdRes?.exitCode ?? 1}): ${(cmdRes?.output || cmdRes?.error || '').slice(0, 220)}`, 'bad');
+              commandFailure = cmdRes || { ok: false, exitCode: 1, output: 'Post-write command failed', ran: mergedPostCmds };
+            } else {
+              ui.addLog(`✅ [Terminal Command Verification] Executed cleanly (exit=0) in ${cmdRes.cwd || 'workspace root'}.`, 'ok');
+            }
+          }
           break;
         } else {
           ui.addLog(`⚠️ [Terminal Engine] Notice: ${termResp?.error || 'Terminal focus pending'}. Script is in clipboard!`, 'warn');
@@ -609,7 +625,7 @@
         ui.addLog(`Erasing initial code & writing complete solution into "${f.filePath}"...`, 'info');
         ui.setFileStatus(f.filePath, 'injected');
       }
-      return { ok: true, updatedFiles: filesToWrite.map(f => f.filePath), failedFiles: [] };
+      return { ok: true, updatedFiles: filesToWrite.map(f => f.filePath), failedFiles: [], commandFailure };
     }
 
     ui.addLog(`📋 Multi-file bash script is COPIED in your clipboard!`, 'ok');
@@ -853,6 +869,46 @@
           const isComplete = await verifyCodeCompleteness(filesToCheck);
           if (!isComplete) { writeBlockedOrIncomplete = true; break; }
 
+          if (writeResult.commandFailure) {
+            const cmdErrOut = writeResult.commandFailure.output || writeResult.commandFailure.error || 'Required terminal command failed';
+            const cmdListStr = (writeResult.commandFailure.ran || lastExecutedCommands || []).join(' && ') || 'terminal setup command';
+            attemptHistory.push(`Terminal Cmd ${attempt}.${localTry} failed (${cmdListStr}): ${cmdErrOut.split('\n')[0].slice(0, 120)}`);
+            if (ui.options.autoRetry && localTry < maxLocalTries) {
+              try {
+                const recResp = await sendMsg({
+                  op: 'AP_RECORD_ATTEMPT',
+                  data: {
+                    questionKey: currentQuestionKey,
+                    existingRecords: sessionAttemptRecords,
+                    attemptNumber: attempt,
+                    stage: `local-${attempt}.${localTry}`,
+                    questionTitle: cachedQuestion?.title || '',
+                    originalQuestion: cachedQuestion?.details || '',
+                    submittedFiles: filesToCheck,
+                    terminalOutput: cmdErrOut,
+                    subRes: { passed: 0, total: 1, failedTests: [`Required command failed: ${cmdListStr}`] },
+                    commandsExecuted: [...lastExecutedCommands],
+                    localTestResult: { strategy: 'post_write_commands', status: 'failed', passed: 0, failed: 1, executedCommands: [...lastExecutedCommands], output: cmdErrOut },
+                    whatWentWrong: `Terminal preparation command failed: ${cmdErrOut.slice(0, 220)}`,
+                    strategyUsed: `Local Command Verification ${attempt}.${localTry}`
+                  }
+                }, 4000);
+                if (recResp?.ok) {
+                  sessionAttemptRecords = recResp.records || sessionAttemptRecords;
+                  sessionCollaborationHistory = recResp.collaborationHistory || sessionCollaborationHistory;
+                }
+              } catch (e) {}
+              feedback = await AP.buildDebugFeedback(
+                cmdErrOut,
+                { passed: 0, total: 1, failedTests: [`Required terminal command failed before submission: ${cmdListStr}`] },
+                `${attempt}.${localTry} (Terminal Command Error)`,
+                { attemptHistory, collaborationHistory: sessionCollaborationHistory, commandsExecuted: lastExecutedCommands, cachedGeneratedFiles, cachedEditor, filesWrittenViaTerminal, sendMsg, ui }
+              );
+              ui.addLog(`🧠 Required terminal command failed — fixing root cause before local tests/submit (${localTry + 1}/${maxLocalTries})...`, 'warn');
+              continue;
+            }
+          }
+
           ui.setStatus(`${stepTag} - Local Pre-Test Check...`, 'Running question-specific verification in Terminal...', 'running', true);
           ui.addLog(`🧪 [Local Pre-Test] Executing terminal verification before remote submission...`, 'running');
           const runLocalTestPayload = {
@@ -955,6 +1011,13 @@
 
         if (writeBlockedOrIncomplete) { ui.setRunning(false); break; }
 
+        if (ui.options.autoSubmit === false) {
+          ui.addLog('⏸️ [Auto-Submit OFF] Solution written & local checks completed. Please click "Submit Solution" manually or enable Auto-Submit.', 'warn');
+          ui.setStatus('Ready for Manual Submit', 'Auto-Submit is disabled in settings.', 'success');
+          ui.setRunning(false);
+          break;
+        }
+
         ui.setStatus(`Attempt ${attempt}/${maxAttempts} - Step 4/6: Submitting Solution...`, 'Evaluating solution with test grader...', 'running', true);
         ui.addLog(`🚀 [Step 4/6] Submitting solution & waiting until testcases judgement (Attempt ${attempt}/${maxAttempts})...`);
         const subRes = await handleSubmit();
@@ -1003,7 +1066,13 @@
           ui.addLog(`🔍 [Step 5/6] Tests failed. Checking error message in side bar terminal & analyzing failure...`, 'warn');
           ui.setStatus(`Attempt ${attempt}/${maxAttempts} - Step 5/6: Analyzing Terminal Errors...`, 'Checking error messages in side bar terminal...', 'running', true);
 
-          const terminalOutput = (await AP.readTerminalOutput(5500)) || subRes?.terminalLog || '';
+          let terminalOutput = (await AP.readTerminalOutput(5500)) || subRes?.terminalLog || '';
+          if (!terminalOutput && Array.isArray(subRes?.tests) && subRes.tests.length > 0) {
+            terminalOutput = subRes.tests
+              .filter(t => !t.pass)
+              .map(t => `${t.name}${t.error ? `: ${t.error}` : ' [FAILED]'}`)
+              .join('\n');
+          }
           const remoteAutoCmds = AP.detectPostWriteCommands(
             cachedQuestion?.details || '',
             cachedEditor?.referenceFiles?.['package.json'] || '',
@@ -1071,12 +1140,15 @@
           await sleep(1500);
           continue;
         } else {
-          const finalTerm = (await AP.readTerminalOutput(3000)) || subRes?.terminalLog || '';
+          let finalTerm = (await AP.readTerminalOutput(4500)) || subRes?.terminalLog || '';
+          if (!finalTerm && Array.isArray(subRes?.tests) && subRes.tests.length > 0) {
+            finalTerm = subRes.tests.filter(t => !t.pass).map(t => `${t.name}${t.error ? `: ${t.error}` : ' [FAILED]'}`).join('\n');
+          }
           try {
             const filesSubmitted = (cachedGeneratedFiles && cachedGeneratedFiles.length > 0)
               ? cachedGeneratedFiles
               : [{ filePath: sanitizeActiveFile(cachedEditor?.activeFile), code: cachedGeneratedCode }];
-            await sendMsg({
+            const finalRecResp = await sendMsg({
               op: 'AP_RECORD_ATTEMPT',
               data: {
                 questionKey: currentQuestionKey,
@@ -1089,10 +1161,15 @@
                 terminalOutput: finalTerm,
                 subRes,
                 commandsExecuted: [...lastExecutedCommands],
+                localTestResult: lastLocalTestResult,
                 whatWentWrong: `${subRes?.passed || 0}/${subRes?.total || 0} passed on Attempt ${attempt}`,
                 strategyUsed: `Attempt ${attempt}/5 Final`
               }
             }, 3000);
+            if (finalRecResp?.ok) {
+              sessionAttemptRecords = finalRecResp.records || sessionAttemptRecords;
+              sessionCollaborationHistory = finalRecResp.collaborationHistory || sessionCollaborationHistory;
+            }
           } catch (e) {}
           ui.addLog(`⚠️ Attempt ${attempt} finished: ${subRes?.passed || 0}/${subRes?.total || 0} test cases passed.`, 'warn');
           if (!ui.options.autoRetry) ui.addLog('ℹ️ Auto-retry is disabled. Review error messages above or click Solve to retry.', 'normal');
@@ -1164,15 +1241,18 @@
       }
     });
 
-    let activeProvider = settings.provider || 'auto';
-    if (activeProvider === 'race') activeProvider = 'auto';
+    let activeProvider = settings.provider || 'race';
+    if (activeProvider === 'openai' && settings.openaiKey?.trim()) {
+      activeProvider = 'openai';
+    } else if (settings.geminiKey?.trim() && settings.groqKey?.trim()) {
+      if (activeProvider !== 'gemini' && activeProvider !== 'groq' && activeProvider !== 'race') activeProvider = 'race';
+    } else if (settings.geminiKey?.trim() && !settings.groqKey?.trim()) {
+      activeProvider = 'gemini';
+    } else if (settings.groqKey?.trim() && !settings.geminiKey?.trim()) {
+      activeProvider = 'groq';
+    }
 
-    ui.setApiKeys({
-      geminiKey: settings.geminiKey || '',
-      groqKey: settings.groqKey || '',
-      cerebrasKey: settings.cerebrasKey || '',
-      openaiKey: settings.openaiKey || ''
-    });
+    ui.setApiKeys({ geminiKey: settings.geminiKey || '', groqKey: settings.groqKey || '' });
     ui.updateOptions({ autoSubmit: settings.autoSubmit ?? true, autoRetry: settings.autoRetry !== false, provider: activeProvider });
 
     let scanCount = 0;
