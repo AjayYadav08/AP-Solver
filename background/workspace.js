@@ -39,14 +39,20 @@ function walk(d,depth){
 }
 walk('.',0);
 for(const p of testCands.slice(0,4)){try{out.files[p]=fs.readFileSync(p,'utf8').slice(0,4500);}catch(e){}}
-for(const p of keyCands.slice(0,5)){try{if(fs.statSync(p).size<8000)out.files[p]=fs.readFileSync(p,'utf8').slice(0,1800);}catch(e){}}
+for(const p of keyCands.slice(0,6)){try{if(fs.statSync(p).size<12000)out.files[p]=fs.readFileSync(p,'utf8').slice(0,2200);}catch(e){}}
 let gz=zlib.gzipSync(Buffer.from(JSON.stringify(out))).toString('base64');
 if(gz.length>1600){
-  for(const p of keyCands){if(out.files[p]&&p!=='prisma/schema.prisma'&&!p.endsWith('schema.prisma'))delete out.files[p];}
+  for(const p of keyCands){if(out.files[p]&&p!=='prisma/schema.prisma'&&!p.endsWith('schema.prisma'))out.files[p]=out.files[p].slice(0,1100);}
+  for(const p of testCands){if(out.files[p])out.files[p]=out.files[p].slice(0,2800);}
   gz=zlib.gzipSync(Buffer.from(JSON.stringify(out))).toString('base64');
 }
 if(gz.length>1600){
-  for(const p of testCands){if(out.files[p])out.files[p]=out.files[p].slice(0,2200);}
+  for(const p of keyCands){if(out.files[p]&&p!=='prisma/schema.prisma'&&!p.endsWith('schema.prisma')&&!/index\.(js|ts)$/i.test(p))delete out.files[p];}
+  gz=zlib.gzipSync(Buffer.from(JSON.stringify(out))).toString('base64');
+}
+if(gz.length>1600){
+  for(const p of keyCands){if(out.files[p]&&p!=='prisma/schema.prisma'&&!p.endsWith('schema.prisma'))delete out.files[p];}
+  for(const p of testCands){if(out.files[p])out.files[p]=out.files[p].slice(0,2000);}
   gz=zlib.gzipSync(Buffer.from(JSON.stringify(out))).toString('base64');
 }
 console.log('\\n'+S+'\\nGZ:'+gz+'\\n'+E);
@@ -76,7 +82,8 @@ const fs=require('fs'),zlib=require('zlib'),{spawnSync}=require('child_process')
 const S='===AP'+'_LTEST_START===',E='===AP'+'_LTEST_END===';
 const emit=(obj)=>{let lim=8000,gz='';while(lim>=1000){const p={...obj,output:(obj.output||'').slice(-lim)};gz=zlib.gzipSync(Buffer.from(JSON.stringify(p))).toString('base64');if(gz.length<=1650)break;lim=Math.floor(lim*0.65);}console.log('\\n[Local Test] pass='+(obj.passed||0)+' fail='+(obj.failed||0)+' exit='+(obj.exitCode??0));console.log(S+'\\nGZ:'+gz+'\\n'+E);process.exit(0);};
 const targets=${jsFilesJson};
-const syntaxCandidates=[...new Set([...targets,...(fs.existsSync('src')?fs.readdirSync('src').filter(f=>/\\.js$/i.test(f)).map(f=>'src/'+f):[])])].filter(f=>fs.existsSync(f));
+const walkJs=(d,dep)=>{let o=[];if(dep>3||!fs.existsSync(d))return o;for(const e of fs.readdirSync(d,{withFileTypes:true})){if(e.name==='node_modules'||e.name==='.git')continue;const p=d+'/'+e.name;if(e.isDirectory())o.push(...walkJs(p,dep+1));else if(/\\.js$/i.test(e.name))o.push(p);}return o;};
+const syntaxCandidates=[...new Set([...targets,...walkJs('src',0)])].filter(f=>fs.existsSync(f));
 for(const f of syntaxCandidates){
   const chk=spawnSync('node',['--check',f],{encoding:'utf8',timeout:5000});
   if(chk.status!==0){emit({skip:false,isSyntaxError:true,exitCode:1,passed:0,failed:1,output:'SyntaxError in '+f+':\\n'+((chk.stderr||chk.stdout||'').trim())});}

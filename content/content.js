@@ -269,17 +269,19 @@
       ui.addLog(`Editor detected: "${cachedEditor.activeFile}" (${cachedEditor.code.split('\n').length} lines, ${cachedEditor.allFiles?.length || 1} file(s) in workspace)`, 'ok');
 
       if (cachedQuestion?.details) {
-        const fileMatches = cachedQuestion.details.match(/([a-zA-Z0-9_\-]+\.(?:js|ts))/gi) || [];
+        const fileMatches = cachedQuestion.details.match(/((?:[a-zA-Z0-9_.\-]+\/)*[a-zA-Z0-9_\-]+\.(?:js|ts))/gi) || [];
         const knownFiles = cachedEditor.allFiles || [];
-        for (const fm of fileMatches) {
+        for (const rawFm of fileMatches) {
+          const fm = rawFm.replace(/^\.\//, '');
           if (/package|prisma\.config|schema\.prisma|\.env|nodemon|readme|test/i.test(fm)) continue;
-          const matchingKnown = knownFiles.find(kf => kf.endsWith(fm));
-          if (matchingKnown && !cachedEditor.activeFile.endsWith(fm)) {
+          const matchingKnown = knownFiles.find(kf => kf.toLowerCase() === fm.toLowerCase() || kf.toLowerCase() === ('src/' + fm).toLowerCase())
+            || knownFiles.find(kf => kf.endsWith('/' + fm) || (!fm.includes('/') && kf.endsWith('/' + fm)));
+          if (matchingKnown && cachedEditor.activeFile !== matchingKnown) {
             ui.addLog(`ℹ️ Question specifically targets "${matchingKnown}". Updating active target.`, 'ok');
             cachedEditor.activeFile = sanitizeActiveFile(matchingKnown);
             break;
-          } else if (!matchingKnown && /seed\.js|router|controller|middleware|service/i.test(fm)) {
-            const targetPath = fm.includes('/') ? fm : 'src/' + fm;
+          } else if (!matchingKnown && /seed\.js|router|controller|middleware|service|validate/i.test(fm)) {
+            const targetPath = fm.startsWith('src/') ? fm : 'src/' + fm;
             ui.addLog(`ℹ️ Challenge requires new file "${targetPath}". Setting as primary target.`, 'ok');
             cachedEditor.activeFile = sanitizeActiveFile(targetPath);
             break;
@@ -355,7 +357,20 @@
 
     const mergedFilesMap = new Map();
     for (const f of (cachedGeneratedFiles || [])) if (f.filePath && f.code) mergedFilesMap.set(f.filePath, f);
-    for (const f of newFiles) if (f.filePath && f.code) mergedFilesMap.set(f.filePath, f);
+    for (const f of newFiles) {
+      if (!f.filePath || !f.code) continue;
+      const base = f.filePath.split('/').pop().toLowerCase();
+      // If nested file like src/middleware/validate.js arrives, drop any stale flattened src/validate.js
+      if (f.filePath.split('/').length > 2) {
+        const flatTwin = 'src/' + base;
+        if (flatTwin !== f.filePath.toLowerCase()) {
+          for (const k of [...mergedFilesMap.keys()]) {
+            if (k.toLowerCase() === flatTwin) mergedFilesMap.delete(k);
+          }
+        }
+      }
+      mergedFilesMap.set(f.filePath, f);
+    }
     cachedGeneratedFiles = Array.from(mergedFilesMap.values());
 
     for (const f of cachedGeneratedFiles) {

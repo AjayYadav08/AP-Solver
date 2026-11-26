@@ -98,7 +98,21 @@ export async function runUtilsTests() {
   const prismaResp = `\`\`\`prisma\ndatasource db { provider = "postgresql" url = env("DATABASE_URL") }\nmodel User { id Int @id }\n\`\`\`\n\`\`\`javascript\n// src/seed.js\nconst { PrismaClient } = require('@prisma/client');\nconst prisma = new PrismaClient();\nawait prisma.user.deleteMany();\n\`\`\``;
   const parsedPrisma = parseMultiFileSolution(prismaResp, 'src/index.js', ['prisma/schema.prisma', 'src/seed.js']);
   assert(parsedPrisma[0].filePath === 'prisma/schema.prisma' && parsedPrisma[1].filePath === 'src/seed.js', 'Prisma routing failed');
-  console.log('   ✓ Multi-file parser, header permutations & Prisma routing verified');
+
+  // Nested subdirectory preservation (e.g. src/middleware/validate.js must NEVER become src/validate.js)
+  const nestedExplicit = `\`\`\`javascript\n// src/index.js\nconst express = require('express');\nconst authenticateToken = require('./middleware/validate');\nmodule.exports = express();\n\`\`\`\n\`\`\`javascript\n// src/middleware/validate.js\nmodule.exports = (req, res, next) => next();\n\`\`\``;
+  const parsedNested = parseMultiFileSolution(nestedExplicit, 'src/index.js', ['src/index.js', 'src/middleware/validate.js', 'test/auth.test.js']);
+  assert(parsedNested.length === 2 && parsedNested[0].filePath === 'src/index.js' && parsedNested[1].filePath === 'src/middleware/validate.js', 'Nested subfolder explicit path failed');
+
+  const nestedBareHeader = `\`\`\`javascript\n// validate.js\nmodule.exports = (req, res, next) => next();\n\`\`\`\n\`\`\`javascript\n// middleware/validate.js\nmodule.exports = (req, res, next) => next();\n\`\`\`\n\`\`\`javascript\n// src/routes/auth.js\nconst express = require('express');\nmodule.exports = express.Router();\n\`\`\``;
+  const parsedSubRes = parseMultiFileSolution(nestedBareHeader, 'src/index.js', ['src/index.js', 'src/middleware/validate.js', 'src/routes/auth.js']);
+  assert(
+    parsedSubRes[0].filePath === 'src/middleware/validate.js' &&
+    parsedSubRes[1].filePath === 'src/middleware/validate.js' &&
+    parsedSubRes[2].filePath === 'src/routes/auth.js',
+    'Workspace nested path lookup or express router preservation failed: ' + JSON.stringify(parsedSubRes.map(f => f.filePath))
+  );
+  console.log('   ✓ Multi-file parser, nested directory resolution & Prisma routing verified');
 
   // 5. Post-write commands, auto-remediation & script builder
   const multiWithCmds = `\`\`\`javascript\n// src/index.js\nconst app = require('express')();\nmodule.exports = app;\n\`\`\`\n\`\`\`bash\n// __commands__\nnpx prisma generate\nnpm run build\nrm -rf /\nnpm start\n\`\`\``;
@@ -167,9 +181,34 @@ export async function runUtilsTests() {
   const dupCount = (dedupPrompt.match(/### File: `src\/index\.js`|### Initial Starter File: `src\/index\.js`/g) || []).length;
   assert(dupCount === 1 && !dedupPrompt.includes('Previous Attempt Solution Code in `src/index.js`'), 'Prompt deduplication failed');
 
+  // Verify Attempt 1 non-debug compaction keeps Task 3 & Test Cases intact (no blind tail-slice)
+  const longAttempt1Prompt = buildPrompt({
+    questionTitle: 'Login api with protected middleware',
+    activeFile: 'src/middleware/validate.js',
+    workspaceFiles: ['src/index.js', 'src/middleware/validate.js', 'test/auth.test.js'],
+    currentCode: '// starter validate.js',
+    referenceFiles: {
+      'package.json': JSON.stringify({ dependencies: { express: '^4.18.2', bcryptjs: '^2.4.3', jsonwebtoken: '^9.0.0' } }),
+      'src/middleware/validate.js': '// starter validate.js',
+      'src/index.js': 'const app = require("express")();\n' + '// boilerplate padding\n'.repeat(120),
+      'test/auth.test.js': 'describe("Auth", () => {\n' + '  it("checks case", () => {});\n'.repeat(90) + '});'
+    },
+    questionDetails: 'Objective\n' + 'Scenario background prose. '.repeat(90) + '\nTask 1: POST /login\nTask 2: middleware/validate.js\nTask 3: GET /protected returns Welcome to the protected data, testuser@example.com!',
+    testCases: ['should register a new user successfully', 'should allow access to /protected with valid token']
+  });
+  assert(!longAttempt1Prompt.includes('## Current Starter Code in `src/middleware/validate.js`'), 'Attempt 1 activeFile duplicated');
+
   // 8. Mocked fetch tests: empty response recovery, 413 TPM step-down, priority compaction, TPD fallback, non-Prisma isolation & Gemini routing
   const origFetch = globalThis.fetch;
   try {
+    // A0. Attempt-1 Groq compaction preserves Task 3 & protected route spec
+    let attempt1Sent = '';
+    globalThis.fetch = async (_u, init) => {
+      attempt1Sent = JSON.parse(init.body).messages[1].content;
+      return { ok: true, json: async () => ({ choices: [{ message: { content: "```javascript\n// src/middleware/validate.js\nmodule.exports = (req, res, next) => next();\n```" }, finish_reason: 'stop' }] }) };
+    };
+    await callGroq(longAttempt1Prompt, { groqKey: 'k', isDebugMode: false, activeFile: 'src/middleware/validate.js', workspaceFiles: ['src/index.js', 'src/middleware/validate.js'] });
+    assert(attempt1Sent.includes('Task 3: GET /protected') && attempt1Sent.includes('Welcome to the protected data'), 'Attempt 1 compaction dropped Task 3 spec!');
     // A. Groq empty reasoning recovery
     let groqAttempt = 0;
     globalThis.fetch = async (_u, init) => {

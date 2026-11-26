@@ -25,8 +25,9 @@ export async function runContentTests() {
     scraperSrc.includes('uniqueTestElements') &&
     scraperSrc.includes('findMochaErrorForTest') &&
     scraperSrc.includes('readSubmissionResultsWithErrors') &&
-    scraperSrc.includes('readTerminalOutput'),
-    'content/dom-scrapers.js missing navigation or extraction helpers'
+    scraperSrc.includes('readTerminalOutput') &&
+    scraperSrc.includes('/^\\d+[\\.\\)]$/'),
+    'content/dom-scrapers.js missing navigation, split-line test case parser, or extraction helpers'
   );
   const switchTermSec = scraperSrc.substring(scraperSrc.indexOf('function switchToTerminalTab'), scraperSrc.indexOf('async function readTerminalOutput'));
   assert(!switchTermSec.includes("'button, [role=\"tab\"], div'"), 'switchToTerminalTab must only match rail tab/button elements');

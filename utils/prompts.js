@@ -107,61 +107,13 @@ STRICT GUIDELINES:
        - Preserve 'title' and other fields. Return status 200 with updated object.
      * For unknown routes or unsupported methods:
        - Return status 404 with { error: "Route not found" }.
-   - For JWT Authentication & Token Challenges (e.g. "Login and Get a Token", POST /login, authenticate middleware, GET /profile):
-     * Hardcoded User & Secret:
-       - Preserve the hardcoded 'SECRET' (e.g. 'const SECRET = "my_super_secret_key";') and 'user' object exactly as defined in the starter code.
-     * POST /login Endpoint:
-       - Extract credentials: 'const { username, password } = req.body || {};'.
-       - Reject missing, null, undefined, non-string, or empty/whitespace credentials:
-         if (!username || !password || typeof username !== 'string' || typeof password !== 'string' || !username.trim() || !password.trim()) {
-           return res.status(401).json({ message: 'Invalid credentials' });
-         }
-       - Exact Match Validation:
-         if (username !== user.username || password !== user.password) {
-           return res.status(401).json({ message: 'Invalid credentials' });
-         }
-       - Generate Token: Sign with payload containing 'userId: user.id' (or 'user.userId'), secret 'SECRET', and EXACTLY 15 minutes expiry:
-         const token = jwt.sign({ userId: user.id }, SECRET, { expiresIn: '15m' });
-         return res.status(200).json({ token });
-     * authenticate Middleware:
-       - Extract header: 'const authHeader = req.headers["authorization"] || req.headers["Authorization"];'.
-       - Reject if Authorization header is missing or not a string:
-         if (!authHeader || typeof authHeader !== 'string') {
-           return res.status(401).json({ message: 'Token missing' });
-         }
-         const parts = authHeader.split(' ');
-         if (parts.length !== 2 || parts[0] !== 'Bearer' || !parts[1]) {
-           return res.status(401).json({ message: 'Invalid or expired token' });
-         }
-         const token = parts[1];
-       - Verify Token with SECRET:
-         try {
-           const decoded = jwt.verify(token, SECRET);
-           if (!decoded || (!decoded.userId && !decoded.id)) {
-             return res.status(401).json({ message: 'Invalid or expired token' });
-           }
-           req.user = decoded;
-           return next();
-         } catch (err) {
-           return res.status(401).json({ message: 'Invalid or expired token' });
-         }
-     * GET /profile Endpoint:
-       - Protect with 'authenticate' middleware: 'app.get("/profile", authenticate, (req, res) => { ... });'.
-       - Check user match:
-         const targetId = req.user ? (req.user.userId || req.user.id) : null;
-         if (targetId && targetId !== user.id) {
-           return res.status(404).json({ message: 'User not found' });
-         }
-       - NEVER expose password in the profile response:
-         const { password: _, ...safeUser } = user;
-         return res.status(200).json(safeUser);
-     * Module Exports:
-       - Support both default and named imports for the test runner:
-         module.exports = app;
-         module.exports.app = app;
-         module.exports.authenticate = authenticate;
-         module.exports.SECRET = SECRET;
-         module.exports.user = user;
+   - For JWT Authentication & Token Challenges:
+     * SPEC FIRST: ALWAYS follow the CURRENT PROBLEM SPECIFICATION, GRADING TESTS, and STARTER CODE verbatim (secret env/variable name like 'JWT_SECRET' vs 'SECRET', login field 'email' vs 'username', token payload '{ email: user.email }' vs '{ userId }', expiry '1h' vs '15m', status codes 400/401/403, exact JSON response keys/messages, and protected route path & response body).
+     * PRESERVE BOILERPLATE & RELATIVE PATHS: Keep pre-implemented working routes in starter code (such as an existing '/register' route) intact unless tests explicitly fail on them, and preserve exact relative 'require(...)' paths (e.g. 'require("./middleware/validate")').
+     * Generic JWT Rules (apply when not overridden by specific starter/test assertions):
+       - Reject missing or malformed 'Authorization: Bearer <token>' headers with 401 and invalid/expired tokens with the exact status specified by the problem (401 or 403).
+       - Verify token with 'jwt.verify(...)', attach decoded payload to 'req.user', and call 'next()'.
+       - NEVER expose password/hash in responses and preserve all expected module exports.
 4. WIPE & REPLACE COMPLETENESS:
    - Return the ENTIRE replacement file ready to run from top imports to exports.
    - Do NOT omit any parts with comments like "// ... rest of code".
@@ -301,11 +253,12 @@ export function buildPrompt({
     parts.push(`## Test Cases to Pass (All Must Pass):\n${testCases.map((tc, i) => `${i + 1}. ${tc}`).join('\n')}`);
   }
 
-  const activeAlreadyInFeedback = feedback && (
+  const refKeys = Object.keys(referenceFiles || {});
+  const activeAlreadyIncluded =
     feedbackEmbeddedFiles.has(activeFile) ||
-    [...feedbackEmbeddedFiles].some(f => f.endsWith('/' + activeFile) || activeFile.endsWith('/' + f))
-  );
-  if (currentCode && !activeAlreadyInFeedback) {
+    [...feedbackEmbeddedFiles].some(f => f.endsWith('/' + activeFile) || activeFile.endsWith('/' + f)) ||
+    (!feedback && refKeys.some(k => referenceFiles[k] && (k === activeFile || k.endsWith('/' + activeFile) || activeFile.endsWith('/' + k))));
+  if (currentCode && !activeAlreadyIncluded) {
     const codeHeader = feedback
       ? `## Previous Attempt Solution Code in \`${activeFile}\` (${language}):`
       : `## Current Starter Code in \`${activeFile}\` (${language}):`;
@@ -417,12 +370,11 @@ DO NOT OMIT prisma/schema.prisma! It is required for the database tables to be c
   }
 
   parts.push(`## Operational Process Guidelines:
-1. GIVE FULL QUESTION AND INITIAL CODE: Carefully inspect the full question requirements and initial starter code across all files above.
-2. DETERMINE ALL REQUIRED FILES & LOCATIONS: Identify all files in which code must be written. If a required file is not present in the project (e.g. \`src/seed.js\`, \`src/routes/tasks.js\`, \`src/controllers/userController.js\`), specify its full path on Line 1 so it will be created at its given location.
-3. WRITE COMPLETE CODE & ERASE INITIAL CODE: Provide 100% complete, bug-free replacement code for all required files that completely erases initial starter code and fills corresponding files.
-4. ONE CODE BLOCK PER FILE: Output each file in its own distinct markdown code block with the exact file path on Line 1 (e.g. \`// src/seed.js\`).
-5. NO GENERIC LABELS: Never use "File 1", "1.js", or conversational text. Return ONLY the code blocks.
-6. AVOID WRITING COMMENTS IN CODE: NEVER write comments in the code. Output clean, pure executable code only.`);
+1. GIVE FULL QUESTION AND INITIAL CODE: Carefully inspect ALL tasks (Task 1, Task 2, Task 3, etc.), response JSON schemas, status codes, and starter files above.
+2. EXACT FILE PATHS REQUIRED: Look at Project Workspace Files above and preserve EVERY exact nested relative path (e.g. \`// src/middleware/validate.js\`, \`// src/routes/auth.js\`, \`// src/index.js\`). NEVER strip parent folders like \`middleware/\` or invent a second copy \`src/validate.js\`.
+3. WRITE COMPLETE CODE WITHOUT BREAKING EXISTING WORKING ROUTES: Preserve pre-implemented boilerplate routes (like existing \`/register\`) and exact \`require(...)\` paths (like \`require('./middleware/validate')\`). When specification defines an exact JSON payload (e.g. \`{ "message": "..." }\` or \`{ "token": ... }\` or \`{ "message": "...", "user": ... }\`), match those exact keys without adding unrequested extra fields.
+4. ONE CODE BLOCK PER FILE: Output each modified/created file in its own distinct markdown code block with its exact workspace file path on Line 1 (e.g. \`// src/middleware/validate.js\`).
+5. NO GENERIC LABELS OR COMMENTS: Never use "File 1", "1.js", conversational text, or comments inside code.`);
 
   return parts.join('\n\n');
 }
@@ -438,22 +390,62 @@ export function getContextGatedSystemPrompt(userPrompt, isDebug = false) {
 
   const lines = [
     'You are a Senior Full-Stack Software Engineer. Write complete, bug-free, test-compliant solutions.',
-    'RULES: Follow every requirement verbatim. Match starter code style (CommonJS vs ESM, Express vs node:http). Preserve all exports (e.g. module.exports = app/server).',
+    'RULES: Follow every requirement in Problem Description & Grading Test Files verbatim (every Task 1/2/3, exact status codes, exact JSON keys & messages).',
+    'Match starter code style (CommonJS vs ESM, Express vs node:http), preserve pre-implemented working routes, and preserve exact exports & nested file paths (e.g. // src/middleware/validate.js — NEVER flatten nested folders into src/validate.js).',
     'NEVER invent extra files (e.g. NEVER create prisma/schema.prisma or seed.js unless explicitly required by the problem!).',
     'NEVER invent uninstalled packages; strictly use packages in package.json or Node built-ins. Fix JSON SyntaxError with express error handler returning 400. Return res.status(...).json(...) on every branch so requests never hang or timeout.',
-    'Output ONLY clean executable code (NO comments, NO explanations, NO "... rest of code") in markdown fenced code block(s) with exact file path on line 1 (e.g. // src/index.js).',
+    'Output ONLY clean executable code (NO comments, NO explanations, NO "... rest of code") in markdown fenced code block(s) with exact workspace file path on line 1.',
     'If setup/migration/build/seed commands must run in terminal after writing files, add a separate ```bash block starting with // __commands__ and list one shell command per line.',
     '2-space indentation only; no tabs.'
   ];
   if (needsPrisma) lines.push('PRISMA: Output prisma/schema.prisma, src/seed.js (deleteMany child-then-parent, await prisma.$disconnect() in finally), and src/index.js cleanly.');
   if (needsNativeHttp) lines.push('NODE HTTP: Set Content-Type application/json; parse JSON safely (400 on invalid JSON); export server cleanly (module.exports = server; module.exports.server = server;). Return 404 on unknown routes.');
-  if (needsJwt) lines.push('JWT: Preserve hardcoded SECRET and user object; reject missing/invalid/malformed/wrong-secret tokens accurately per spec.');
+  if (needsJwt) lines.push('JWT: Follow exact secret (e.g. JWT_SECRET/SECRET), payload fields (e.g. { email } vs { userId }), expiry (1h vs 15m), auth error status codes (401/403), and protected route response specified by THIS problem & tests.');
   if (needsExpressAuth) lines.push('EXPRESS AUTH: Validate inputs strictly (400), check duplicate records via findFirst/findUnique before create, hash password with installed bcrypt/bcryptjs, omit password from JSON response.');
   if (isDebug || /PREVIOUS ATTEMPT|FAILED/i.test(p)) lines.push('DEBUG: Fix EVERY failing test simultaneously in one complete replacement file without breaking passing routes.');
   return lines.join('\n');
 }
 
-/** Smart priority-preserving compactor for strict Groq TPM quotas (never slices off debug errors or current code). */
+/** Shrink oversized markdown sections so high-priority requirements, Tasks & test specs never get blindly sliced off. */
+function compactNonDebugPrompt(prompt, maxPromptChars) {
+  const sections = prompt.split(/\n\n(?=## |# PROBLEM:)/);
+  const shrinkEdge = (sec, limit) => {
+    if (sec.length <= limit) return sec;
+    const head = Math.max(250, Math.floor(limit * 0.52));
+    const tail = Math.max(200, limit - head - 8);
+    return sec.slice(0, head) + '\n...\n' + sec.slice(-tail);
+  };
+  const totalLen = () => sections.join('\n\n').length;
+
+  // Strip narrative Objective/Scenario fluff from Problem Description first before touching Tasks/Testing specs
+  for (let i = 0; i < sections.length && totalLen() > maxPromptChars; i++) {
+    if (/^## Problem Description & Requirements:/i.test(sections[i])) {
+      sections[i] = sections[i].replace(/\b(Objective|Scenario)\n[\s\S]*?(?=\n(?:Project Structure|Your Tasks|Task 1)\b)/i, '');
+    }
+  }
+
+  // Progressively budget secondary sections to preserve Task 1..N specs & test cases
+  const passLimits = [
+    { match: /^## Operational Process Guidelines:/, limit: 420 },
+    { match: /^## Current Starter Code/, limit: 900 },
+    { match: /^## Initial Workspace Files & Starter Code:/, limit: 1200 },
+    { match: /^## EXACT GRADING TEST SUITE FILES/, limit: Math.max(1200, Math.floor(maxPromptChars * 0.30)) },
+    { match: /^## Problem Description & Requirements:/, limit: Math.max(1600, Math.floor(maxPromptChars * 0.42)) }
+  ];
+  for (const { match, limit } of passLimits) {
+    if (totalLen() <= maxPromptChars) break;
+    for (let i = 0; i < sections.length; i++) {
+      if (match.test(sections[i]) && sections[i].length > limit) {
+        sections[i] = shrinkEdge(sections[i], limit);
+      }
+    }
+  }
+  const joined = sections.join('\n\n');
+  if (joined.length <= maxPromptChars) return joined;
+  return shrinkEdge(joined, maxPromptChars);
+}
+
+/** Smart priority-preserving compactor for strict Groq TPM quotas (never slices off debug errors, current code, or Task specs). */
 export function buildCompactGroqMessages(systemPrompt, userPrompt, desiredMaxTokens = 4096, tpmLimit = 7600) {
   const p = String(userPrompt || '');
   const sys = getContextGatedSystemPrompt(p, /PREVIOUS ATTEMPT|FAILED/i.test(p));
@@ -501,12 +493,12 @@ export function buildCompactGroqMessages(systemPrompt, userPrompt, desiredMaxTok
       }
 
       const trimmedSpec = specPart.length > specBudget
-        ? specPart.slice(0, Math.max(900, specBudget - 8)) + '\n...'
+        ? compactNonDebugPrompt(specPart, Math.max(900, specBudget - 8))
         : specPart;
 
       compactPrompt = trimmedSpec + '\n\n' + debugPart;
     } else {
-      compactPrompt = compactPrompt.slice(0, maxPromptChars);
+      compactPrompt = compactNonDebugPrompt(compactPrompt, maxPromptChars);
     }
   }
 

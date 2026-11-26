@@ -277,7 +277,7 @@
       `1. SIMULTANEOUS RESOLUTION: You MUST resolve EVERY single failed test case #1 through #${Math.max(failureItems.length, 1)} in this single output. Do NOT cherry-pick or fix only one error.\n` +
       `2. EXAMINE CURRENT CODE & TEST FILES: Cross-reference each failure with the CURRENT CODE of all files above and any discovered grading test files.\n` +
       `3. STATUS CODE, DUAL ERROR BODY & SYNTAX HANDLER PRECISION:\n` +
-      `   - Return { error: msg, message: msg } on error responses unless exact single-key object equality is tested.\n` +
+      `   - If Problem Spec or Tests expect an exact single-key object (e.g. { "message": "..." }), return THAT exact key without extra unexpected keys; otherwise include { error: msg, message: msg }.\n` +
       `   - Validate inputs upfront -> res.status(400). Creation routes -> res.status(201). Not found -> res.status(404). Duplicates -> res.status(400/409).\n` +
       `   - Include Express JSON SyntaxError middleware so malformed payloads return 400.\n` +
       `4. PREVENT TIMEOUTS: Ensure EVERY route handler wraps async work in try/catch and calls 'return res.status(...).json(...)' in EVERY code branch.\n` +

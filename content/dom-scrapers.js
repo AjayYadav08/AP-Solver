@@ -72,10 +72,19 @@
     const testCases = [];
     for (const text of [containerText, bodyText]) {
       const lines = text.split('\n').map((l) => l.trim());
-      for (const line of lines) {
-        const m = line.match(/^(\d+)[\.\)]\s+(.+)$/);
-        if (m && m[2].length > 4) {
-          const desc = m[2].trim();
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        let desc = '';
+        const singleM = line.match(/^(\d+)[\.\)]\s+(.+)$/);
+        if (singleM && singleM[2].length > 4) {
+          desc = singleM[2].trim();
+        } else if (/^\d+[\.\)]$/.test(line) && i + 1 < lines.length) {
+          const nextLine = lines[i + 1];
+          if (nextLine && nextLine.length > 4 && !/^\d+[\.\)]/.test(nextLine) && !/^(?:Test Cases|Requirements|Objective)$/i.test(nextLine)) {
+            desc = nextLine;
+          }
+        }
+        if (desc) {
           if (!/^(open|click|go to|download|step|navigate)\b/i.test(desc) || /test|return|reject|filter|accept|get|post|patch|put|delete|status|json|array|task/i.test(desc)) {
             if (!testCases.includes(desc)) testCases.push(desc);
           }

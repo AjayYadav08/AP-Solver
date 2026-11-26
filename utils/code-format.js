@@ -112,6 +112,58 @@ export function extractCodeBlock(rawText) {
   return formatCodeIndentation(extracted);
 }
 
+/** Clean workspace-relative file path (strips leading ./ or /app/code/ prefixes). */
+function normalizeRelPath(raw) {
+  return String(raw || '')
+    .trim()
+    .replace(/^[`'"]+|[`'"]+$/g, '')
+    .replace(/^\/?(?:app\/code|workspace|code)\//i, '')
+    .replace(/^\.\//, '')
+    .replace(/\/{2,}/g, '/');
+}
+
+/** Resolve parsed filename/subpath against known workspace paths so nested folders (e.g. src/middleware/validate.js) are never flattened. */
+function resolveWorkspaceFilePath(rawFn, workspaceFiles = []) {
+  const fn = normalizeRelPath(rawFn);
+  if (!fn) return '';
+
+  if (fn.endsWith('.prisma') || fn === 'schema.prisma') {
+    return fn.startsWith('prisma/') ? fn : 'prisma/' + fn.split('/').pop();
+  }
+
+  const wsClean = (workspaceFiles || []).map(normalizeRelPath).filter(Boolean);
+  const nonTestWs = wsClean.filter(w => !/(?:^|\/)(?:test|tests|__tests__)\/|(?:\.test|\.spec)\./i.test(w) && !/package-lock/i.test(w));
+  const pool = nonTestWs.length > 0 ? nonTestWs : wsClean;
+
+  const exact = pool.find(w => w.toLowerCase() === fn.toLowerCase());
+  if (exact) return exact;
+
+  const base = fn.split('/').pop().toLowerCase();
+  const suffixMatches = pool.filter(w => {
+    const wl = w.toLowerCase();
+    return wl.endsWith('/' + fn.toLowerCase()) || (!fn.includes('/') && wl.split('/').pop() === base);
+  });
+  if (suffixMatches.length > 0) {
+    // Prefer nested existing workspace path (e.g. src/middleware/validate.js) over flat root/src guess
+    suffixMatches.sort((a, b) => b.split('/').length - a.split('/').length);
+    return suffixMatches[0];
+  }
+
+  if (fn.startsWith('src/') || /^(?:prisma|db|test|tests|__tests__|public|config|scripts)\//i.test(fn)) {
+    return fn;
+  }
+  if (fn === 'package.json' || fn.startsWith('.')) return fn;
+  if (fn.includes('/')) {
+    const hasSrcLayout = wsClean.length === 0 || wsClean.some(w => w.startsWith('src/'));
+    const subRoot = fn.split('/')[0].toLowerCase();
+    if (hasSrcLayout && /^(?:middleware|middlewares|routes|controllers|services|models|utils|helpers|validators|handlers)$/i.test(subRoot)) {
+      return 'src/' + fn;
+    }
+    return fn;
+  }
+  return 'src/' + fn;
+}
+
 /** Parse one or more code files from LLM output using explicit headers, content routing, and workspace hints. */
 export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.js', workspaceFiles = []) {
   if (!rawText) return [];
@@ -123,23 +175,13 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
   ).replace(/```ap-commands[^\n]*\n[\s\S]*?```/gi, '').trim();
   const parseSource = sanitizedRawText || rawText;
 
-  const normPath = (fn) => {
-    if (!fn) return '';
-    fn = fn.trim();
-    if (fn.endsWith('.prisma') || fn === 'schema.prisma') {
-      return fn.startsWith('prisma/') ? fn : 'prisma/' + fn;
-    }
-    if (fn.startsWith('src/')) return fn;
-    if (fn.includes('/') || fn === 'package.json' || fn.startsWith('.')) return fn;
-    return 'src/' + fn;
-  };
-
   const isValidFilename = (fn) => {
     if (!fn) return false;
-    fn = fn.trim();
+    fn = normalizeRelPath(fn);
     if (/__commands__|run_commands/i.test(fn)) return false;
-    if (/^(1|2|3|4|5|one|two|file1|file2|file_1|file_2)(\.(js|ts|prisma|sql))?$/i.test(fn)) return false;
-    return /\.(js|ts|json|txt|prisma|sql|env|graphql|html|css)$/i.test(fn);
+    const base = fn.split('/').pop();
+    if (/^(1|2|3|4|5|one|two|file1|file2|file_1|file_2)(\.(js|ts|prisma|sql))?$/i.test(base)) return false;
+    return /\.(js|ts|mjs|cjs|json|txt|prisma|sql|env|graphql|html|css)$/i.test(base);
   };
 
   const resolveTargetFile = (fn, codeSnippet, idx) => {
@@ -149,39 +191,46 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
     if (/PrismaClient|prisma\.\w+\.(create|deleteMany|find)/i.test(codeSnippet) && !/express|createServer|app\.listen/i.test(codeSnippet)) {
       return 'src/seed.js';
     }
+    if (fn && isValidFilename(fn)) {
+      return resolveWorkspaceFilePath(fn, workspaceFiles);
+    }
     if (/express|createServer|app\.listen|app\.use/i.test(codeSnippet) && !/PrismaClient|prisma\.\w+/i.test(codeSnippet)) {
-      return 'src/index.js';
+      return resolveWorkspaceFilePath('index.js', workspaceFiles) || 'src/index.js';
     }
     if (/"prisma"\s*:\s*\{|"scripts"\s*:\s*\{/i.test(codeSnippet) || fn === 'package.json') {
       return 'package.json';
     }
 
-    if (fn && isValidFilename(fn)) return normPath(fn);
     if (workspaceFiles && workspaceFiles.length > 0) {
       const codeFiles = workspaceFiles.filter(f => /\.(js|ts|prisma)$/i.test(f) && !/nodemon|package|config/i.test(f));
-      if (/validate|middleware/i.test(codeSnippet)) {
+      if (/validate|middleware|authenticateToken/i.test(codeSnippet)) {
         const m = codeFiles.find(f => /middleware|validate/i.test(f));
-        if (m) return normPath(m);
+        if (m) return resolveWorkspaceFilePath(m, workspaceFiles);
       }
       if (/express|createServer|app\.listen/i.test(codeSnippet)) {
         const idxF = codeFiles.find(f => /index\.(js|ts)/i.test(f));
-        if (idxF) return normPath(idxF);
+        if (idxF) return resolveWorkspaceFilePath(idxF, workspaceFiles);
       }
       if (idx === 0 && codeFiles.find(f => !/index/i.test(f))) {
-        return normPath(codeFiles.find(f => !/index/i.test(f)));
+        return resolveWorkspaceFilePath(codeFiles.find(f => !/index/i.test(f)), workspaceFiles);
       }
       if (idx === 1 && codeFiles.find(f => /index/i.test(f))) {
-        return normPath(codeFiles.find(f => /index/i.test(f)));
+        return resolveWorkspaceFilePath(codeFiles.find(f => /index/i.test(f)), workspaceFiles);
       }
     }
-    return normPath(defaultActiveFile);
+    return resolveWorkspaceFilePath(defaultActiveFile, workspaceFiles);
   };
 
-  const fileHeaderPattern = /^(?:\/\/\s*|\/\*\s*|#+\s*)?(?:file:?\s*|---\s*)?(?:(?:\d+|step\s*\d+|file\s*\d+)[\.:\-\)]\s*)?(?:src\/)?([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt|prisma|sql|env|graphql))(?:\s*---|\s*\*\/)?\s*(?:\n|$)/i;
+  const relPathGroup = '((?:[a-zA-Z0-9_.\\-]+\\/)*[a-zA-Z0-9_.\\-]+\\.(?:js|ts|mjs|cjs|json|txt|prisma|sql|env|graphql))';
+  const fileHeaderPattern = new RegExp(`^(?:\\/\\/\\s*|\\/\\*\\s*|#+\\s*)?(?:file:?\\s*|---\\s*)?(?:(?:\\d+|step\\s*\\d+|file\\s*\\d+)[\\.:\\-\\)]\\s*)?${relPathGroup}(?:\\s*---|\\s*\\*\\/)?\\s*(?:\\n|$)`, 'i');
+  const langFileRegex = new RegExp(relPathGroup, 'i');
+  const precedingFileRegex = new RegExp(`(?:file:?\\s*)?(?:(?:\\d+|step\\s*\\d+)[\\.:\\-\\)]\\s*)?(?:\\\`|'|\\")?${relPathGroup}`, 'i');
+  const headerRegex = new RegExp(`(?:^|\\n)\\s*(?:\\/\\/|\\/\\*|#+)\\s*(?:file:?\\s*|---\\s*)?(?:(?:\\d+|step\\s*\\d+|file\\s*\\d+)[\\.:\\-\\)]\\s*)?${relPathGroup}(?:\\s*---|\\s*\\*\\/)?\\s*(?:\\n|$)`, 'gi');
 
   // Strategy 1: Multiple or Single markdown code blocks
   const blockRegex = /```(?:[a-zA-Z0-9_\-]+)?(?::([^\n]+))?([^\n]*)\n([\s\S]*?)```/g;
   const blocks = [...parseSource.matchAll(blockRegex)];
+  const defaultResolved = resolveWorkspaceFilePath(defaultActiveFile, workspaceFiles);
 
   if (blocks.length > 0) {
     const parsedBlocks = [];
@@ -199,13 +248,13 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
         detectedFilename = firstLineMatch[1];
       }
       if (!detectedFilename && langExtra) {
-        const m = langExtra.match(/([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt|prisma|sql|env|graphql))/i);
+        const m = langExtra.match(langFileRegex);
         if (m && isValidFilename(m[1])) detectedFilename = m[1];
       }
       if (!detectedFilename && precedingText) {
         const lines = precedingText.split('\n').map(l => l.trim()).filter(Boolean);
         const lastFew = lines.slice(-3).join(' ');
-        const m = lastFew.match(/(?:file:?\s*)?(?:(?:\d+|step\s*\d+)[\.:\-\)]\s*)?(?:`|'|\")?(?:src\/)?([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt|prisma|sql|env|graphql))/i);
+        const m = lastFew.match(precedingFileRegex);
         if (m && isValidFilename(m[1])) detectedFilename = m[1];
       }
 
@@ -215,13 +264,12 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
       }
     }
 
-    if (parsedBlocks.length > 0 && (blocks.length > 1 || parsedBlocks[0].filePath !== normPath(defaultActiveFile))) {
+    if (parsedBlocks.length > 0 && (blocks.length > 1 || parsedBlocks[0].filePath !== defaultResolved)) {
       return parsedBlocks;
     }
   }
 
   // Strategy 2: Split by inline file comment headers
-  const headerRegex = /(?:^|\n)\s*(?:\/\/|\/\*|#+)\s*(?:file:?\s*|---\s*)?(?:(?:\d+|step\s*\d+|file\s*\d+)[\.:\-\)]\s*)?(?:src\/)?([a-zA-Z0-9_\-]+\.(?:js|ts|json|txt|prisma|sql|env|graphql))(?:\s*---|\s*\*\/)?\s*(?:\n|$)/gi;
   const headers = [...parseSource.matchAll(headerRegex)].filter(h => isValidFilename(h[1]));
 
   if (headers.length > 0) {
@@ -234,7 +282,10 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
       rawCode = rawCode.replace(/^```[a-z]*\s*\n?/i, '').replace(/```+$/g, '').trim();
       rawCode = stripFileCommentHeaders(rawCode);
       if (rawCode.length > 5) {
-        inlineFiles.push({ filePath: normPath(fn), code: formatCodeIndentation(stripComments(rawCode)) });
+        inlineFiles.push({
+          filePath: resolveWorkspaceFilePath(fn, workspaceFiles),
+          code: formatCodeIndentation(stripComments(rawCode))
+        });
       }
     }
     if (inlineFiles.length > 0) {
@@ -248,7 +299,7 @@ export function parseMultiFileSolution(rawText, defaultActiveFile = 'src/index.j
   if (topMatch && isValidFilename(topMatch[1])) {
     const fn = topMatch[1];
     cleaned = stripFileCommentHeaders(cleaned);
-    return [{ filePath: normPath(fn), code: formatCodeIndentation(stripComments(cleaned)) }];
+    return [{ filePath: resolveWorkspaceFilePath(fn, workspaceFiles), code: formatCodeIndentation(stripComments(cleaned)) }];
   }
 
   const singleCode = stripFileCommentHeaders(extractCodeBlock(parseSource));

@@ -118,8 +118,9 @@ export async function runBackgroundTests() {
     edSrc.includes("!isWorkbench && document.querySelector('iframe')") &&
     edSrc.includes('Date.now() - tStart < 3500') &&
     !edSrc.includes("allEditors[0] || document.querySelector('.monaco-editor')"),
-    'background/editor.js missing workbench isolation or target guards'
+    'background/editor.js missing workbench isolation, nested path extractor, or target guards'
   );
+  assert(edSrc.includes('extractWorkspaceRelPath'), 'background/editor.js missing extractWorkspaceRelPath');
 
   // 6. Terminal MAIN world reader, WebGL safety & zero-Monaco-corruption guarantee
   const readTermSec = termSrc.substring(termSrc.indexOf('export async function readIntegratedTerminalText'), termSrc.indexOf('export async function decodeTerminalJsonPayload'));

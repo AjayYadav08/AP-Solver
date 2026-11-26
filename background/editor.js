@@ -25,20 +25,40 @@ export async function queryEditorInTab(tabId) {
           if (!isWorkbench && document.querySelector('iframe')) return null;
           if (window.self === window.top && document.querySelector('iframe')) return null;
 
+          function extractWorkspaceRelPath(uriPath, fallbackName = '') {
+            const raw = (uriPath || '').replace(/\\/g, '/');
+            const mRoot = raw.match(/\/((?:src|prisma|db|test|tests|__tests__|config|scripts)\/.+)$/i);
+            if (mRoot) return mRoot[1];
+            const mSub = raw.match(/\/((?:routes|controllers|middleware|middlewares|models|utils|services|helpers|validators)\/.+)$/i);
+            if (mSub) return raw.includes('/src/') ? 'src/' + mSub[1] : mSub[1];
+            const base = raw.split('/').pop() || fallbackName;
+            if (raw.includes('/src/') && base) return 'src/' + base;
+            return base;
+          }
+
           function detectActiveFile() {
-            const breadcrumbs = [...document.querySelectorAll('.breadcrumbs-widget .monaco-breadcrumb-item')].map(b => b.textContent.trim()).filter(Boolean);
+            const breadcrumbs = [...document.querySelectorAll('.breadcrumbs-widget .monaco-breadcrumb-item')].map(b => b.textContent.trim().replace(/^[A-Z]+\s+/, '')).filter(Boolean);
             if (breadcrumbs.length > 0) {
-              const last = breadcrumbs[breadcrumbs.length - 1].replace(/^[A-Z]+\s+/, '');
+              const last = breadcrumbs[breadcrumbs.length - 1];
               if (last.includes('.') && !/^\d+$/.test(last)) {
-                return (breadcrumbs.length >= 2 && breadcrumbs[0] === 'src') ? 'src/' + last : last;
+                const startIdx = breadcrumbs.findIndex(seg => /^(?:src|prisma|db|test|tests|__tests__|middleware|routes|controllers|models|utils|services)$/i.test(seg));
+                if (startIdx !== -1 && startIdx < breadcrumbs.length - 1) {
+                  return breadcrumbs.slice(startIdx).join('/');
+                }
+                return last;
               }
             }
             const tabs = [...document.querySelectorAll('.tab, [role="tab"]')];
             const activeTab = tabs.find(t => t.classList.contains('active') || t.getAttribute('aria-selected') === 'true');
             if (activeTab) {
               const label = (activeTab.querySelector('.label-name') || activeTab).textContent.trim();
+              const aria = activeTab.getAttribute('aria-label') || '';
+              if (aria && /[/\\]/.test(aria)) {
+                const fromAria = extractWorkspaceRelPath('/' + aria.replace(/\\/g, '/').split(',')[0].trim(), label);
+                if (fromAria && fromAria.includes('.')) return fromAria;
+              }
               if (label && label.includes('.') && !/^\d+$/.test(label) && !/welcome/i.test(label)) {
-                return label.includes('src/') ? label : 'src/' + label;
+                return label.includes('/') ? label : 'src/' + label;
               }
             }
             return null;
@@ -52,18 +72,21 @@ export async function queryEditorInTab(tabId) {
               const text = labelEl.textContent.trim();
               const aria = (row.getAttribute('aria-label') || '').trim();
               if (text && text.includes('.') && !/^\d+$/.test(text) && !/^\s*$/.test(text)) {
+                let matchedPath = '';
                 if (aria && /[/\\]/.test(aria)) {
-                  const pathMatch = aria.match(/((?:src|test|tests|__tests__|prisma|db|routes|controllers|middleware|models|utils)\/[^\s,]+)/i);
-                  if (pathMatch) files.add(pathMatch[1]);
+                  const pathMatch = aria.replace(/\\/g, '/').match(/((?:src\/)?(?:test|tests|__tests__|prisma|db|routes|controllers|middleware|middlewares|models|utils|services)\/[^\s,]+|src\/[^\s,]+)/i);
+                  if (pathMatch) matchedPath = pathMatch[1];
                 }
-                files.add(text);
+                files.add(matchedPath || text);
               }
             }
             const tabs = [...document.querySelectorAll('.tab, [role="tab"]')];
             for (const tab of tabs) {
               const text = (tab.querySelector('.label-name') || tab).textContent.trim();
+              const aria = (tab.getAttribute('aria-label') || '').trim();
               if (text && text.includes('.') && !/^\d+$/.test(text) && !/welcome/i.test(text)) {
-                files.add(text);
+                const ariaMatch = aria.replace(/\\/g, '/').match(/((?:src\/)?(?:test|tests|__tests__|prisma|db|routes|controllers|middleware|middlewares|models|utils|services)\/[^\s,]+|src\/[^\s,]+)/i);
+                files.add(ariaMatch ? ariaMatch[1] : text);
               }
             }
             return [...files];
@@ -97,20 +120,19 @@ export async function queryEditorInTab(tabId) {
               if (fname && (fname.endsWith('.json') || fname.endsWith('.txt') || fname.endsWith('.prisma') || fname.endsWith('.js') || fname.endsWith('.ts') || fname === '.env') &&
                   !fname.includes('package-lock') && !fname.includes('node_modules') && !p.includes('node_modules') && !/inmemory|workbench/i.test(p) && !/^\d+$/.test(fname)) {
                 const val = mod.getValue();
-                const subMatch = p.match(/\/((?:test|tests|__tests__|prisma|db|routes|controllers|middleware|models|utils)\/[^/]+)$/i);
-                const cleanKey = subMatch ? subMatch[1] : (p.includes('src/') ? 'src/' + fname : fname);
+                const cleanKey = extractWorkspaceRelPath(p, fname);
                 if (val && val.length < 35000) referenceFiles[cleanKey] = val;
               }
-              if (fname && fname.includes('.') && !/^\d+$/.test(fname)) {
-                const subMatch = p.match(/\/((?:test|tests|__tests__|prisma|db|routes|controllers|middleware|models|utils)\/[^/]+)$/i);
-                workspaceFiles.push(subMatch ? subMatch[1] : (p.includes('src/') ? 'src/' + fname : fname));
+              if (fname && fname.includes('.') && !/^\d+$/.test(fname) && !p.includes('node_modules') && !/inmemory|workbench/i.test(p)) {
+                workspaceFiles.push(extractWorkspaceRelPath(p, fname));
               }
             }
 
             let activeModel = null;
             if (detectedActive) {
-              const basename = detectedActive.split('/').pop();
-              activeModel = models.find(mod => (mod.uri?.path || '').endsWith(basename));
+              const normDet = detectedActive.replace(/\\/g, '/');
+              activeModel = models.find(mod => (mod.uri?.path || '').replace(/\\/g, '/').endsWith('/' + normDet))
+                || models.find(mod => (mod.uri?.path || '').endsWith('/' + normDet.split('/').pop()));
             }
 
             const editors = m.editor.getEditors ? m.editor.getEditors() : [];
@@ -130,13 +152,10 @@ export async function queryEditorInTab(tabId) {
             if (activeModel) {
               const val = activeModel.getValue();
               const p = activeModel.uri?.path || activeModel.uri?.toString() || '';
-              const rawFname = p.split('/').pop() || '';
-              let fname = detectedActive || '';
-              if (rawFname && rawFname.includes('.') && !/^\d+$/.test(rawFname) && !/inmemory/i.test(p)) {
-                fname = rawFname;
-              }
-              if (!fname || /^\d+$/.test(fname)) fname = 'src/index.js';
-              const resolvedActive = fname.includes('src/') ? fname : (p.includes('src/') ? 'src/' + fname : fname);
+              const relFromUri = !/inmemory/i.test(p) ? extractWorkspaceRelPath(p, '') : '';
+              let resolvedActive = (relFromUri && relFromUri.includes('.')) ? relFromUri : (detectedActive || 'src/index.js');
+              if (!resolvedActive || /^\d+$/.test(resolvedActive)) resolvedActive = 'src/index.js';
+              if (!resolvedActive.includes('/')) resolvedActive = p.includes('/src/') ? 'src/' + resolvedActive : resolvedActive;
 
               return {
                 found: true,

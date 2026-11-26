@@ -4,24 +4,6 @@ import { sleep, attachCDP, sendCDP, cdpNativeClick, cdpNativeKey, cdpNativeInser
 
 /** Ensure VS Code Web Integrated Terminal panel is visible across frames. */
 export async function ensureTerminalOpen(tabId) {
-  const simulateClickInFrame = () => {
-    function simulateClickSeq(el) {
-      if (!el) return false;
-      try { el.focus(); } catch(e) {}
-      const r = el.getBoundingClientRect();
-      const clientX = r.left + r.width / 2;
-      const clientY = r.top + r.height / 2;
-      const opts = { bubbles: true, cancelable: true, view: window, clientX, clientY, screenX: clientX, screenY: clientY, button: 0, buttons: 1 };
-      for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
-        try { el.dispatchEvent(t.startsWith('p') ? new PointerEvent(t, opts) : new MouseEvent(t, opts)); } catch(e) {}
-      }
-      try { el.click(); } catch(e) {}
-      return true;
-    }
-    return simulateClickSeq;
-  };
-  void simulateClickInFrame;
-
   try {
     const checkRes = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
@@ -44,78 +26,56 @@ export async function ensureTerminalOpen(tabId) {
       return true;
     }
 
-    const tabClickRes = await chrome.scripting.executeScript({
+    const runAction = (actionName) => chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
-      func: () => {
+      args: [actionName],
+      func: (action) => {
         function simulateClickSeq(el) {
           if (!el) return false;
           try { el.focus(); } catch(e) {}
           const r = el.getBoundingClientRect();
-          const opts = { bubbles: true, cancelable: true, view: window, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0, buttons: 1 };
-          try { el.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch(e) {}
-          try { el.dispatchEvent(new MouseEvent('mousedown', opts)); } catch(e) {}
-          try { el.dispatchEvent(new PointerEvent('pointerup', opts)); } catch(e) {}
-          try { el.dispatchEvent(new MouseEvent('mouseup', opts)); } catch(e) {}
-          try { el.dispatchEvent(new MouseEvent('click', opts)); } catch(e) {}
+          const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+          const opts = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, screenX: cx, screenY: cy, button: 0, buttons: 1 };
+          for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+            try { el.dispatchEvent(t.startsWith('p') ? new PointerEvent(t, opts) : new MouseEvent(t, opts)); } catch(e) {}
+          }
           try { el.click(); } catch(e) {}
           return true;
         }
-        const tabs = [...document.querySelectorAll('[role="tab"], .action-item, .composite.title, [class*="tab" i]')];
-        const termTab = tabs.find(t => (t.textContent || '').trim().toUpperCase() === 'TERMINAL' || t.getAttribute('aria-label')?.toLowerCase() === 'terminal');
-        return termTab ? simulateClickSeq(termTab) : false;
-      }
-    });
-    if (tabClickRes?.some(r => r.result === true)) { await sleep(350); return true; }
+        const findTermTab = () => [...document.querySelectorAll('[role="tab"], .action-item, .composite.title, [class*="tab" i]')]
+          .find(t => (t.textContent || '').trim().toUpperCase() === 'TERMINAL' || t.getAttribute('aria-label')?.toLowerCase() === 'terminal');
+        const findMoreBtn = () => document.querySelector('.part.panel .title [aria-label*="More" i], .part.panel [class*="codicon-more" i], .part.panel [class*="codicon-ellipsis" i], .composite.title [aria-label*="More" i]');
+        const findMenuTerm = () => [...document.querySelectorAll('.action-menu-item, [role="menuitem"], .monaco-menu-item, .action-label')]
+          .find(it => (it.textContent || '').trim().toLowerCase() === 'terminal');
 
-    await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
-      func: () => {
-        const moreBtn = document.querySelector('.part.panel .title [aria-label*="More" i], .part.panel [class*="codicon-more" i], .part.panel [class*="codicon-ellipsis" i], .composite.title [aria-label*="More" i]');
-        if (moreBtn) { try { moreBtn.click(); } catch(e) {} }
-      }
-    });
-    await sleep(250);
-
-    const menuClickRes = await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
-      func: () => {
-        const items = [...document.querySelectorAll('.action-menu-item, [role="menuitem"], .monaco-menu-item, .action-label')];
-        const termItem = items.find(it => (it.textContent || '').trim().toLowerCase() === 'terminal');
-        if (termItem) { try { termItem.click(); return true; } catch(e) {} }
+        if (action === 'termTab') return simulateClickSeq(findTermTab());
+        if (action === 'moreBtn') return simulateClickSeq(findMoreBtn());
+        if (action === 'menuTerm') return simulateClickSeq(findMenuTerm());
+        if (action === 'statusProblems') {
+          const sp = document.querySelector('.statusbar-item.left [aria-label*="Problem" i], .statusbar-item.left [aria-label*="Error" i], .statusbar-item.left [class*="codicon-error" i], .statusbar-item.left');
+          return simulateClickSeq(sp);
+        }
+        if (action === 'termTabOrMore') return simulateClickSeq(findTermTab() || findMoreBtn());
         return false;
       }
     });
+
+    const tabClickRes = await runAction('termTab');
+    if (tabClickRes?.some(r => r.result === true)) { await sleep(350); return true; }
+
+    await runAction('moreBtn');
+    await sleep(250);
+
+    const menuClickRes = await runAction('menuTerm');
     if (menuClickRes?.some(r => r.result === true)) { await sleep(350); return true; }
 
-    await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
-      func: () => {
-        const statusProblems = document.querySelector('.statusbar-item.left [aria-label*="Problem" i], .statusbar-item.left [aria-label*="Error" i], .statusbar-item.left [class*="codicon-error" i], .statusbar-item.left');
-        if (statusProblems) { try { statusProblems.click(); } catch(e) {} }
-      }
-    });
+    await runAction('statusProblems');
     await sleep(300);
 
-    await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
-      func: () => {
-        const tabs = [...document.querySelectorAll('[role="tab"], .action-item, .composite.title, [class*="tab" i]')];
-        const termTab = tabs.find(t => (t.textContent || '').trim().toUpperCase() === 'TERMINAL' || t.getAttribute('aria-label')?.toLowerCase() === 'terminal');
-        if (termTab) { try { termTab.click(); return; } catch(e) {} }
-        const moreBtn = document.querySelector('.part.panel .title [aria-label*="More" i], .part.panel [class*="codicon-more" i], .part.panel [class*="codicon-ellipsis" i]');
-        if (moreBtn) { try { moreBtn.click(); } catch(e) {} }
-      }
-    });
+    await runAction('termTabOrMore');
     await sleep(200);
 
-    await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
-      func: () => {
-        const items = [...document.querySelectorAll('.action-menu-item, [role="menuitem"], .action-label')];
-        const termItem = items.find(it => (it.textContent || '').trim().toLowerCase() === 'terminal');
-        if (termItem) { try { termItem.click(); } catch(e) {} }
-      }
-    });
+    await runAction('menuTerm');
     await sleep(350);
   } catch(e) {
     console.warn('[AP-Solver] ensureTerminalOpen error:', e);
